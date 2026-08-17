@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "voice-ai"
+version = "1.0.0"
+description = "Transcrição por voz (GPU/CPU) e assistente IA com Claude — dois atalhos, uma interface"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+keywords = ["voice", "speech-to-text", "whisper", "claude", "tts", "ptt", "linux"]
+dependencies = [
+    "faster-whisper>=1.0.3",
+    "sounddevice>=0.5.1",
+    "numpy>=1.26",
+    "PyQt6>=6.6",
+    "pynput>=1.7",
+    "edge-tts>=7.0",
+]
+
+[[project.authors]]
+name = "Alan Guedes"
+email = "alanguedesdev@gmail.com"
+
+[project.scripts]
+voice-ai = "voice_ai.cli.voice_ai_cmd:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["voice_ai*"]
