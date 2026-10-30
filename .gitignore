@@ -1,13 +1,42 @@
+# Python
 __pycache__/
-*.pyc
-*.pyo
-.venv/
-venv/
+*.py[cod]
 *.egg-info/
+*.egg
+.venv/
+backend/venv/
 dist/
 build/
+
+# Electron / Node
+frontend/node_modules/
+frontend/out/
+frontend/dist/
+
+# Dados em runtime
+~/.local/share/voice-ai/
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+logs/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Editors
 .idea/
 .vscode/
-*.deb
-logs/
-.claude/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Superpowers workspace (scratch, não é código)
+.superpowers/

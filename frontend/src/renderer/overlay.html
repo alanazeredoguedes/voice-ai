@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Voice AI Overlay</title>
+    <style>
+      /* Torna o fundo da janela totalmente transparente */
+      html, body, #overlay-app {
+        margin: 0;
+        padding: 0;
+        background: transparent !important;
+        overflow: hidden;
+        display: flex;
+        align-items: flex-start;
+        justify-content: flex-end;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="overlay-app"></div>
+    <script type="module" src="./src/overlay-main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,21 @@
+appId: com.voiceai.app
+productName: Voice AI
+directories:
+  buildResources: build
+  output: dist
+files:
+  - out/**/*
+  - "!**/*.{ts,map}"
+linux:
+  target:
+    - AppImage
+    - deb
+  category: Utility
+extraResources:
+  - from: ../backend
+    to: backend
+    filter:
+      - "**/*"
+      - "!venv/**"
+      - "!__pycache__/**"
+      - "!**/*.pyc"
