@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
-import { transcribeFile } from '../api'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { transcribeFile, cancelTranscription } from '../api'
 import CopyButton from '../components/CopyButton.vue'
 import { useTranscribeStore } from '../stores/transcribe'
+import { onWsMessage } from '../api/ws'
 
 const SUPPORTED = ['.mp3', '.wav', '.ogg', '.m4a', '.flac', '.webm', '.aac', '.mp4', '.opus', '.wma', '.oga']
 const ACCEPT = SUPPORTED.join(',')
@@ -20,6 +21,16 @@ const resultStats = ref<{ duration_s: number; proc_s: number; model: string; dev
 )
 
 const isLoading = computed(() => loadingIndex.value >= 0)
+const progress = ref(0)
+const isCancelling = ref(false)
+
+const unsub = onWsMessage((event) => {
+  if (event.type === 'transcription_progress' && event.progress !== undefined) {
+    progress.value = event.progress
+  }
+})
+
+onUnmounted(() => unsub())
 
 onMounted(() => {
   if (store.result) {
@@ -86,6 +97,7 @@ async function doTranscribe(): Promise<void> {
 
   for (let i = 0; i < selectedFiles.value.length; i++) {
     loadingIndex.value = i
+    progress.value = 0
     const file = selectedFiles.value[i]
     try {
       const r = await transcribeFile(file)
@@ -95,8 +107,19 @@ async function doTranscribe(): Promise<void> {
       lastDevice = r.device
       parts.push(multi ? `[${file.name}]\n${r.text}` : r.text)
     } catch (e: unknown) {
-      error.value = `Erro em "${file.name}": ${e instanceof Error ? e.message : 'erro desconhecido'}`
       loadingIndex.value = -1
+      isCancelling.value = false
+      if ((e as { response?: { data?: string } })?.response?.data === 'cancelled' || isCancelling.value) {
+        selectedFiles.value = []
+        return
+      }
+      error.value = `Erro em "${file.name}": ${e instanceof Error ? e.message : 'erro desconhecido'}`
+      return
+    }
+    if (isCancelling.value) {
+      loadingIndex.value = -1
+      isCancelling.value = false
+      selectedFiles.value = []
       return
     }
   }
@@ -108,6 +131,15 @@ async function doTranscribe(): Promise<void> {
 
   const storeResult = { text: combined, duration_s: totalDuration, proc_s: totalProc, model: lastModel, device: lastDevice }
   store.setResult(storeResult, names)
+}
+
+async function doCancel(): Promise<void> {
+  isCancelling.value = true
+  try {
+    await cancelTranscription()
+  } catch {
+    // ignore - o backend pode já ter finalizado
+  }
 }
 
 function reset(): void {
@@ -158,7 +190,7 @@ function fmtSize(bytes: number): string {
       </div>
       <div class="text-center">
         <p class="text-slate-300 font-medium">Arraste arquivos de áudio ou clique para selecionar</p>
-        <p class="text-slate-500 text-xs mt-0.5">Pode selecionar múltiplos arquivos — transcritos em sequência</p>
+        <p class="text-slate-500 text-xs mt-0.5">Pode selecionar múltiplos arquivos - transcritos em sequência</p>
         <p class="text-slate-600 text-xs mt-1">{{ SUPPORTED.join(' · ') }}</p>
       </div>
       <input
@@ -226,28 +258,48 @@ function fmtSize(bytes: number): string {
     </div>
 
     <!-- Loading -->
-    <div v-if="isLoading" class="bg-slate-800/60 rounded-2xl p-8 border border-slate-700/40 flex flex-col items-center gap-4">
-      <div class="flex gap-1.5">
-        <span v-for="i in 3" :key="i" class="w-2 h-2 rounded-full bg-indigo-500 animate-bounce" :style="`animation-delay: ${(i-1) * 0.15}s`" />
+    <div v-if="isLoading" class="bg-slate-800/60 rounded-2xl p-8 border border-slate-700/40 flex flex-col gap-5">
+      <div class="flex items-center justify-between">
+        <div>
+          <p class="text-slate-200 font-medium">
+            Transcrevendo<span v-if="selectedFiles.length > 1"> {{ loadingIndex + 1 }} de {{ selectedFiles.length }}</span>…
+          </p>
+          <p class="text-slate-500 text-xs mt-0.5 truncate max-w-xs">{{ selectedFiles[loadingIndex]?.name }}</p>
+        </div>
+        <span class="text-2xl font-semibold tabular-nums" :class="progress >= 100 ? 'text-emerald-400' : 'text-indigo-400'">
+          {{ Math.floor(progress) }}%
+        </span>
       </div>
-      <div class="text-center">
-        <p class="text-slate-300 font-medium">
-          Transcrevendo
-          <span v-if="selectedFiles.length > 1"> {{ loadingIndex + 1 }} de {{ selectedFiles.length }}</span>…
-        </p>
-        <p class="text-slate-500 text-xs mt-1">{{ selectedFiles[loadingIndex]?.name }}</p>
-        <p class="text-slate-600 text-xs mt-3">Arquivos longos podem demorar alguns minutos</p>
-      </div>
-      <!-- progress dots -->
-      <div v-if="selectedFiles.length > 1" class="flex gap-2 mt-1">
-        <span
-          v-for="(_, i) in selectedFiles"
-          :key="i"
-          :class="[
-            'w-2 h-2 rounded-full transition-colors',
-            i < loadingIndex ? 'bg-emerald-500' : i === loadingIndex ? 'bg-indigo-400' : 'bg-slate-700'
-          ]"
+
+      <!-- barra de progresso -->
+      <div class="w-full bg-slate-700/60 rounded-full h-2 overflow-hidden">
+        <div
+          class="h-2 rounded-full transition-all duration-300 ease-out"
+          :class="progress >= 100 ? 'bg-emerald-500' : 'bg-indigo-500'"
+          :style="`width: ${progress}%`"
         />
+      </div>
+
+      <!-- dots + cancelar -->
+      <div class="flex items-center gap-2">
+        <template v-if="selectedFiles.length > 1">
+          <span
+            v-for="(_, i) in selectedFiles"
+            :key="i"
+            :class="[
+              'w-2 h-2 rounded-full transition-colors',
+              i < loadingIndex ? 'bg-emerald-500' : i === loadingIndex ? 'bg-indigo-400' : 'bg-slate-700'
+            ]"
+          />
+        </template>
+        <span class="text-xs text-slate-600 flex-1">Arquivos longos podem demorar alguns minutos</span>
+        <button
+          :disabled="isCancelling"
+          class="px-3 py-1.5 text-xs text-red-400 border border-red-700/50 rounded-lg hover:bg-red-500/10 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex-shrink-0"
+          @click="doCancel"
+        >
+          {{ isCancelling ? 'Cancelando…' : 'Cancelar' }}
+        </button>
       </div>
     </div>
 

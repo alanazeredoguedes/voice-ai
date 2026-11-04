@@ -15,9 +15,9 @@ DB_PATH = DATA_DIR / "voice-ai.db"
 PORT = int(os.environ.get("VOICE_AI_PORT", "18450"))
 
 DEFAULT_SETTINGS: dict = {
-    "transcription_key": "mouse:button8",
-    "ai_key": "<ctrl>+mouse:button8",
-    "model": "medium",
+    "transcription_key": "<ctrl>+t",
+    "ai_key": "<ctrl>+i",
+    "model": "tiny",
     "device": "auto",
     "tts_backend": "edge",
     "edge_voice": "pt-BR-AntonioNeural",

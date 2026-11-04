@@ -1,7 +1,12 @@
 import { app, BrowserWindow, Tray, Menu, nativeImage, shell, ipcMain } from 'electron'
+
+// Must be called before app is ready — fixes SUID sandbox error on Linux AppImage
+app.commandLine.appendSwitch('no-sandbox')
 import { join } from 'path'
+import { homedir } from 'os'
+import { existsSync, writeFileSync, mkdirSync } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
-import { spawn, ChildProcess } from 'child_process'
+import { spawn, ChildProcess, SpawnOptions } from 'child_process'
 
 const BACKEND_PORT = 18450
 const BACKEND_URL = `http://127.0.0.1:${BACKEND_PORT}`
@@ -13,34 +18,180 @@ let backendProcess: ChildProcess | null = null
 let quitting = false
 let overlayHideTimer: ReturnType<typeof setTimeout> | null = null
 
-ipcMain.on('overlay:state', (_, state: string) => {
-  if (!overlayWindow) return
-  if (overlayHideTimer) {
-    clearTimeout(overlayHideTimer)
-    overlayHideTimer = null
+// ---------------------------------------------------------------------------
+// Paths
+// ---------------------------------------------------------------------------
+
+function getDataDir(): string {
+  if (app.isPackaged) return app.getPath('userData')
+  return join(homedir(), '.local', 'share', 'voice-ai')
+}
+
+function getPackagesDir(): string {
+  return join(getDataDir(), 'packages')
+}
+
+function getBundledPython(): string {
+  if (!app.isPackaged) {
+    return join(__dirname, '..', '..', '..', 'backend', 'venv', 'bin', 'python')
   }
-  if (state === 'idle') {
-    overlayHideTimer = setTimeout(() => {
-      overlayWindow?.hide()
-      overlayHideTimer = null
-    }, 2000)
-  } else {
-    overlayWindow.show()
+  // Resolved fresh every run — no symlinks, always correct mount path
+  return join(process.resourcesPath, 'python-dist', 'bin', 'python3')
+}
+
+function getBackendCwd(): string {
+  if (!app.isPackaged) return join(__dirname, '..', '..', '..')
+  return process.resourcesPath
+}
+
+// ---------------------------------------------------------------------------
+// Setup state
+// ---------------------------------------------------------------------------
+
+function isSetupComplete(): boolean {
+  if (!app.isPackaged) return true
+  return existsSync(join(getPackagesDir(), '.voice-ai-ready'))
+}
+
+function markSetupComplete(): void {
+  const dir = getPackagesDir()
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, '.voice-ai-ready'), new Date().toISOString())
+}
+
+// ---------------------------------------------------------------------------
+// Setup runner
+// ---------------------------------------------------------------------------
+
+interface SetupProgress {
+  step: string
+  message: string
+  percent: number
+  log?: string
+}
+
+function runCmd(
+  bin: string,
+  args: string[],
+  opts: SpawnOptions,
+  onLog: (line: string) => void
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    onLog(`$ ${bin} ${args.join(' ')}`)
+    const errorLines: string[] = []
+    const proc = spawn(bin, args, { ...opts, stdio: ['ignore', 'pipe', 'pipe'] })
+    proc.stdout?.on('data', (d: Buffer) => {
+      for (const line of d.toString().split('\n')) {
+        const t = line.trim()
+        if (t) onLog(t)
+      }
+    })
+    proc.stderr?.on('data', (d: Buffer) => {
+      for (const line of d.toString().split('\n')) {
+        const t = line.trim()
+        if (t) { onLog(t); errorLines.push(t) }
+      }
+    })
+    proc.on('error', (err) => reject(new Error(`Failed to start ${bin}: ${err.message}`)))
+    proc.on('close', (code) => {
+      if (code === 0) {
+        resolve()
+      } else {
+        const detail = errorLines.slice(-5).join(' | ')
+        reject(new Error(`exit ${code}${detail ? ': ' + detail : ''}`))
+      }
+    })
+  })
+}
+
+async function runSetup(onProgress: (p: SetupProgress) => void): Promise<void> {
+  const bundledPython = getBundledPython()
+  const packagesDir = getPackagesDir()
+  const requirementsPath = app.isPackaged
+    ? join(process.resourcesPath, 'backend', 'requirements.txt')
+    : join(__dirname, '..', '..', '..', 'backend', 'requirements.txt')
+  const log = (line: string) => line && onProgress({ step: 'log', message: '', percent: -1, log: line })
+
+  log(`[setup] bundled python: ${bundledPython}`)
+  log(`[setup] packages dir: ${packagesDir}`)
+  log(`[setup] requirements: ${requirementsPath}`)
+
+  if (!existsSync(bundledPython)) {
+    throw new Error(`Python nao encontrado em: ${bundledPython}`)
   }
-})
+
+  mkdirSync(packagesDir, { recursive: true })
+
+  // Use gcc as fallback compiler — python-build-standalone was compiled with clang
+  // which may not be installed on the user's system, but gcc usually is
+  const pipEnv = { ...process.env, CC: 'gcc', CXX: 'g++' }
+
+  onProgress({ step: 'pip', message: 'Atualizando pip...', percent: 5 })
+  await runCmd(
+    bundledPython,
+    ['-m', 'pip', 'install', '--upgrade', 'pip', '--quiet', '--target', packagesDir],
+    { env: pipEnv },
+    log
+  )
+
+  onProgress({ step: 'pip', message: 'Instalando dependencias (pode demorar alguns minutos)...', percent: 10 })
+  await runCmd(
+    bundledPython,
+    ['-m', 'pip', 'install', '-r', requirementsPath, '--target', packagesDir, '--no-cache-dir', '--progress-bar', 'off'],
+    { env: pipEnv },
+    (line) => {
+      log(line)
+      if (line.startsWith('Collecting') || line.startsWith('Installing')) {
+        const pkg = line.replace(/^(Collecting|Installing collected packages:)\s*/, '').split(/[\s,]/)[0]
+        if (pkg) onProgress({ step: 'pip', message: `Baixando ${pkg}...`, percent: -1 })
+      }
+    }
+  )
+
+  onProgress({ step: 'model', message: 'Baixando modelo Whisper tiny (~75 MB)...', percent: 82 })
+  await runCmd(
+    bundledPython,
+    [
+      '-c',
+      [
+        'import os, sys',
+        `sys.path.insert(0, ${JSON.stringify(packagesDir)})`,
+        "os.environ['HF_HUB_DISABLE_PROGRESS_BARS'] = '0'",
+        'from huggingface_hub import snapshot_download',
+        "snapshot_download('Systran/faster-whisper-tiny')",
+        "print('Modelo baixado com sucesso')"
+      ].join('; ')
+    ],
+    {},
+    log
+  )
+
+  markSetupComplete()
+  onProgress({ step: 'done', message: 'Instalacao concluida!', percent: 100 })
+}
+
+// ---------------------------------------------------------------------------
+// Backend
+// ---------------------------------------------------------------------------
 
 function spawnBackend(): void {
-  // __dirname in dev = <repo>/frontend/out/main — 3 levels up reaches repo root
-  const root = join(__dirname, '..', '..', '..')
-  const python = join(root, 'backend', 'venv', 'bin', 'python')
-  const args = ['-m', 'backend.main']
+  const python = getBundledPython()
+  const cwd = getBackendCwd()
+  const packagesDir = getPackagesDir()
+  const existingPythonPath = process.env['PYTHONPATH'] || ''
+  const env = {
+    ...process.env,
+    VOICE_AI_PORT: String(BACKEND_PORT),
+    VOICE_AI_DATA_DIR: getDataDir(),
+    PYTHONPATH: existingPythonPath ? `${packagesDir}:${existingPythonPath}` : packagesDir
+  }
+  console.log(`[backend] python: ${python}  cwd: ${cwd}  data: ${getDataDir()}  packages: ${packagesDir}`)
 
-  backendProcess = spawn(python, args, {
-    cwd: root,
-    env: { ...process.env, VOICE_AI_PORT: String(BACKEND_PORT) },
+  backendProcess = spawn(python, ['-m', 'backend.main'], {
+    cwd,
+    env,
     stdio: ['ignore', 'pipe', 'pipe']
   })
-
   backendProcess.stdout?.on('data', (d) => process.stdout.write(`[backend] ${d}`))
   backendProcess.stderr?.on('data', (d) => process.stderr.write(`[backend] ${d}`))
   backendProcess.on('exit', (code) => {
@@ -58,7 +209,7 @@ async function isBackendUp(): Promise<boolean> {
   }
 }
 
-async function waitForBackend(maxMs = 15000): Promise<void> {
+async function waitForBackend(maxMs = 30000): Promise<void> {
   const deadline = Date.now() + maxMs
   while (Date.now() < deadline) {
     try {
@@ -67,10 +218,56 @@ async function waitForBackend(maxMs = 15000): Promise<void> {
     } catch {
       // not ready yet
     }
-    await new Promise((r) => setTimeout(r, 300))
+    await new Promise((r) => setTimeout(r, 400))
   }
   throw new Error('Backend did not start in time')
 }
+
+// ---------------------------------------------------------------------------
+// IPC — overlay state
+// ---------------------------------------------------------------------------
+
+ipcMain.on('overlay:state', (_, state: string) => {
+  if (!overlayWindow) return
+  if (overlayHideTimer) {
+    clearTimeout(overlayHideTimer)
+    overlayHideTimer = null
+  }
+  if (state === 'idle') {
+    overlayHideTimer = setTimeout(() => {
+      overlayWindow?.hide()
+      overlayHideTimer = null
+    }, 2000)
+  } else {
+    overlayWindow.show()
+  }
+})
+
+// ---------------------------------------------------------------------------
+// IPC — setup
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('setup:check', () => ({ required: !isSetupComplete() }))
+
+ipcMain.handle('setup:start', async (event) => {
+  try {
+    await runSetup((progress) => event.sender.send('setup:progress', progress))
+    spawnBackend()
+    await waitForBackend()
+    overlayWindow = createOverlayWindow()
+    createTray()
+    event.sender.send('setup:done', { success: true })
+    return { success: true }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    event.sender.send('setup:done', { success: false, error: message })
+    return { success: false, error: message }
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Windows
+// ---------------------------------------------------------------------------
 
 function createMainWindow(): BrowserWindow {
   const win = new BrowserWindow({
@@ -89,15 +286,12 @@ function createMainWindow(): BrowserWindow {
   })
 
   win.on('ready-to-show', () => win.show())
-
   win.on('close', (e) => {
-    // hide to tray instead of closing; app.quit() is the only real exit path
     if (!quitting) {
       e.preventDefault()
       win.hide()
     }
   })
-
   win.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url)
     return { action: 'deny' }
@@ -108,7 +302,6 @@ function createMainWindow(): BrowserWindow {
   } else {
     win.loadFile(join(__dirname, '../renderer/index.html'))
   }
-
   return win
 }
 
@@ -116,11 +309,10 @@ function createOverlayWindow(): BrowserWindow {
   const { screen } = require('electron')
   const { width } = screen.getPrimaryDisplay().workAreaSize
 
-  // Janela pequena, apenas do tamanho da pill de status
   const win = new BrowserWindow({
-    width: 180,
+    width: 220,
     height: 36,
-    x: width - 196,
+    x: width - 236,
     y: 16,
     frame: false,
     transparent: true,
@@ -133,7 +325,8 @@ function createOverlayWindow(): BrowserWindow {
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
-      contextIsolation: true
+      contextIsolation: true,
+      backgroundThrottling: false
     }
   })
 
@@ -144,11 +337,9 @@ function createOverlayWindow(): BrowserWindow {
   } else {
     win.loadFile(join(__dirname, '../renderer/overlay.html'))
   }
-
   return win
 }
 
-// 16x16 indigo PNG icon generated from solid #6366f1
 const TRAY_ICON_B64 =
   'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR4nGNITvtIEmIY1TCqYfhqAABsrLoQoM6bagAAAABJRU5ErkJggg=='
 
@@ -159,72 +350,51 @@ function createTray(): void {
   } catch {
     icon = nativeImage.createEmpty()
   }
-
   try {
     tray = new Tray(icon)
   } catch (e) {
-    console.error('[tray] failed to create tray:', e)
+    console.error('[tray] failed:', e)
     return
   }
-
   tray.setToolTip('Voice AI')
-
-  const menu = Menu.buildFromTemplate([
-    {
-      label: 'Abrir',
-      click: () => {
-        mainWindow?.show()
-        mainWindow?.focus()
-      }
-    },
-    { type: 'separator' },
-    {
-      label: 'Sair',
-      click: () => {
-        tray = null
-        app.quit()
-      }
-    }
-  ])
-
-  tray.setContextMenu(menu)
-  tray.on('click', () => {
-    mainWindow?.show()
-    mainWindow?.focus()
-  })
-  tray.on('double-click', () => {
-    mainWindow?.show()
-    mainWindow?.focus()
-  })
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: 'Abrir', click: () => { mainWindow?.show(); mainWindow?.focus() } },
+      { type: 'separator' },
+      { label: 'Sair', click: () => { tray = null; app.quit() } }
+    ])
+  )
+  tray.on('click', () => { mainWindow?.show(); mainWindow?.focus() })
+  tray.on('double-click', () => { mainWindow?.show(); mainWindow?.focus() })
 }
+
+// ---------------------------------------------------------------------------
+// App lifecycle
+// ---------------------------------------------------------------------------
 
 app.whenReady().then(async () => {
   electronApp.setAppUserModelId('com.voiceai')
+  app.on('browser-window-created', (_, window) => optimizer.watchWindowShortcuts(window))
 
-  app.on('browser-window-created', (_, window) => {
-    optimizer.watchWindowShortcuts(window)
-  })
+  const setupNeeded = !isSetupComplete()
 
-  if (!(await isBackendUp())) {
-    spawnBackend()
+  if (!setupNeeded) {
+    if (!(await isBackendUp())) spawnBackend()
+    await waitForBackend()
+    overlayWindow = createOverlayWindow()
+    createTray()
   }
-  await waitForBackend()
 
   mainWindow = createMainWindow()
-  overlayWindow = createOverlayWindow()
-  createTray()
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      mainWindow = createMainWindow()
-    } else {
-      mainWindow?.show()
-    }
+    if (BrowserWindow.getAllWindows().length === 0) mainWindow = createMainWindow()
+    else mainWindow?.show()
   })
 })
 
 app.on('window-all-closed', () => {
-  // keep running in tray — don't quit
+  // keep running in tray - don't quit
 })
 
 app.on('before-quit', () => {

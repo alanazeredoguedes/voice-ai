@@ -33,6 +33,7 @@ class Orchestrator:
         self.settings: dict[str, Any] = {}
         self.engine: SpeechEngine | None = None
         self.brain: ClaudeBrain | None = None
+        self.chat_brain: ClaudeBrain | None = None
         self.tts: TextToSpeech | None = None
         self.hotkey: HotkeyManager | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -43,6 +44,7 @@ class Orchestrator:
         self._cancel_evt = threading.Event()
         self._ai_press_times: list[float] = []
         self._tr_press_times: list[float] = []
+        self._tts_muted: bool = False
 
         self._engine_thread: threading.Thread | None = None
 
@@ -52,6 +54,8 @@ class Orchestrator:
         self.settings = await get_settings_all()
 
         self.brain = ClaudeBrain(self.settings)
+        # Chat brain mantém contexto separado do modo voz; claude_continue sempre ativo
+        self.chat_brain = ClaudeBrain({**self.settings, "claude_continue": True})
         self.tts = TextToSpeech(self.settings)
 
         self.engine = SpeechEngine(
@@ -60,6 +64,7 @@ class Orchestrator:
             on_transcription=self._on_transcription_received,
             on_audio_level=self.state.set_audio_level,
             on_state_change=self._on_state_change,
+            on_transcription_progress=lambda pct: self.state.emit({"type": "transcription_progress", "progress": pct}),
         )
 
         self.hotkey = HotkeyManager(
@@ -82,6 +87,8 @@ class Orchestrator:
             self.hotkey.stop()
         if self.brain:
             self.brain.cancel()
+        if self.chat_brain:
+            self.chat_brain.cancel()
         if self.tts:
             self.tts.stop()
         if self.engine:
@@ -113,10 +120,16 @@ class Orchestrator:
             on_transcription=self._on_transcription_received,
             on_audio_level=self.state.set_audio_level,
             on_state_change=self._on_state_change,
+            on_transcription_progress=lambda pct: self.state.emit({"type": "transcription_progress", "progress": pct}),
         )
         self._engine_thread = threading.Thread(target=self.engine.start, daemon=True)
         self._engine_thread.start()
         print("[orchestrator] engine reiniciado", flush=True)
+
+    def set_tts_muted(self, muted: bool) -> None:
+        self._tts_muted = muted
+        if muted and self.tts:
+            self.tts.stop()  # interrompe o áudio atual imediatamente
 
     def pause_hotkeys(self) -> None:
         if self.hotkey:
@@ -160,6 +173,7 @@ class Orchestrator:
             if self._ai_busy:
                 return
         self._mode = "transcription"
+        self._tr_press_times.clear()  # reset para o double-click de cancel ser sempre fresco
         if self.engine:
             self.engine.start_ptt()
 
@@ -179,6 +193,7 @@ class Orchestrator:
             if self._ai_busy:
                 return
         self._mode = "ai"
+        self._ai_press_times.clear()  # reset para o double-click de cancel ser sempre fresco
         if self.engine:
             self.engine.start_ptt()
 
@@ -226,6 +241,7 @@ class Orchestrator:
                     if self._cancel_evt.is_set():
                         break
                     sentence_q.put(sentence)
+                    self.state.emit({"type": "chat_chunk", "text": sentence, "done": False})
             except Exception as e:
                 print(f"[orchestrator] stream error: {e}", flush=True)
             finally:
@@ -257,11 +273,12 @@ class Orchestrator:
         try:
             print(f"[orchestrator] 📝 Você: {text}", flush=True)
             self.state.set_state("thinking")
+            self.state.emit({"type": "voice_user_message", "text": text})
 
             threading.Thread(target=_stream_claude, daemon=True).start()
             threading.Thread(target=_prepare_audio, daemon=True).start()
 
-            if not self._cancel_evt.is_set():
+            if not self._cancel_evt.is_set() and not self._tts_muted:
                 self.tts.speak(random.choice(ClaudeBrain.THINKING_PHRASES))
 
             first = True
@@ -278,6 +295,14 @@ class Orchestrator:
                         except OSError:
                             pass
                     continue
+                if self._tts_muted:
+                    # mute ativo: descarta o arquivo mas mantém o pipeline rodando
+                    if path:
+                        try:
+                            os.unlink(path)
+                        except OSError:
+                            pass
+                    continue
                 if first:
                     self.state.set_state("speaking")
                     first = False
@@ -287,13 +312,19 @@ class Orchestrator:
                     self.tts.speak(sentence)
 
             response = " ".join(full_response)
-            if response:
+            if response and not self._cancel_evt.is_set():
                 print(f"[orchestrator] ⏱ total pipeline: {time.perf_counter() - t0:.2f}s", flush=True)
                 self.state.emit({"type": "ai_response_ready", "text": response})
                 if self._loop:
                     asyncio.run_coroutine_threadsafe(
                         self._persist_log("ai", text, response, meta), self._loop
                     )
+                    asyncio.run_coroutine_threadsafe(
+                        self._persist_and_finalize_voice_chat(text, response), self._loop
+                    )
+                return  # sinaliza conclusão normal ao finally
+            # chegou aqui: cancelado ou resposta vazia
+            self.state.emit({"type": "voice_chat_cancelled"})
         finally:
             self._cancel_evt.clear()
             with self._ai_lock:
@@ -344,3 +375,27 @@ class Orchestrator:
             })
         except Exception as e:
             print(f"[orchestrator] erro ao persistir log: {e}", flush=True)
+
+    async def _persist_and_finalize_voice_chat(self, user_text: str, assistant_text: str) -> None:
+        try:
+            async with aiosqlite.connect(DB_PATH) as db:
+                cur_user = await db.execute(
+                    "INSERT INTO chat_messages (role, content) VALUES (?, ?)",
+                    ("user", user_text),
+                )
+                user_msg_id = cur_user.lastrowid
+                cur_asst = await db.execute(
+                    "INSERT INTO chat_messages (role, content) VALUES (?, ?)",
+                    ("assistant", assistant_text),
+                )
+                asst_msg_id = cur_asst.lastrowid
+                await db.commit()
+            self.state.emit({
+                "type": "chat_chunk",
+                "text": "",
+                "done": True,
+                "message_id": asst_msg_id,
+                "user_message_id": user_msg_id,
+            })
+        except Exception as e:
+            print(f"[orchestrator] erro ao persistir chat de voz: {e}", flush=True)

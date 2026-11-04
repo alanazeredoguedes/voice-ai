@@ -10,3 +10,6 @@ pynput>=1.7
 edge-tts>=7.0
 pyperclip>=1.9
 python-multipart
+anthropic
+elevenlabs
+aiofiles

@@ -19,6 +19,7 @@ class TextToSpeech:
         self._lock = threading.Lock()
         self._ffmpeg: subprocess.Popen | None = None
         self._aplay: subprocess.Popen | None = None
+        self._volume: float = 1.0
 
         if self.backend == "edge":
             self.voice = settings.get("edge_voice", "pt-BR-AntonioNeural")
@@ -63,6 +64,9 @@ class TextToSpeech:
         finally:
             if os.path.exists(path):
                 os.unlink(path)
+
+    def set_volume(self, volume: float) -> None:
+        self._volume = max(0.0, min(2.0, volume))
 
     def stop(self) -> None:
         with self._lock:
@@ -136,8 +140,9 @@ class TextToSpeech:
             return None
 
     def _play_mp3(self, path: str) -> None:
+        af = f"adelay=150|150,volume={self._volume:.3f}"
         ffmpeg = subprocess.Popen(
-            ["ffmpeg", "-i", path, "-af", "adelay=150|150",
+            ["ffmpeg", "-i", path, "-af", af,
              "-f", "wav", "-loglevel", "quiet", "-"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         )

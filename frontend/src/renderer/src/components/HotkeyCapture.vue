@@ -27,7 +27,7 @@ async function startCapture(): Promise<void> {
     <label class="text-sm text-slate-400">{{ props.label }}</label>
     <div class="flex items-center gap-2">
       <div class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm font-mono text-slate-200 min-h-[36px]">
-        {{ props.modelValue || '—' }}
+        {{ props.modelValue || '-' }}
       </div>
       <button
         :disabled="capturing"

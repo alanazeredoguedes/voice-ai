@@ -9,13 +9,23 @@ files:
 linux:
   target:
     - AppImage
-    - deb
   category: Utility
+afterPack: after-pack.js
 extraResources:
   - from: ../backend
     to: backend
     filter:
       - "**/*"
       - "!venv/**"
+      - "!venv-dist/**"
+      - "!python-dist/**"
       - "!__pycache__/**"
       - "!**/*.pyc"
+  - from: ../backend/python-dist
+    to: python-dist
+    filter:
+      - "**/*"
+      - "!**/__pycache__/**"
+      - "!**/*.pyc"
+      - "!share/doc/**"
+      - "!share/man/**"

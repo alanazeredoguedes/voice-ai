@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.config import PORT
 from backend.database import init_db
 from backend.orchestrator import Orchestrator
-from backend.routes import engine, hotkeys, logs, settings, transcribe, voices, websocket
+from backend.routes import chat, engine, hotkeys, logs, models, settings, transcribe, translate, voices, websocket
 from backend.state import StateManager
 from backend.ws import ConnectionManager
 
@@ -51,11 +51,14 @@ app.add_middleware(
 )
 
 app.include_router(settings.router)
+app.include_router(models.router)
 app.include_router(logs.router)
 app.include_router(voices.router)
 app.include_router(engine.router)
 app.include_router(hotkeys.router)
 app.include_router(transcribe.router)
+app.include_router(translate.router)
+app.include_router(chat.router)
 app.include_router(websocket.router)
 
 

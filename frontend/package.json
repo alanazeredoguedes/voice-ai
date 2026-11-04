@@ -3,7 +3,10 @@
   "version": "1.0.0",
   "description": "Voice AI Desktop App",
   "main": "./out/main/index.js",
-  "author": "Alan Guedes",
+  "author": {
+    "name": "Alan Guedes",
+    "email": "alan.guedes@monuv.com.br"
+  },
   "homepage": ".",
   "scripts": {
     "format": "prettier --write .",

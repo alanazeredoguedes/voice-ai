@@ -6,7 +6,7 @@ export const useStatusStore = defineStore('status', () => {
   const state = ref<AppState>('idle')
   const audioLevel = ref(0)
   const lastTranscription = ref('')
-  const lastAiResponse = ref('')
+  const transcriptionProgress = ref(0)
 
   function notifyMain(s: AppState): void {
     try {
@@ -19,6 +19,7 @@ export const useStatusStore = defineStore('status', () => {
   function setState(s: AppState): void {
     state.value = s
     notifyMain(s)
+    if (s !== 'processing') transcriptionProgress.value = 0
   }
 
   function setAudioLevel(v: number): void {
@@ -29,9 +30,9 @@ export const useStatusStore = defineStore('status', () => {
     lastTranscription.value = text
   }
 
-  function setLastAiResponse(text: string): void {
-    lastAiResponse.value = text
+  function setTranscriptionProgress(pct: number): void {
+    transcriptionProgress.value = pct
   }
 
-  return { state, audioLevel, lastTranscription, lastAiResponse, setState, setAudioLevel, setLastTranscription, setLastAiResponse }
+  return { state, audioLevel, lastTranscription, transcriptionProgress, setState, setAudioLevel, setLastTranscription, setTranscriptionProgress }
 })

@@ -31,8 +31,15 @@ async def transcribe_audio_file(request: Request, file: UploadFile = File(...)) 
         Path(tmp_path).unlink(missing_ok=True)
         raise HTTPException(503, "Engine ainda não carregado — aguarde e tente novamente")
 
+    state = orchestrator.state
+
+    def on_progress(pct: float) -> None:
+        state.emit({"type": "transcription_progress", "progress": pct})
+
     try:
-        result = await asyncio.to_thread(engine.transcribe_file, tmp_path)
+        result = await asyncio.to_thread(engine.transcribe_file, tmp_path, on_progress)
+    except InterruptedError:
+        raise HTTPException(400, "cancelled")
     except Exception as e:
         raise HTTPException(500, f"Erro na transcrição: {e}")
     finally:
@@ -60,3 +67,10 @@ async def transcribe_audio_file(request: Request, file: UploadFile = File(...)) 
         await db.commit()
 
     return result
+
+
+@router.post("/cancel", status_code=204)
+async def cancel_transcription(request: Request) -> None:
+    engine = request.app.state.orchestrator.engine
+    if engine:
+        engine.cancel_file_transcription()

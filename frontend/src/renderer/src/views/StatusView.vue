@@ -15,8 +15,8 @@ const unsub = onWsMessage((event) => {
     statusStore.setAudioLevel(event.level)
   } else if (event.type === 'transcription_ready' && event.text) {
     statusStore.setLastTranscription(event.text)
-  } else if (event.type === 'log_added' && event.entry?.ai_response) {
-    statusStore.setLastAiResponse(event.entry.ai_response)
+  } else if (event.type === 'transcription_progress' && event.progress !== undefined) {
+    statusStore.setTranscriptionProgress(event.progress)
   }
 })
 
@@ -26,12 +26,22 @@ onUnmounted(() => unsub())
 <template>
   <div class="flex flex-col gap-6">
     <div>
-      <h1 class="text-xl font-semibold text-slate-100">Ao Vivo</h1>
+      <h1 class="text-xl font-semibold text-slate-100">Transcrição de Microfone</h1>
       <p class="text-sm text-slate-500 mt-1">Estado do assistente em tempo real</p>
     </div>
 
     <div class="bg-slate-800/60 rounded-2xl p-6 flex flex-col items-center gap-4 border border-slate-700/40">
-      <StatusBadge :state="statusStore.state" size="lg" />
+      <div class="flex items-center gap-3">
+        <StatusBadge :state="statusStore.state" size="lg" />
+        <transition name="fade-pct">
+          <span
+            v-if="statusStore.state === 'processing' && statusStore.transcriptionProgress > 0"
+            class="text-2xl font-semibold tabular-nums text-amber-400"
+          >
+            {{ Math.floor(statusStore.transcriptionProgress) }}%
+          </span>
+        </transition>
+      </div>
       <div class="w-full max-w-xs flex flex-col gap-1">
         <p class="text-xs text-slate-500 text-center">Nível de áudio</p>
         <AudioLevelBar :level="statusStore.audioLevel" />
@@ -46,12 +56,5 @@ onUnmounted(() => unsub())
       <p class="text-slate-200 text-sm leading-relaxed">{{ statusStore.lastTranscription }}</p>
     </div>
 
-    <div v-if="statusStore.lastAiResponse" class="bg-slate-800/60 rounded-2xl p-4 border border-slate-700/40">
-      <div class="flex items-center justify-between mb-2">
-        <p class="text-xs text-slate-500 uppercase tracking-wide">Última resposta IA</p>
-        <CopyButton :text="statusStore.lastAiResponse" />
-      </div>
-      <p class="text-slate-200 text-sm leading-relaxed">{{ statusStore.lastAiResponse }}</p>
-    </div>
   </div>
 </template>

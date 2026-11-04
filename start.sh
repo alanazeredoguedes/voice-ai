@@ -5,5 +5,9 @@
 LOG="$HOME/.local/share/voice-ai/startup.log"
 mkdir -p "$(dirname "$LOG")"
 
+export NVM_DIR="$HOME/.nvm"
+# shellcheck source=/dev/null
+[ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"
+
 cd "$(dirname "$0")/frontend"
 exec npm run dev >> "$LOG" 2>&1

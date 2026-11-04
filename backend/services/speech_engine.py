@@ -30,6 +30,7 @@ class SpeechEngine:
         on_transcription: Callable[[str, dict], None] | None = None,
         on_audio_level: Callable[[float], None] | None = None,
         on_state_change: Callable[[str], None] | None = None,
+        on_transcription_progress: Callable[[float], None] | None = None,
     ) -> None:
         self._model_size = model_size
         self._language = language
@@ -37,6 +38,7 @@ class SpeechEngine:
         self._on_transcription = on_transcription
         self._on_audio_level = on_audio_level
         self._on_state_change = on_state_change
+        self._on_transcription_progress = on_transcription_progress
 
         self._whisper = None
         self._loaded_device: str = "cpu"
@@ -47,6 +49,7 @@ class SpeechEngine:
         self._ptt_buffer: list[np.ndarray] = []
         self._stream = None
         self._stt_thread = None
+        self._cancel_file_event = threading.Event()
 
     def start(self) -> None:
         self._load_models()
@@ -78,6 +81,9 @@ class SpeechEngine:
         self._ptt_buffer = []
         self._recording = True
         self._emit_state("recording")
+
+    def cancel_file_transcription(self) -> None:
+        self._cancel_file_event.set()
 
     def cancel_ptt(self) -> None:
         self._recording = False
@@ -179,7 +185,7 @@ class SpeechEngine:
             audio_s = len(segment) / SAMPLE_RATE
             try:
                 t0 = time.perf_counter()
-                text = self._transcribe(segment)
+                text = self._transcribe(segment, on_progress=self._on_transcription_progress)
                 proc_s = time.perf_counter() - t0
                 if text:
                     if self._is_hallucination(text):
@@ -236,7 +242,11 @@ class SpeechEngine:
         normalized = re.sub(r"[^\w\s]", "", text.lower()).strip()
         return normalized in _WHISPER_HALLUCINATIONS
 
-    def transcribe_file(self, file_path: str) -> dict:
+    def transcribe_file(
+        self,
+        file_path: str,
+        on_progress: "Callable[[float], None] | None" = None,
+    ) -> dict:
         """Transcribe an audio file from disk.
 
         Uses ffmpeg to convert to 16 kHz mono WAV, then reads it with the stdlib
@@ -262,7 +272,6 @@ class SpeechEngine:
                 capture_output=True,
             )
 
-            # Read WAV with stdlib — avoids av.open/soundfile version issues
             with wave.open(wav_path, "rb") as wf:
                 raw = wf.readframes(wf.getnframes())
                 n_frames = wf.getnframes()
@@ -270,6 +279,7 @@ class SpeechEngine:
             audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
             duration_s = n_frames / SAMPLE_RATE
 
+            self._cancel_file_event.clear()
             t0 = time.perf_counter()
             segments, _ = self._whisper.transcribe(
                 audio,
@@ -280,8 +290,20 @@ class SpeechEngine:
                 condition_on_previous_text=True,
                 no_speech_threshold=0.6,
             )
-            text = " ".join(seg.text.strip() for seg in segments).strip()
+
+            parts: list[str] = []
+            for seg in segments:
+                if self._cancel_file_event.is_set():
+                    raise InterruptedError("cancelled")
+                parts.append(seg.text.strip())
+                if on_progress and duration_s > 0:
+                    pct = min(seg.end / duration_s * 100, 99.0)
+                    on_progress(round(pct, 1))
+
+            text = " ".join(parts).strip()
             proc_s = time.perf_counter() - t0
+            if on_progress:
+                on_progress(100.0)
 
         finally:
             Path(wav_path).unlink(missing_ok=True)
@@ -294,9 +316,10 @@ class SpeechEngine:
             "device": self._loaded_device,
         }
 
-    def _transcribe(self, audio: np.ndarray) -> str:
+    def _transcribe(self, audio: np.ndarray, on_progress: "Callable[[float], None] | None" = None) -> str:
         padding = np.zeros(int(SAMPLE_RATE * 0.2), dtype=np.float32)
         audio = np.concatenate([padding, audio])
+        duration_s = len(audio) / SAMPLE_RATE
         segments, _ = self._whisper.transcribe(
             audio,
             language=self._language,
@@ -307,4 +330,12 @@ class SpeechEngine:
             no_speech_threshold=0.35,
             log_prob_threshold=-1.5,
         )
-        return " ".join(seg.text for seg in segments).strip()
+        parts: list[str] = []
+        for seg in segments:
+            parts.append(seg.text)
+            if on_progress and duration_s > 0:
+                pct = min(seg.end / duration_s * 100, 99.0)
+                on_progress(round(pct, 1))
+        if on_progress:
+            on_progress(100.0)
+        return " ".join(parts).strip()

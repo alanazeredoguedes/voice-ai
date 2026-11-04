@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { fetchElevenLabsVoices } from '../api'
 import type { ElevenLabsVoice } from '../types'
 import { useSettingsStore } from '../stores/settings'
@@ -12,11 +12,11 @@ const error = ref<string | null>(null)
 const apiKeyInput = ref(store.settings?.elevenlabs_api_key ?? '')
 
 async function fetchVoices(): Promise<void> {
+  if (!apiKeyInput.value) return
   loading.value = true
   error.value = null
   try {
-    const result = await fetchElevenLabsVoices(apiKeyInput.value)
-    voices.value = result.voices
+    voices.value = await fetchElevenLabsVoices(apiKeyInput.value)
     await store.update({ elevenlabs_api_key: apiKeyInput.value })
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : 'Erro ao buscar vozes'
@@ -24,6 +24,10 @@ async function fetchVoices(): Promise<void> {
     loading.value = false
   }
 }
+
+onMounted(() => {
+  if (apiKeyInput.value) fetchVoices()
+})
 
 async function selectVoice(v: ElevenLabsVoice): Promise<void> {
   await store.update({ elevenlabs_voice_id: v.voice_id, elevenlabs_voice_name: v.name })

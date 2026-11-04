@@ -27,6 +27,13 @@ CREATE TABLE IF NOT EXISTS settings (
     value TEXT NOT NULL,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    role    TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+    content TEXT NOT NULL
+);
 """
 
 

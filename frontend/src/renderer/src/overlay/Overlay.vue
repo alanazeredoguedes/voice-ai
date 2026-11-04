@@ -5,6 +5,7 @@ import { onWsMessage } from '../api/ws'
 
 const statusStore = useStatusStore()
 const showDone = ref(false)
+const overlayProgress = ref(0)
 let doneTimer: ReturnType<typeof setTimeout> | null = null
 
 const unsub = onWsMessage((event) => {
@@ -14,7 +15,10 @@ const unsub = onWsMessage((event) => {
       if (doneTimer) clearTimeout(doneTimer)
       doneTimer = setTimeout(() => { showDone.value = false }, 1800)
     }
+    if (event.state !== 'processing') overlayProgress.value = 0
     statusStore.setState(event.state)
+  } else if (event.type === 'transcription_progress' && event.progress !== undefined) {
+    overlayProgress.value = event.progress
   }
 })
 
@@ -60,7 +64,7 @@ const pillStyle = computed(() => {
         style="opacity: 0.9;"
       />
       <span style="font-size: 12px; font-weight: 600; color: white; letter-spacing: 0.01em; white-space: nowrap;">
-        {{ config[current]?.label }}
+        {{ config[current]?.label }}<span v-if="current === 'processing' && overlayProgress > 0"> {{ Math.floor(overlayProgress) }}%</span>
       </span>
     </div>
   </transition>

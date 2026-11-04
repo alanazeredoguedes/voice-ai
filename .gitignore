@@ -5,16 +5,19 @@ __pycache__/
 *.egg
 .venv/
 backend/venv/
+backend/venv-dist/
 dist/
 build/
+
+# Python embutido (binário grande, não vai pro repo)
+backend/python-dist/
 
 # Electron / Node
 frontend/node_modules/
 frontend/out/
 frontend/dist/
 
-# Dados em runtime
-~/.local/share/voice-ai/
+# Banco de dados em runtime
 *.db
 *.sqlite
 *.sqlite3
@@ -22,6 +25,9 @@ frontend/dist/
 # Logs
 *.log
 logs/
+
+# Docs de sessão de desenvolvimento
+docs/session-*.md
 
 # Env / secrets
 .env
