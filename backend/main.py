@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.config import PORT
 from backend.database import init_db
 from backend.orchestrator import Orchestrator
-from backend.routes import chat, engine, hotkeys, logs, models, settings, transcribe, translate, voices, websocket
+from backend.routes import benchmark, chat, engine, hotkeys, logs, media, models, settings, storage, transcribe, translate, voices, websocket
 from backend.state import StateManager
 from backend.ws import ConnectionManager
 
@@ -59,6 +59,9 @@ app.include_router(hotkeys.router)
 app.include_router(transcribe.router)
 app.include_router(translate.router)
 app.include_router(chat.router)
+app.include_router(media.router)
+app.include_router(benchmark.router)
+app.include_router(storage.router)
 app.include_router(websocket.router)
 
 

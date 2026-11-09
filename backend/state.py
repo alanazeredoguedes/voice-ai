@@ -9,7 +9,7 @@ Listener = Callable[[dict], Awaitable[None]]
 class StateManager:
     """Broadcast de eventos para listeners async (WebSocket) a partir de threads sync.
 
-    Substitui o AudioBridge do PyQt6 — mesmo papel, mas sem dependência de Qt.
+    Substitui o AudioBridge do PyQt6 - mesmo papel, mas sem dependência de Qt.
     Threads sync (speech_engine, hotkey callbacks) chamam set_state/emit;
     o StateManager agenda a entrega de cada evento no event loop do asyncio.
     """

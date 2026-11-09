@@ -19,5 +19,5 @@ async def capture(request: Request) -> HotkeyCaptureOut:
         if orchestrator:
             orchestrator.resume_hotkeys()
     if not hotkey:
-        raise HTTPException(408, "Timeout — nenhum atalho capturado")
+        raise HTTPException(408, "Timeout - nenhum atalho capturado")
     return HotkeyCaptureOut(hotkey=hotkey)

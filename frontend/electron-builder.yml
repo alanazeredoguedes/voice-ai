@@ -6,6 +6,15 @@ directories:
 files:
   - out/**/*
   - "!**/*.{ts,map}"
+win:
+  target:
+    - nsis
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
 linux:
   target:
     - AppImage
@@ -29,3 +38,4 @@ extraResources:
       - "!**/*.pyc"
       - "!share/doc/**"
       - "!share/man/**"
+      - "!**/*.pdb"

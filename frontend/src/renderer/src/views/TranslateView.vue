@@ -4,6 +4,7 @@ import { useTranslationStore } from '../stores/translation'
 import { translateText, installTranslatePackage, removeTranslatePackage } from '../api'
 import { onWsMessage } from '../api/ws'
 import CopyButton from '../components/CopyButton.vue'
+import CustomSelect from '../components/CustomSelect.vue'
 
 const store = useTranslationStore()
 
@@ -136,14 +137,12 @@ const filteredInstalled = computed(() => {
     <div v-if="store.hasAnyInstalled" class="flex flex-col gap-4">
       <!-- Seletores de idioma -->
       <div class="flex items-center gap-3">
-        <select
+        <CustomSelect
           v-model="store.fromCode"
-          class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 text-sm focus:outline-none focus:border-indigo-500"
-        >
-          <option v-for="p in availableFrom" :key="p.from_code" :value="p.from_code">
-            {{ p.from_name }}
-          </option>
-        </select>
+          class="flex-1"
+          size="sm"
+          :options="availableFrom.map((p) => ({ value: p.from_code, label: p.from_name }))"
+        />
 
         <button
           class="p-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-400 hover:text-slate-100 hover:bg-slate-700 transition-colors"
@@ -155,14 +154,13 @@ const filteredInstalled = computed(() => {
           </svg>
         </button>
 
-        <select
+        <CustomSelect
           v-model="store.toCode"
-          class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 text-sm focus:outline-none focus:border-indigo-500"
-        >
-          <option v-for="p in availableTo" :key="p.to_code" :value="p.to_code">
-            {{ p.to_name }}
-          </option>
-        </select>
+          class="flex-1"
+          size="sm"
+          align="right"
+          :options="availableTo.map((p) => ({ value: p.to_code, label: p.to_name }))"
+        />
       </div>
 
       <!-- Textareas -->

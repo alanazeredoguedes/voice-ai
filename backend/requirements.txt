@@ -13,3 +13,10 @@ python-multipart
 anthropic
 elevenlabs
 aiofiles
+argostranslate
+pysdl2; sys_platform == "win32"
+pysdl2-dll; sys_platform == "win32"
+ddgs>=9.0
+yt-dlp
+# Testar desempenho: números por extenso para comparar com o texto correto
+num2words

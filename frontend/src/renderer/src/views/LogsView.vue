@@ -6,6 +6,19 @@ import type { LogEntry } from '../types'
 import CopyButton from '../components/CopyButton.vue'
 
 const store = useLogsStore()
+
+/** Links das imagens/vídeos da resposta, um por linha (para o botão de copiar). */
+function mediaLinks(entry: LogEntry): string {
+  return (entry.media ?? []).flatMap((g) => g.items.map((it) => it.url)).join('\n')
+}
+
+function copyText(entry: LogEntry): string {
+  let t = entry.text
+  if (entry.ai_response) t += `\n\nIA: ${entry.ai_response}`
+  const links = mediaLinks(entry)
+  if (links) t += `\n\n${links}`
+  return t
+}
 const offset = ref(0)
 const expandedId = ref<number | null>(null)
 const confirmClear = ref(false)
@@ -42,8 +55,46 @@ function fmtTime(ts: string): string {
   return new Date(ts).toLocaleString('pt-BR', { hour12: false, dateStyle: 'short', timeStyle: 'medium' })
 }
 
-function fmtNum(n: number, dec = 2): string {
-  return n?.toFixed(dec) ?? '-'
+/** 9,0 s · 56,4 s · 3min 37s */
+function fmtDuration(sec: number | null | undefined): string {
+  if (sec === null || sec === undefined || isNaN(sec)) return '-'
+  if (sec < 60) return `${sec.toFixed(1).replace('.', ',')} s`
+  const m = Math.floor(sec / 60)
+  const s = Math.round(sec % 60)
+  return s === 60 ? `${m + 1}min 00s` : `${m}min ${String(s).padStart(2, '0')}s`
+}
+
+/** quantas vezes mais rápido que o tempo falado (rtf = duração do áudio / tempo de processamento) */
+function fmtSpeed(rtf: number | null | undefined): string {
+  if (!rtf) return '-'
+  return `${rtf >= 10 ? Math.round(rtf) : rtf.toFixed(1).replace('.', ',')}x`
+}
+
+function deviceLabel(device: string): string {
+  return device === 'cuda' ? 'Placa de vídeo' : device === 'cpu' ? 'Processador' : device
+}
+
+function deviceTitle(entry: LogEntry): string {
+  const lines = [
+    entry.device === 'cuda'
+      ? 'Processado na placa de vídeo (GPU NVIDIA)'
+      : 'Processado no processador (CPU), mais lento que a placa de vídeo',
+    `Precisão: ${entry.compute_type}`
+  ]
+  if (entry.method) lines.push(`Modo: ${entry.method}`)
+  return lines.join('\n')
+}
+
+// Explicação de cada coluna (aparece ao passar o mouse no cabeçalho)
+const COLUMN_HELP: Record<string, string> = {
+  hora: 'Data e hora em que a transcrição terminou',
+  modo: 'De onde veio o áudio:\nMicrofone = gravação pelo atalho de transcrição\nIA = gravação pelo atalho de IA (pergunta para o Claude)\nArquivo = arquivo transcrito na aba Transcrever',
+  modelo: 'Modelo do Whisper usado para transformar a fala em texto (maiores são mais precisos e mais pesados)',
+  device: 'Onde a transcrição rodou: placa de vídeo (GPU, rápido) ou processador (CPU, lento).\nPasse o mouse no item da linha para ver o modo usado (lote, sem silêncios, durante a fala)',
+  audio: 'Duração do áudio gravado',
+  proc: 'Quanto tempo levou para transformar o áudio em texto, depois de soltar a tecla (no modo "durante a fala", só o que faltou depois de soltar)',
+  speed: 'Quantas vezes mais rápido que o tempo falado. Ex.: 18x = 1 minuto de áudio transcrito em ~3 segundos',
+  texto: 'Texto transcrito. Clique na linha para ver tudo e a resposta da IA'
 }
 
 function toggleExpand(entry: LogEntry): void {
@@ -77,12 +128,14 @@ function toggleExpand(entry: LogEntry): void {
       <table class="w-full text-sm border-collapse">
         <thead>
           <tr class="text-left text-slate-500 text-xs uppercase tracking-wide">
-            <th class="pb-2 pr-3 font-medium">Hora</th>
-            <th class="pb-2 pr-3 font-medium">Modo</th>
-            <th class="pb-2 pr-3 font-medium">Modelo</th>
-            <th class="pb-2 pr-3 font-medium">Áudio</th>
-            <th class="pb-2 pr-3 font-medium">RTF</th>
-            <th class="pb-2 font-medium">Texto</th>
+            <th class="pb-2 pr-3 font-medium cursor-help" :title="COLUMN_HELP.hora">Hora</th>
+            <th class="pb-2 pr-3 font-medium cursor-help" :title="COLUMN_HELP.modo">Modo</th>
+            <th class="pb-2 pr-3 font-medium cursor-help" :title="COLUMN_HELP.modelo">Modelo</th>
+            <th class="pb-2 pr-3 font-medium cursor-help whitespace-nowrap" :title="COLUMN_HELP.device">Processado em</th>
+            <th class="pb-2 pr-3 font-medium cursor-help" :title="COLUMN_HELP.audio">Áudio</th>
+            <th class="pb-2 pr-3 font-medium cursor-help whitespace-nowrap" :title="COLUMN_HELP.proc">Processamento</th>
+            <th class="pb-2 pr-3 font-medium cursor-help" :title="COLUMN_HELP.speed">Velocidade</th>
+            <th class="pb-2 font-medium cursor-help" :title="COLUMN_HELP.texto">Texto</th>
             <th class="pb-2 w-8"></th>
           </tr>
         </thead>
@@ -109,15 +162,24 @@ function toggleExpand(entry: LogEntry): void {
                 </span>
               </td>
               <td class="py-2 pr-3 text-slate-400 text-xs">{{ entry.model }}</td>
-              <td class="py-2 pr-3 text-slate-400 text-xs">{{ fmtNum(entry.audio_s, 1) }}s</td>
-              <td class="py-2 pr-3 text-slate-400 text-xs">{{ fmtNum(entry.rtf, 3) }}</td>
+              <td class="py-2 pr-3 text-xs" :title="deviceTitle(entry)">
+                <span
+                  :class="[
+                    'inline-flex items-center px-2 py-0.5 rounded-full font-medium whitespace-nowrap',
+                    entry.device === 'cuda' ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/15 text-amber-300'
+                  ]"
+                >{{ deviceLabel(entry.device) }}</span>
+              </td>
+              <td class="py-2 pr-3 text-slate-400 text-xs whitespace-nowrap tabular-nums">{{ fmtDuration(entry.audio_s) }}</td>
+              <td class="py-2 pr-3 text-slate-400 text-xs whitespace-nowrap tabular-nums">{{ fmtDuration(entry.proc_s) }}</td>
+              <td class="py-2 pr-3 text-slate-400 text-xs whitespace-nowrap tabular-nums">{{ fmtSpeed(entry.rtf) }}</td>
               <td class="py-2 text-slate-300 max-w-xs truncate">{{ entry.text }}</td>
               <td class="py-2">
-                <CopyButton :text="entry.ai_response ? `${entry.text}\n\nIA: ${entry.ai_response}` : entry.text" size="sm" />
+                <CopyButton :text="copyText(entry)" size="sm" />
               </td>
             </tr>
             <tr v-if="expandedId === entry.id" class="bg-slate-800/30">
-              <td colspan="7" class="px-4 py-3">
+              <td colspan="9" class="px-4 py-3">
                 <div class="flex items-start justify-between gap-2 mb-1">
                   <p class="text-slate-300 text-sm whitespace-pre-wrap">{{ entry.text }}</p>
                   <CopyButton :text="entry.text" />
@@ -130,18 +192,43 @@ function toggleExpand(entry: LogEntry): void {
                     <CopyButton :text="entry.ai_response" size="sm" />
                   </div>
                 </div>
+                <!-- Imagens / vídeos que a IA buscou: um link por linha -->
+                <div v-if="entry.media?.length" class="border-t border-slate-700 pt-2 mt-2 flex flex-col gap-2">
+                  <div v-for="g in entry.media" :key="g.group_id" class="flex flex-col gap-0.5">
+                    <div class="flex items-center justify-between gap-2">
+                      <p class="text-xs text-slate-500">
+                        <span class="text-purple-400 font-medium">{{ g.kind === 'video' ? 'Vídeos' : 'Imagens' }}:</span>
+                        {{ g.query }}
+                      </p>
+                      <CopyButton :text="g.items.map((it) => it.url).join('\n')" size="sm" />
+                    </div>
+                    <div v-for="(it, i) in g.items" :key="it.url" class="flex items-center gap-2 text-xs min-w-0 group/link">
+                      <a
+                        :href="it.url"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        :title="it.url"
+                        class="flex-shrink-0 text-indigo-400 hover:text-indigo-300 underline underline-offset-2"
+                      >{{ g.kind === 'video' ? 'Vídeo' : 'Link' }} {{ i + 1 }}</a>
+                      <span class="truncate text-slate-500" :title="it.title">{{ it.title }}<template v-if="it.source"> · {{ it.source }}</template></span>
+                      <span class="opacity-0 group-hover/link:opacity-100 transition-opacity">
+                        <CopyButton :text="it.url" size="sm" />
+                      </span>
+                    </div>
+                  </div>
+                </div>
               </td>
             </tr>
           </template>
           <tr v-if="!store.items.length && !store.loading">
-            <td colspan="6" class="py-12 text-center text-slate-600">Nenhum log ainda</td>
+            <td colspan="9" class="py-12 text-center text-slate-600">Nenhum log ainda</td>
           </tr>
         </tbody>
       </table>
     </div>
 
     <div v-if="store.total > store.limit" class="flex items-center justify-between text-sm text-slate-500 border-t border-slate-800 pt-3">
-      <span>{{ offset + 1 }}–{{ Math.min(offset + store.limit, store.total) }} de {{ store.total }}</span>
+      <span>{{ offset + 1 }}-{{ Math.min(offset + store.limit, store.total) }} de {{ store.total }}</span>
       <div class="flex gap-2">
         <button
           :disabled="offset === 0"

@@ -19,8 +19,14 @@ const unsub = onWsMessage((event) => {
     statusStore.setState(event.state)
   } else if (event.type === 'transcription_progress' && event.progress !== undefined) {
     overlayProgress.value = event.progress
+  } else if (event.type === 'engine_loading') {
+    statusStore.onEngineLoading(event)
   }
 })
+void statusStore.syncEngineLoading()
+
+/** modelo ainda carregando: o que for gravado espera ele ficar pronto */
+const loadingPct = computed(() => (statusStore.engineLoading ? Math.floor(statusStore.engineLoading.progress) : null))
 
 onUnmounted(() => {
   unsub()
@@ -30,7 +36,7 @@ onUnmounted(() => {
 const isDone = computed(() => showDone.value && statusStore.state === 'idle')
 const isVisible = computed(() => statusStore.state !== 'idle' || isDone.value)
 
-type StateKey = 'recording' | 'processing' | 'thinking' | 'speaking' | 'done'
+type StateKey = 'recording' | 'processing' | 'thinking' | 'speaking' | 'done' | 'loading'
 
 const config: Record<StateKey, { bg: string; shadow: string; label: string; pulse: boolean }> = {
   recording:  { bg: 'rgba(234, 88,  12, 0.92)', shadow: 'rgba(234, 88,  12, 0.35)', label: 'Gravando',     pulse: true  },
@@ -38,11 +44,15 @@ const config: Record<StateKey, { bg: string; shadow: string; label: string; puls
   thinking:   { bg: 'rgba(147, 51, 234, 0.92)', shadow: 'rgba(147, 51, 234, 0.35)', label: 'Pensando',     pulse: true  },
   speaking:   { bg: 'rgba(8,  145, 178, 0.92)', shadow: 'rgba(8,  145, 178, 0.35)', label: 'Falando',      pulse: false },
   done:       { bg: 'rgba(16, 185, 129, 0.92)', shadow: 'rgba(16, 185, 129, 0.35)', label: 'Pronto',       pulse: false },
+  loading:    { bg: 'rgba(79,  70, 229, 0.92)', shadow: 'rgba(79,  70, 229, 0.35)', label: 'Carregando modelo', pulse: true },
 }
 
-const current = computed<StateKey>(() =>
-  isDone.value ? 'done' : (statusStore.state as StateKey)
-)
+const current = computed<StateKey>(() => {
+  if (isDone.value) return 'done'
+  // soltou o atalho mas o modelo ainda está carregando: mostra o carregamento no lugar de "Processando"
+  if (statusStore.state === 'processing' && loadingPct.value !== null) return 'loading'
+  return statusStore.state as StateKey
+})
 
 const pillStyle = computed(() => {
   const c = config[current.value] ?? config.done
@@ -64,7 +74,7 @@ const pillStyle = computed(() => {
         style="opacity: 0.9;"
       />
       <span style="font-size: 12px; font-weight: 600; color: white; letter-spacing: 0.01em; white-space: nowrap;">
-        {{ config[current]?.label }}<span v-if="current === 'processing' && overlayProgress > 0"> {{ Math.floor(overlayProgress) }}%</span>
+        {{ config[current]?.label }}<span v-if="current === 'processing' && overlayProgress > 0"> {{ Math.floor(overlayProgress) }}%</span><span v-if="current === 'loading'"> {{ statusStore.engineLoading?.slow ? `${Math.floor(statusStore.engineLoading?.elapsed ?? 0)} s, aguarde` : `${loadingPct}%, aguarde` }}</span><span v-if="current === 'recording' && loadingPct !== null" style="opacity: 0.85; font-weight: 500;"> · modelo {{ loadingPct }}%</span>
       </span>
     </div>
   </transition>

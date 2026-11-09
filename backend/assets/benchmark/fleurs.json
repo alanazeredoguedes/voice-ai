@@ -1,0 +1,765 @@
+{
+ "id": "fleurs",
+ "title": "Frases de várias pessoas",
+ "description": "Frases da Wikipédia lidas por pessoas brasileiras diferentes, homens e mulheres.",
+ "source": "FLEURS (pt_br), split validation",
+ "credit": "FLEURS (Conneau et al., 2022), Google, CC BY 4.0",
+ "license": "CC BY 4.0",
+ "url": "https://huggingface.co/datasets/google/fleurs",
+ "sample_rate": 16000,
+ "duration_s": 1821.68,
+ "cuts": [
+  {
+   "minutes": 1,
+   "end_s": 61.11,
+   "segments": 5
+  },
+  {
+   "minutes": 5,
+   "end_s": 307.17,
+   "segments": 26
+  },
+  {
+   "minutes": 8,
+   "end_s": 476.57,
+   "segments": 39
+  },
+  {
+   "minutes": 20,
+   "end_s": 1200.85,
+   "segments": 100
+  },
+  {
+   "minutes": 30,
+   "end_s": 1804.49,
+   "segments": 144
+  }
+ ],
+ "segments": [
+  {
+   "start": 0.0,
+   "end": 11.82,
+   "text": "O objetivo principal da ciência é entender como o mundo funciona através do método científico. É esse método que orienta as pesquisas científicas."
+  },
+  {
+   "start": 12.32,
+   "end": 26.9,
+   "text": "Esquiar é uma atividade importante na viagem para muitos entusiastas, ocasionalmente conhecidos como \"ski bums\", que planejam férias inteiras só para esquiarem em um local específico."
+  },
+  {
+   "start": 27.4,
+   "end": 34.06,
+   "text": "Então, Lakkha Singh tomou a frente para cantar os bhajans."
+  },
+  {
+   "start": 34.56,
+   "end": 48.48,
+   "text": "Robin Uthappa fez a pontuação mais alta do Innings, 70 corridas em apenas 41 bolas, acertando 11 quatros e 2 seis."
+  },
+  {
+   "start": 48.98,
+   "end": 60.86,
+   "text": "A principal cerveja local é a 'Number One'. Ela não é uma cerveja elaborada, mas é prazerosa e refrescante. A outra cerveja local se chama \"Manta\"."
+  },
+  {
+   "start": 61.36,
+   "end": 68.8,
+   "text": "No começo, as vestimentas foram muito influenciadas pela cultura bizantina na região leste."
+  },
+  {
+   "start": 69.3,
+   "end": 80.82,
+   "text": "Como os estudantes frequentemente são a audiência mais crítica, o autor do blog começa a empenhar-se para melhorar a escrita e evitar críticas."
+  },
+  {
+   "start": 81.32,
+   "end": 90.32,
+   "text": "A maioria dos distritos é servida por micro-ônibus costeiros japoneses, que são confortáveis e resistentes."
+  },
+  {
+   "start": 90.82,
+   "end": 99.34,
+   "text": "O Amazonas também é o rio mais largo da Terra, às vezes com quase 10 km de largura."
+  },
+  {
+   "start": 99.84,
+   "end": 115.68,
+   "text": "Em uma parceria da NPWS e da Sporting Shooters Association of Australia (NSW) Inc, voluntários qualificados foram recrutados, de acordo com o programa de caça da Sporting Shooters Association."
+  },
+  {
+   "start": 116.18,
+   "end": 130.28,
+   "text": "O inverno pode ser decepcionantemente frio: as temperaturas raramente ficam abaixo do congelante, mas o vento e a umidade combinadas tornam a sensação mais fria que o que o termômetro mostra."
+  },
+  {
+   "start": 130.78,
+   "end": 147.52,
+   "text": "108 pratos de Chhappan Bhog (isto é, 56 comidas diferentes, como doces, frutas, nozes, pratos, etc. que no hinduísmo são oferecidos à divindade) foram servidos para Baba Shyam."
+  },
+  {
+   "start": 148.02,
+   "end": 163.5,
+   "text": "O Parque Nacional Kruger fica no nordeste da África do Sul, ao longo da fronteira de Moçambique ao leste, do Zimbábue ao norte, e o Crocodile River na fronteira sul."
+  },
+  {
+   "start": 164.0,
+   "end": 173.48,
+   "text": "O placar final foi uma vitória por um ponto, 21 a 20, encerrando a sequência de 15 vitórias consecutivas dos All Blacks."
+  },
+  {
+   "start": 173.98,
+   "end": 187.84,
+   "text": "Alguns relatórios dizem que o número oficial de mortos foi oito, e outros confirmam que até 30 ficaram feridas; mas os números finais ainda não são conhecidos."
+  },
+  {
+   "start": 188.34,
+   "end": 199.56,
+   "text": "Os pesquisadores sugeriram que, apesar do rabo ser de um dinossauro jovem, a amostra revela uma plumagem adulta, não uma penugem."
+  },
+  {
+   "start": 200.06,
+   "end": 213.86,
+   "text": "O budismo tibetano é baseado nos ensinamentos de Buda, mas foram ampliados pelo caminho do amor do Mahayana e por muitas técnicas do Yoga indiano."
+  },
+  {
+   "start": 214.36,
+   "end": 223.6,
+   "text": "Dizem que os saques generalizados continuaram durante toda a noite, ao passo que não se via a polícia presente nas ruas de Bishkek."
+  },
+  {
+   "start": 224.1,
+   "end": 234.3,
+   "text": "Os produtos artesanais podem ser definidos como antiguidades, embora sejam mais jovens do que produtos parecidos produzidos em massa."
+  },
+  {
+   "start": 234.8,
+   "end": 242.96,
+   "text": "Com apenas dezoito medalhas disponíveis por dia, um número considerável de países não conseguiu ganhar medalhas."
+  },
+  {
+   "start": 243.46,
+   "end": 257.26,
+   "text": "Perdi minha irmã e a amiga dela, e no meu caminho havia duas pessoas deficientes em cadeiras de rodas, pessoas pulando e empurrando elas\", disse Armand Versace."
+  },
+  {
+   "start": 257.76,
+   "end": 263.4,
+   "text": "O resultado da análise do gráfico será disponibilizado no site público."
+  },
+  {
+   "start": 263.9,
+   "end": 272.48,
+   "text": "Essas coisas se tornaram disciplinas separadas, que se concentram em fornecer soluções para os problemas da vida real."
+  },
+  {
+   "start": 272.98,
+   "end": 284.74,
+   "text": "Se for visitar as áreas árticas ou antárticas no inverno, você vai experimentar a noite polar, o que significa que o sol não sobe acima do horizonte."
+  },
+  {
+   "start": 285.24,
+   "end": 292.38,
+   "text": "O maior torneio do ano ocorre em dezembro nos campos de polo em Las Cañitas."
+  },
+  {
+   "start": 292.88,
+   "end": 306.92,
+   "text": "Com o passar do tempo, conforme a nova população começa a se adaptar ao seu novo ambiente, ela vai ficando menos e menos parecida com a outra população."
+  },
+  {
+   "start": 307.42,
+   "end": 329.14,
+   "text": "As amplas avenidas, os prédios com fachada de vidro e os centros comerciais modernos são marcados por telhados vermelhos tradicionais, o mercado do século 18, e as antigas mesquitas e igrejas, embora a cidade tenha uma atmosfera que remete mais à Europa mediterrânea do que à Turquia clássica."
+  },
+  {
+   "start": 329.64,
+   "end": 339.12,
+   "text": "O Natal é um dos feriados mais importantes do cristianismo e é celebrado como o aniversário de Jesus."
+  },
+  {
+   "start": 339.62,
+   "end": 355.28,
+   "text": "O trecho entre Point Marion e Fairmont apresenta as condições mais desafiadoras para motoristas na rodovia Buffalo-Pittsburgh, que passam frequentemente por áreas de sertão isoladas."
+  },
+  {
+   "start": 355.78,
+   "end": 371.68,
+   "text": "Podemos começar a viver de maneira mais amigável com o ambiente, podemos nos juntar ao movimento ambiental, e podemos até ser ativistas para reduzirmos o sofrimento futuro em algum grau."
+  },
+  {
+   "start": 372.18,
+   "end": 385.98,
+   "text": "Devido à longa distância desde o continente, os mamíferos não puderam fazer a jornada, o que tornou a tartaruga-gigante o principal animal de pasto nas Galápagos."
+  },
+  {
+   "start": 386.48,
+   "end": 394.94,
+   "text": "Assim que você consegue sair da corrente, nadar de volta não é mais difícil do que seria usualmente."
+  },
+  {
+   "start": 395.44,
+   "end": 406.84,
+   "text": "Um ex-policial filipino sequestrou um ônibus de turistas em Manila, capital das Filipinas, e os manteve reféns em Hong Kong."
+  },
+  {
+   "start": 407.34,
+   "end": 419.58,
+   "text": "Ele adverte que não há garantias de que alguma ação no Iraque neste momento irá impedir a guerra entre seitas, o aumento da violência ou a tendência para o caos."
+  },
+  {
+   "start": 420.08,
+   "end": 431.06,
+   "text": "A religião principal na Moldávia é o cristianismo ortodoxo."
+  },
+  {
+   "start": 431.56,
+   "end": 445.96,
+   "text": "A culinária maiorquina, assim como a de zonas similares no Mediterrâneo, é baseada em pão, vegetais e carne (especialmente de porco), e utiliza azeite de oliva em tudo."
+  },
+  {
+   "start": 446.46,
+   "end": 454.62,
+   "text": "Você pode ver as pirâmides no escuro e também no silêncio antes de o show começar."
+  },
+  {
+   "start": 455.12,
+   "end": 463.82,
+   "text": "Há muitas praias, devido a Auckland ficar entre duas enseadas. As mais populares ficam em três áreas."
+  },
+  {
+   "start": 464.32,
+   "end": 476.32,
+   "text": "Um curso cobrirá normalmente todos os tópicos conversados aqui com bastante mais detalhes, normalmente com experiência prática."
+  },
+  {
+   "start": 476.82,
+   "end": 493.56,
+   "text": "Os Artigos necessitavam do consentimento unânime entre todos os estados antes que pudessem ser emendados e os estados deram tão pouca importância ao governo central que os representantes deles quase nunca estavam presentes."
+  },
+  {
+   "start": 494.06,
+   "end": 508.28,
+   "text": "Quando os combates cessaram, após os feridos serem transportados para o hospital, cerca de 40 dos outros internos restantes permaneceram no pátio e se recusaram a voltar para suas celas."
+  },
+  {
+   "start": 508.78,
+   "end": 521.38,
+   "text": "Não sei se você nota isso ou não, mas uma grande parte das mercadorias da América Central veio para este país sem pagar impostos."
+  },
+  {
+   "start": 521.88,
+   "end": 534.24,
+   "text": "Na maioria dos casos, se inscrever em um curso no exterior durante um ano sabático pode, de fato, aumentar suas chances de ingressar na educação superior no seu país de origem."
+  },
+  {
+   "start": 534.74,
+   "end": 543.26,
+   "text": "No adro da igreja, há interessantes esculturas em mármore de pombas sobre tumbas de pessoas."
+  },
+  {
+   "start": 543.76,
+   "end": 558.52,
+   "text": "Em princípio, o budismo tibetano é muito simples. Ele consiste na Kundalini Yoga, na meditação e no caminho do amor abrangente."
+  },
+  {
+   "start": 559.02,
+   "end": 568.32,
+   "text": "Não havia grandes florestas na terra de Canaã, por isso, a madeira era extremamente cara."
+  },
+  {
+   "start": 568.82,
+   "end": 575.42,
+   "text": "Todos foram afetados por sua força influenciadora, desde o rei até o plebeu."
+  },
+  {
+   "start": 575.92,
+   "end": 592.48,
+   "text": "Empresas transportadoras são bem pagas para entregar coisas rapidamente. Frequentemente, o tempo é muito importante no envio de documentos comerciais, mercadorias ou peças sobressalentes para um reparo urgente."
+  },
+  {
+   "start": 592.98,
+   "end": 607.62,
+   "text": "O relatório é iniciado com um apelo por um debate aberto e pela formação de um consenso no Estados Unidos sobre a política relacionada ao Oriente Médio."
+  },
+  {
+   "start": 608.12,
+   "end": 616.46,
+   "text": "Apesar de três pessoas estarem dentro da casa quando ela foi atingida pelo carro, nenhuma delas ficou ferida."
+  },
+  {
+   "start": 616.96,
+   "end": 631.06,
+   "text": "Gordon Johndroe, o porta-voz de Bush, classificou a promessa da Coreia do Norte como \"um importante passo em direção ao objetivo de alcançar a desnuclearização verificável da península coreana.\""
+  },
+  {
+   "start": 631.56,
+   "end": 648.78,
+   "text": "Entre as 1.400 pessoas entrevistadas antes das eleições federais de 2010, o percentual dos que se opõem à mudança na Austrália, para ela se tornar uma república, cresceu 8% desde 2008."
+  },
+  {
+   "start": 649.28,
+   "end": 657.98,
+   "text": "Aquilo não pareceu fazer sentido para mim; certamente não foi justo."
+  },
+  {
+   "start": 658.48,
+   "end": 666.88,
+   "text": "Naturalistas e filósofos se concentraram em textos clássicos e, em particular, na Bíblia em latim."
+  },
+  {
+   "start": 667.38,
+   "end": 676.62,
+   "text": "Os árabes também levaram para as terras o Islã, que ganhou muita popularidade em Comores e Maiote."
+  },
+  {
+   "start": 677.12,
+   "end": 697.76,
+   "text": "Agora amplamente disponível pelo arquipélago, a culinária javanesa inclui uma variedade de pratos temperados de maneira simples, os condimentos predominantes de preferência javanesa sendo amendoim, pimentas, açúcar (principalmente açúcar de coco javanês) e várias especiarias aromáticas."
+  },
+  {
+   "start": 698.26,
+   "end": 710.5,
+   "text": "NHK também disse que a usina nuclear de Kashiwazaki Kariwa, da prefeitura de Niigata, estava funcionando de forma normal."
+  },
+  {
+   "start": 711.0,
+   "end": 724.62,
+   "text": "O parque abrange 19.500 Km² e é dividido em 14 zonas ecológicas diferentes, cada uma sustentando diferentes espécies animais."
+  },
+  {
+   "start": 725.12,
+   "end": 738.5,
+   "text": "As mulheres devem entender que diferenças culturais podem ocasionar atos que elas considerariam como assédio, e não é incomum serem seguidas, agarradas pelo braço, etc."
+  },
+  {
+   "start": 739.0,
+   "end": 751.78,
+   "text": "Alguns animais, como os elefantes e as girafas, têm a tendência de se aproximarem dos carros e o equipamento básico possibilita uma boa visualização."
+  },
+  {
+   "start": 752.28,
+   "end": 759.72,
+   "text": "Eles ainda estão tentando determinar o tamanho do acidente e como a terra será afetada."
+  },
+  {
+   "start": 760.22,
+   "end": 766.34,
+   "text": "Os espanhóis iniciaram o período de colonização que durou três séculos."
+  },
+  {
+   "start": 766.84,
+   "end": 784.36,
+   "text": "Ela chegou a essa conclusão devido à infinidade de comentários positivos e incentivos enviados a ela por indivíduos do sexo feminino e masculino, pedindo que a medicação contraceptiva seja considerada uma necessidade médica."
+  },
+  {
+   "start": 784.86,
+   "end": 790.98,
+   "text": "Os cientistas dizem que a explosão causada pela colisão foi intensa."
+  },
+  {
+   "start": 791.48,
+   "end": 807.68,
+   "text": "A ciência aponta hoje que essa economia baseada no carbono deslocou a biosfera do estado estável que havia permitido a evolução humana ao longo dos últimos dois milhões de anos."
+  },
+  {
+   "start": 808.18,
+   "end": 814.3,
+   "text": "A água está derramando sobre o dique em uma seção de 100 pés de largura."
+  },
+  {
+   "start": 814.8,
+   "end": 822.54,
+   "text": "As Ilhas do Leste da África estão no Oceano Índico, a uma distância da costa leste da África."
+  },
+  {
+   "start": 823.04,
+   "end": 832.4,
+   "text": "Acidentes aéreos são comuns no Irã, que tem uma frota envelhecida e mal conservada tanto para operações civis quanto militares."
+  },
+  {
+   "start": 832.9,
+   "end": 838.06,
+   "text": "É o quinto CEP do Martelly em quatro anos."
+  },
+  {
+   "start": 838.56,
+   "end": 850.32,
+   "text": "Logo, policiais preparados com equipamento antimotim entraram no pátio e encurralaram os detentos com gás lacrimogêneo."
+  },
+  {
+   "start": 850.82,
+   "end": 865.16,
+   "text": "A tecnologia oferece a solução com aulas de campo virtuais. Da sala de aula, os alunos podem ver peças de museus, visitar um aquário ou admirar belas obras de arte."
+  },
+  {
+   "start": 865.66,
+   "end": 871.3,
+   "text": "A maior parte da vida familiar hebraica acontecia ao ar livre."
+  },
+  {
+   "start": 871.8,
+   "end": 882.78,
+   "text": "O satélite no espaço recebe a chamada e depois a redireciona de volta, quase instantaneamente."
+  },
+  {
+   "start": 883.28,
+   "end": 894.38,
+   "text": "Os gastos de guerra do imperialismo dos Estados Unidos na conquista das Filipinas foram pagos pela própria população filipina."
+  },
+  {
+   "start": 894.88,
+   "end": 907.6,
+   "text": "Por favor, trate o local com toda a dignidade, solenidade e respeito que ele merece. Não faça piadas sobre o Holocausto ou nazistas."
+  },
+  {
+   "start": 908.1,
+   "end": 918.3,
+   "text": "Muitos formatos comuns (a família APS de formatos, por exemplo) são iguais ou se aproximam muito dessa proporção."
+  },
+  {
+   "start": 918.8,
+   "end": 927.02,
+   "text": "Os primeiros casos da doença, nesta temporada, foram notificados no final de julho."
+  },
+  {
+   "start": 927.52,
+   "end": 933.52,
+   "text": "Um curry pode ser \"seco\" ou \"molhado\" dependendo da quantidade de líquido."
+  },
+  {
+   "start": 934.02,
+   "end": 945.3,
+   "text": "A alimentação na Roma antiga não incluía mantimentos originados da América e da Ásia para a Europa, assim como aconteceu nos séculos posteriores."
+  },
+  {
+   "start": 945.8,
+   "end": 953.36,
+   "text": "Uma opção cada vez mais popular para aqueles que pretendem ter um ano sabático é viajar e aprender."
+  },
+  {
+   "start": 953.86,
+   "end": 970.3,
+   "text": "O medalhista de ouro olímpico deveria nadar nos 100 e 200 metros livres e em três revezamentos nos Jogos da Commonwealth, mas devido a suas queixas, sua condição física foi posta em dúvida."
+  },
+  {
+   "start": 970.8,
+   "end": 979.02,
+   "text": "Os safáris são provavelmente a maior atração turística da África e menina dos olhos de muitos visitantes."
+  },
+  {
+   "start": 979.52,
+   "end": 994.52,
+   "text": "As qualidades que determinam uma subcultura como distinta podem ser linguísticas, estéticas, religiosas, políticas, sexuais, geográficas ou uma combinação de fatores."
+  },
+  {
+   "start": 995.02,
+   "end": 1015.3,
+   "text": "Esse  novo ambiente tem recursos diferentes e novos competidores, então a nova população precisará adquirir características diferentes das que já possui e adaptar-se para se tornar uma forte competidora."
+  },
+  {
+   "start": 1015.8,
+   "end": 1026.6,
+   "text": "Neste ônibus de transporte dinâmico, todos estão de alguma forma conectados e apoiando um sistema de transporte baseado em carros particulares."
+  },
+  {
+   "start": 1027.1,
+   "end": 1041.5,
+   "text": "Em seguida, algumas selas, principalmente selas inglesas, têm barras de segurança que permitem que um estribo de couro caia da sela se puxado para trás por um cavaleiro em queda."
+  },
+  {
+   "start": 1042.0,
+   "end": 1051.3,
+   "text": "Isso se tornou uma prática comum, mas o ferro causava mais desgaste nas rodas de madeira dos vagões."
+  },
+  {
+   "start": 1051.8,
+   "end": 1061.64,
+   "text": "O paciente esteve na Nigéria, onde alguns casos do vírus Ebola ocorreram."
+  },
+  {
+   "start": 1062.14,
+   "end": 1074.98,
+   "text": "Por exemplo, \"aprendizado\" e \"socialização\" são indicados como motivações importantes para a utilização da internet  (James et al., 1995)."
+  },
+  {
+   "start": 1075.48,
+   "end": 1090.6,
+   "text": "Arly Velasquez, do México, terminou em décimo quinto no Super-G para cadeirantes masculino. Adam Hall, da Nova Zelândia, terminou em nono no Super-G para não cadeirantes masculino."
+  },
+  {
+   "start": 1091.1,
+   "end": 1103.7,
+   "text": "Autoridades locais estão alertando os moradores das proximidades da usina para permanecerem dentro de casa, desligarem os ares-condicionados e não beberem água da torneira."
+  },
+  {
+   "start": 1104.2,
+   "end": 1114.88,
+   "text": "Cantores famosos ao longo do país ofereceram Bhajans, ou canções de devoção, aos pés de Shri Shyam."
+  },
+  {
+   "start": 1115.38,
+   "end": 1124.44,
+   "text": "Mais três bombas explodiram perto dos prédios do governo em um período de duas horas."
+  },
+  {
+   "start": 1124.94,
+   "end": 1137.78,
+   "text": "Os membros de uma subcultura frequentemente sinalizam sua filiação por meio de um uso distinto e simbólico de estilo, que inclui modas, maneirismos e jargões."
+  },
+  {
+   "start": 1138.28,
+   "end": 1147.52,
+   "text": "Os cursos d'água do interior podem ser um bom tema ao redor do qual organizar um feriado."
+  },
+  {
+   "start": 1148.02,
+   "end": 1153.9,
+   "text": "Ele montou uma campainha sem fio, disse."
+  },
+  {
+   "start": 1154.4,
+   "end": 1167.84,
+   "text": "Os antigos do Egito do Novo Império se maravilhavam com as construções de seus antecessores, que tinham até então muito mais de mil anos."
+  },
+  {
+   "start": 1168.34,
+   "end": 1175.9,
+   "text": "A polícia disse que o corpo parecia estar ali há cerca de um dia."
+  },
+  {
+   "start": 1176.4,
+   "end": 1191.28,
+   "text": "Os pontos de vista apresentados são normalmente superficiais, gerais e simplificados em relação com as mais detalhadas informações disponíveis em outros lugares."
+  },
+  {
+   "start": 1191.78,
+   "end": 1200.6,
+   "text": "O corte estava agendado para terça-feira, mas foi suspenso após uma decisão judicial de emergência."
+  },
+  {
+   "start": 1201.1,
+   "end": 1222.1,
+   "text": "Mas as florestas não contam só com pântanos de mangue - elas têm algumas das últimas grandes selvas que já cobriram a superfície gangética restantes."
+  },
+  {
+   "start": 1222.6,
+   "end": 1235.5,
+   "text": "\"Timbuktu\" passou a ser utilizado como uma metáfora para se referir a terras distantes e exóticas, tendo em vista sua relativa inacessibilidade."
+  },
+  {
+   "start": 1236.0,
+   "end": 1249.86,
+   "text": "Os portugueses a destruíram e reconstruíram com o nome de Casa Branca, apenas para abandoná-la após um terremoto em 1755."
+  },
+  {
+   "start": 1250.36,
+   "end": 1262.54,
+   "text": "O Japão possui cerca de 7.000 ilhas (a maior sendo Honshu), tornando o Japão a 7ª maior ilha do mundo!"
+  },
+  {
+   "start": 1263.04,
+   "end": 1284.28,
+   "text": "Ao pedirem um comentário seu, Miller disse, \"Mike fala muito durantes a audiência... eu estava me preparando, então não estava prestando muita atenção no que ele estava dizendo\"."
+  },
+  {
+   "start": 1284.78,
+   "end": 1298.94,
+   "text": "A parte do norte, ou Sentinel Range, tem as montanhas mais altas da Antártida, as Vinson Massif, chegando aos 4.892m no Monte Vinson."
+  },
+  {
+   "start": 1299.44,
+   "end": 1315.52,
+   "text": "Porém, a maioria das placas estão apenas em catalão, porque este é o idioma que foi estabelecido por lei como língua oficial."
+  },
+  {
+   "start": 1316.02,
+   "end": 1325.02,
+   "text": "O presidente norte-americano, George W. Bush, recebeu bem o anúncio."
+  },
+  {
+   "start": 1325.52,
+   "end": 1340.34,
+   "text": "Anteriormente, o CEO da Ring, Jamie Siminoff, comentou que a empresa surgiu quando sua campainha não podia ser ouvida de sua loja em sua garagem."
+  },
+  {
+   "start": 1340.84,
+   "end": 1349.54,
+   "text": "Pesquisas em IA envolvem a produção de máquinas para automatizar tarefas que exigem atividade inteligente."
+  },
+  {
+   "start": 1350.04,
+   "end": 1366.18,
+   "text": "Seu 1.000º selo foi o magnífico \"Os Grandes Feitos dos Reis Suecos\", de David Klöcker Ehrenstrahl, em 2000, que está listado no Livro Guinness dos Recordes."
+  },
+  {
+   "start": 1366.68,
+   "end": 1375.44,
+   "text": "Segundo a polícia, é pouco provável que o motorista do veículo que atingiu o fotógrafo seja acusado criminalmente."
+  },
+  {
+   "start": 1375.94,
+   "end": 1383.2,
+   "text": "Além disso, não existia autoridade para revogar as leis fiscais e tarifas entre os estados."
+  },
+  {
+   "start": 1383.7,
+   "end": 1393.18,
+   "text": "Em estradas com gelo e neve, a fricção é baixa, e você não pode dirigir como se estivesse no asfalto limpo."
+  },
+  {
+   "start": 1393.68,
+   "end": 1402.86,
+   "text": "A população original não mudou em nada, eles ainda precisam das mesmas adaptações de antes."
+  },
+  {
+   "start": 1403.36,
+   "end": 1414.04,
+   "text": "A ONU também espera concluir um fundo para ajudar os países afetados pelo aquecimento global a lidar com os impactos."
+  },
+  {
+   "start": 1414.54,
+   "end": 1429.9,
+   "text": "Israel exige uma presença militar contínua no vale por dez anos assim que um acordo seja assinado, ao passo que a AP concorda em deixar essa presença por apenas cinco anos."
+  },
+  {
+   "start": 1430.4,
+   "end": 1441.56,
+   "text": "Exemplos de atividades locais incluem a pescaria, tirar fotografias, ver pássaros, visitar os parques e estudar sobre o ecossistema."
+  },
+  {
+   "start": 1442.06,
+   "end": 1451.3,
+   "text": "O dinheiro pode ser trocado no único banco das ilhas que está localizado em Stanley, em frente à loja FIC West."
+  },
+  {
+   "start": 1451.8,
+   "end": 1460.08,
+   "text": "Quando você liga para alguém que está a milhares de quilômetros de distância, você está usando um satélite."
+  },
+  {
+   "start": 1460.58,
+   "end": 1467.06,
+   "text": "Vale a pena caminhar meia hora pela intrigante vila."
+  },
+  {
+   "start": 1467.56,
+   "end": 1480.22,
+   "text": "Essas teorias sugerem que as pessoas possuem certas necessidades e/ou desejos que foram internalizados à medida que atingem a idade adulta."
+  },
+  {
+   "start": 1480.72,
+   "end": 1506.46,
+   "text": "O esquiador polonês com deficiência visual Maciej Krezel e a guia Anna Ogarzynska terminaram em décimo terceiro lugar no Super-G. Jong Seork Park da Coreia do Sul terminou em vigésimo quarto lugar no Super-G masculino na modalidade sentada."
+  },
+  {
+   "start": 1506.96,
+   "end": 1520.76,
+   "text": "O ex-presidente da Câmara Newt Gingrich, o governador do Texas Rick Perry e a congressista Michele Bachmann terminaram em quarto, quinto e sexto lugares, respectivamente."
+  },
+  {
+   "start": 1521.26,
+   "end": 1534.28,
+   "text": "Crocodilos de água salgada não vivem ativamente no oceano. Seu habitat principal são os estuários dos rios que ficam ao norte de Rockhampton."
+  },
+  {
+   "start": 1534.78,
+   "end": 1543.96,
+   "text": "Ainda assim, oitenta por cento dos nossos produtos foram taxados com tarifas em países da América Central. Nós tratamos vocês."
+  },
+  {
+   "start": 1544.46,
+   "end": 1551.54,
+   "text": "Alguns festivais têm áreas especiais de acampamento para famílias com crianças pequenas."
+  },
+  {
+   "start": 1552.04,
+   "end": 1560.8,
+   "text": "Há milhares de anos, um homem chamado Aristarco disse que o Sistema Solar se movia ao redor do Sol."
+  },
+  {
+   "start": 1561.3,
+   "end": 1580.44,
+   "text": "Sua primeira foi o Slalom, onde recebeu um \"Did Not Finish\" (Não Terminou) na sua primeira prova. 36 de 116 competidores obtiveram o mesmo resultado na corrida."
+  },
+  {
+   "start": 1580.94,
+   "end": 1596.3,
+   "text": "Antes mesmo de uma organização ser inovadora, os líderes precisam criar uma cultura de inovação, assim como um conhecimento compartilhado e um aprendizado organizacional."
+  },
+  {
+   "start": 1596.8,
+   "end": 1607.06,
+   "text": "A Argentina é conhecida por ter um dos melhores times e jogadores de polo do mundo."
+  },
+  {
+   "start": 1607.56,
+   "end": 1617.46,
+   "text": ". Cientistas afirmam que a plumagem superior desse animal era castanha e a parte inferior era clara ou carotenoide."
+  },
+  {
+   "start": 1617.96,
+   "end": 1628.58,
+   "text": "No entanto, se tiver alguma alteração ou solicitação, esta deve ser primeiro encaminhada para o agente de viagens, e não diretamente para o hotel."
+  },
+  {
+   "start": 1629.08,
+   "end": 1646.6,
+   "text": "Ele usa tecnologia baseada em satélite em oposição à tecnologia mais antiga baseada em radar terrestre para permitir que os controladores de tráfego aéreo localizem aeronaves com maior precisão e ofereçam informações mais precisas aos pilotos."
+  },
+  {
+   "start": 1647.1,
+   "end": 1657.6,
+   "text": "Após assistirem aos horrores e atrocidades da guerra durante a Primeira Guerra Mundial, as nações desejaram evitar tal situação novamente no futuro."
+  },
+  {
+   "start": 1658.1,
+   "end": 1670.04,
+   "text": "Cientistas acreditam que as jaguatiricas seguem e encontram suas presas pelo cheiro, farejando onde elas estiveram pelo solo."
+  },
+  {
+   "start": 1670.54,
+   "end": 1685.66,
+   "text": "Insetos foram os primeiros animais a irem para o ar. Sua habilidade de voar os ajudou a fugir mais facilmente de inimigos e a encontrar alimento e parceiros de maneira mais eficiente."
+  },
+  {
+   "start": 1686.16,
+   "end": 1698.46,
+   "text": "Eventualmente, as rodas de madeira foram substituídas por rodas de ferro. Em 1767, os primeiros trilhos totalmente de ferro foram introduzidos."
+  },
+  {
+   "start": 1698.96,
+   "end": 1708.44,
+   "text": "Segundo o Dr. Moll, alguns pacientes podem ter contraído o vírus no hospital e ao menos dois eram profissionais de saúde."
+  },
+  {
+   "start": 1708.94,
+   "end": 1728.2,
+   "text": "Elas podem ver muito bem no escuro com a visão noturna e também conseguem se mover de forma furtiva. As jaguatiricas caçam suas presas misturando-se com o ambiente que as rodeia e, em seguida, atacam suas presas."
+  },
+  {
+   "start": 1728.7,
+   "end": 1754.68,
+   "text": "Em 6 de outubro de 1789, o aterrorizado Rei Luís XVI, a Rainha Maria Antonieta, seus dois filhos jovens (Maria Teresa, de onze anos, e Luís Carlos, de quatro anos) e a irmã do Rei, Madame Elizabeth, foram forçados a voltar para Paris, partindo de Versalhes, por uma multidão de mulheres dos mercados."
+  },
+  {
+   "start": 1755.18,
+   "end": 1763.58,
+   "text": "A pronúncia é relativamente fácil em italiano, já que a maioria das palavras são pronunciadas exatamente como foram escritas."
+  },
+  {
+   "start": 1764.08,
+   "end": 1776.86,
+   "text": "Um telefone via satélite geralmente não substitui um telefone celular, já que para fazer uma chamada você precisa estar ao ar livre com vista para o satélite."
+  },
+  {
+   "start": 1777.36,
+   "end": 1804.24,
+   "text": "Como membro da NSA, ele ajudou Carter na condução de assuntos diplomáticos mundiais, como o Acordo de Camp David, em 1978; a normalização das relações EUA-China no final dos anos 1970; a Revolução Iraniana, que levou à crise dos reféns em 1979; e a invasão soviética no Afeganistão, em 1979."
+  },
+  {
+   "start": 1804.74,
+   "end": 1821.18,
+   "text": "Embora seja amplamente usado, especialmente entre não romanis, o termo \"cigano\" é muitas vezes considerado ofensivo por estar associado a estereótipos negativos e percepções imprecisas sobre o povo romani."
+  }
+ ]
+}

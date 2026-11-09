@@ -29,7 +29,7 @@ async def transcribe_audio_file(request: Request, file: UploadFile = File(...)) 
     engine = orchestrator.engine
     if engine is None or engine._whisper is None:
         Path(tmp_path).unlink(missing_ok=True)
-        raise HTTPException(503, "Engine ainda não carregado — aguarde e tente novamente")
+        raise HTTPException(503, "Engine ainda não carregado - aguarde e tente novamente")
 
     state = orchestrator.state
 

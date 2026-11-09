@@ -1,6 +1,7 @@
 import threading
 import time
 
+from .gamepad import GamepadMonitor, format_gamepad_hotkey
 from .hotkey_manager import _MODIFIER_ALIASES, _MODIFIERS, _key_to_str
 
 
@@ -10,6 +11,7 @@ def capture_hotkey(timeout: float = 10.0) -> str | None:
     Formato de retorno:
       - "a", "<f9>", "<ctrl>+<f9>"
       - "mouse:button8", "<ctrl>+mouse:button8"
+      - "gamepad:lb+rb" (combinação de botões do controle; captura ao soltar)
 
     Retorna None se o timeout expirar sem capturar nada.
     """
@@ -48,6 +50,23 @@ def capture_hotkey(timeout: float = 10.0) -> str | None:
         _finish(hotkey)
         return False
 
+    # Controle: acumula os botões segurados juntos; ao soltar qualquer um, captura a combinação
+    monitor = GamepadMonitor.get()
+    pre_held: set[str] = set(monitor.pressed)  # já pressionados antes da captura: ignorar
+    pad_peak: set[str] = set()
+    pad_prev: set[str] = set(pre_held)
+
+    def on_gamepad(pressed: frozenset[str]) -> None:
+        nonlocal pad_prev
+        released = pad_prev - pressed
+        pre_held.difference_update(released)
+        pad_peak.update(pressed - pre_held)
+        pad_prev = set(pressed)
+        if released and pad_peak:
+            _finish(format_gamepad_hotkey(pad_peak))
+
+    pad_ok = monitor.subscribe(on_gamepad)
+
     kb = keyboard.Listener(on_press=on_key_press, on_release=on_key_release)
     ms = mouse.Listener(on_click=on_click)
     kb.daemon = True
@@ -58,4 +77,6 @@ def capture_hotkey(timeout: float = 10.0) -> str | None:
     done.wait(timeout=timeout)
     kb.stop()
     ms.stop()
+    if pad_ok:
+        monitor.unsubscribe(on_gamepad)
     return captured["hotkey"]

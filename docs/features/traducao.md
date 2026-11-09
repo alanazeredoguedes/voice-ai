@@ -18,7 +18,7 @@ a tradução offline, sem internet, usando modelos open source.
 
 **Por que Argos e não outra opção?**
 
-- CTranslate2 já está instalado (dependência do faster-whisper) — o Argos o usa internamente
+- CTranslate2 já está instalado (dependência do faster-whisper) - o Argos o usa internamente
 - API de 3 linhas de Python, sem configuração extra
 - Suporte a ~30 pares de idiomas com qualidade razoável
 - Alternativa ao MarianMT/Helsinki via HuggingFace (mais complexo de configurar)
@@ -54,7 +54,7 @@ Pacotes ficam em `~/.local/share/argos-translate/packages/`.
 
 ---
 
-## Backend — nova rota
+## Backend - nova rota
 
 Arquivo: `backend/routes/translate.py`
 
@@ -109,14 +109,14 @@ app.include_router(translate.router)
 
 ---
 
-## Frontend — nova view
+## Frontend - nova view
 
 Arquivo: `frontend/src/renderer/src/views/TranslateView.vue`
 
 Interface sugerida:
 - Dois `<select>` para idioma de origem e destino (com botão ↔ para inverter)
 - Textarea de entrada (texto livre)
-- Botão "Traduzir" — chama `POST /translate/text`
+- Botão "Traduzir" - chama `POST /translate/text`
 - Textarea de saída (readonly) + CopyButton
 - Debounce opcional (traduzir automaticamente após 600ms sem digitar)
 
@@ -163,7 +163,7 @@ segments, _ = whisper.transcribe(audio, task="translate", language="pt")
 ```
 
 Isso permitiria adicionar uma opção na tela de "Transcrever Arquivo":
-checkbox "Traduzir para inglês" — custo zero de implementação adicional.
+checkbox "Traduzir para inglês" - custo zero de implementação adicional.
 
 ---
 
