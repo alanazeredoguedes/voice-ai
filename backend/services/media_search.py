@@ -113,10 +113,6 @@ def search_images_with_provider(query: str, n: int, settings: dict | None = None
     return _images_ddg(query, n), "duckduckgo"
 
 
-def search_images(query: str, n: int, settings: dict | None = None) -> list[dict]:
-    return search_images_with_provider(query, n, settings)[0]
-
-
 def serper_balance(api_key: str) -> dict:
     """Créditos restantes da chave do Serper (GET /account - não gasta crédito)."""
     key = (api_key or "").strip()
@@ -230,35 +226,48 @@ class MediaDispatcher:
     def enabled(self) -> bool:
         return bool(self._settings.get("media_enabled", True))
 
-    def request(self, kind: str, query: str, n: int) -> None:
+    def request(self, kind: str, query: str, n: int, desc: str = "") -> str | None:
+        """Começa a busca e devolve o id do grupo (a resposta guarda onde ele aparece no texto).
+        A resposta continua chegando enquanto isso: a tela mostra o espaço "carregando" no lugar."""
         if not self.enabled:
-            return
+            return None
         if kind == "image":
-            n = min(n, int(self._settings.get("media_max_images") or 4) or 4)
+            n = 5  # a tela mostra até 5 (uma grande + 4 à direita); a IA que olha escolhe de 1 a 5
         group = {
             "group_id": uuid.uuid4().hex[:12],
             "kind": kind,
             "query": query,
+            "desc": desc,
             "status": "loading",
             "items": [],
+            "more": [],
+            "picked": True,  # escolhidas olhando as imagens (layout de destaque no meio do texto)
             "provider": "youtube" if kind == "video" else image_provider(self._settings),
         }
         with self._lock:
             self._groups.append(group)
         self._emit({"type": "chat_media", **group})
         self._futures.append(_POOL.submit(self._run, group, n))
+        return group["group_id"]
 
     def _run(self, group: dict, n: int) -> None:
+        from .media_judge import choose
+
         t0 = time.perf_counter()
         try:
+            # busca mais do que vai mostrar: uma segunda IA olha as miniaturas e escolhe as certas
             if group["kind"] == "video":
-                items = search_videos(group["query"], n)
+                found = search_videos(group["query"], 6)
             else:
-                items, group["provider"] = search_images_with_provider(group["query"], n, self._settings)
+                found, group["provider"] = search_images_with_provider(group["query"], 12, self._settings)
+            picked = choose(group["kind"], group["query"], group.get("desc") or "", found, n) if found else ([], [])
+            if picked is None:  # não deu para escolher (falha da IA): mostra as primeiras, como antes
+                picked = (found[: min(n, 3)], found[min(n, 3):8])
+            items, more = picked
             if items:
-                group.update(status="done", items=items)
+                group.update(status="done", items=items, more=more)
             else:
-                group.update(status="error", error="Nada encontrado")
+                group.update(status="error", error="Nada que mostre exatamente isso")
         except Exception as e:
             print(f"[media] erro na busca {group['kind']} {group['query']!r}: {e}", flush=True)
             group.update(status="error", error="Não foi possível buscar agora")
@@ -273,7 +282,7 @@ class MediaDispatcher:
     def has_requests(self) -> bool:
         return bool(self._groups)
 
-    def wait_all(self, timeout: float = _SEARCH_TIMEOUT + 3) -> list[dict]:
+    def wait_all(self, timeout: float = _SEARCH_TIMEOUT + 35) -> list[dict]:
         """Espera as buscas terminarem e devolve os grupos com resultado (para salvar no banco)."""
         if self._futures:
             concurrent.futures.wait(self._futures, timeout=timeout)

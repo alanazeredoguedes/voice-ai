@@ -16,6 +16,8 @@ useChatStore(pinia).init()
 const statusStore = useStatusStore(pinia)
 onWsMessage((e) => {
   if (e.type === 'engine_loading') statusStore.onEngineLoading(e)
+  // atalho "mostrar/esconder o Voice AI" (teclado, mouse ou controle): o Electron traz a janela para a frente
+  if (e.type === 'toggle_window') void window.electron?.ipcRenderer?.invoke('window:toggle')
 })
 void statusStore.syncEngineLoading()
 app.mount('#app')

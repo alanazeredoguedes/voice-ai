@@ -50,6 +50,8 @@ class SettingsPatch(BaseModel):
     # Atalhos adicionais por função (além do principal); todos ficam ativos ao mesmo tempo
     transcription_keys_extra: Optional[list[str]] = None
     ai_keys_extra: Optional[list[str]] = None
+    window_key: Optional[str] = None
+    window_keys_extra: Optional[list[str]] = None
     model: Optional[str] = None
     device: Optional[str] = None
     tts_backend: Optional[str] = None
@@ -63,6 +65,7 @@ class SettingsPatch(BaseModel):
     sound_copied: Optional[bool] = None
     system_prompt: Optional[str] = None
     effort: Optional[str] = None
+    claude_model: Optional[Literal["haiku", "sonnet", "opus"]] = None
     media_enabled: Optional[bool] = None
     media_max_images: Optional[int] = None
     media_proactive: Optional[bool] = None

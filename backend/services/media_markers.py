@@ -8,34 +8,43 @@ e repassa cada pedido para um callback, que dispara a busca de verdade.
 import re
 from collections.abc import Callable
 
-MediaCallback = Callable[[str, str, int], None]  # (kind, query, n)
+# (kind, query, n, descrição) -> id do grupo criado (o marcador vira a linha "[[media:id]]" no lugar onde estava)
+MediaCallback = Callable[[str, str, int, str], "str | None"]
 
 # Tamanho máximo de um marcador; acima disso o "[[" é tratado como texto comum.
-_MAX_MARKER_LEN = 300
+_MAX_MARKER_LEN = 400
 
+# [[IMAGENS: termo de busca | o que precisa aparecer]] (a descrição e/ou a quantidade são opcionais)
 _MARKER_RE = re.compile(
-    r"^\s*(?P<kind>imagens?|images?|v[ií]deos?)\s*:\s*(?P<query>.+?)\s*(?:\|\s*(?P<n>\d+)\s*)?$",
+    r"^\s*(?P<kind>imagens?|images?|v[ií]deos?)\s*:\s*(?P<rest>.+?)\s*$",
     re.IGNORECASE | re.DOTALL,
 )
 
 _PREFIX_RE = re.compile(r"^\s*(imagens?|images?|v[ií]deos?)\s*:", re.IGNORECASE)
 
-DEFAULT_COUNT ={"image": 4, "video": 3}
+DEFAULT_COUNT = {"image": 5, "video": 3}
 MAX_COUNT = {"image": 8, "video": 5}
 
 
-def parse_marker(body: str) -> tuple[str, str, int] | None:
-    """Interpreta o conteúdo entre ``[[`` e ``]]``. Retorna (kind, query, n) ou None."""
+def parse_marker(body: str) -> tuple[str, str, int, str] | None:
+    """Interpreta o conteúdo entre ``[[`` e ``]]``. Retorna (kind, query, n, descrição) ou None."""
     m = _MARKER_RE.match(body)
     if not m:
         return None
     kind = "video" if m.group("kind").lower().startswith("v") else "image"
-    query = " ".join(m.group("query").split())
+    parts = [" ".join(p.split()) for p in m.group("rest").split("|")]
+    query = parts[0]
     if not query:
         return None
-    n = int(m.group("n")) if m.group("n") else DEFAULT_COUNT[kind]
+    n = DEFAULT_COUNT[kind]
+    desc = ""
+    for p in parts[1:]:
+        if p.isdigit():
+            n = int(p)
+        elif p:
+            desc = p
     n = max(1, min(n, MAX_COUNT[kind]))
-    return kind, query, n
+    return kind, query, n, desc
 
 
 class MediaMarkerFilter:
@@ -45,17 +54,20 @@ class MediaMarkerFilter:
         self._on_media = on_media
         self._buf = ""
 
-    def _emit(self, body: str) -> bool:
+    def _emit(self, body: str) -> str | None:
+        """Marcador de mídia: dispara a busca e devolve o que fica no texto no lugar dele
+        (a linha ``[[media:id]]``, para as imagens aparecerem ali). None = não é marcador de mídia."""
         parsed = parse_marker(body)
         if parsed is None:
-            return False
+            return None
         print(f"[media] pedido: {parsed[0]} x{parsed[2]} | {parsed[1]!r}", flush=True)
+        gid = None
         if self._on_media:
             try:
-                self._on_media(*parsed)
+                gid = self._on_media(*parsed)
             except Exception as e:
                 print(f"[media] erro no callback: {e}", flush=True)
-        return True
+        return f"\n[[media:{gid}]]\n" if gid else ""
 
     def feed(self, delta: str) -> str:
         self._buf += delta
@@ -83,8 +95,11 @@ class MediaMarkerFilter:
                 self._buf = rest  # aguarda o resto do marcador
                 break
             self._buf = rest[j + 2:]
-            if not self._emit(rest[2:j]):
+            repl = self._emit(rest[2:j])
+            if repl is None:
                 out.append(rest[: j + 2])  # marcador desconhecido: mantém como texto
+            else:
+                out.append(repl)
         return "".join(out)
 
     def flush(self) -> str:
@@ -92,6 +107,9 @@ class MediaMarkerFilter:
         rest, self._buf = self._buf, ""
         if rest.startswith("[["):
             body = rest[2:].rstrip("]")
-            if self._emit(body) or _PREFIX_RE.match(body):
+            repl = self._emit(body)
+            if repl is not None:
+                return repl
+            if _PREFIX_RE.match(body):
                 return ""
         return rest

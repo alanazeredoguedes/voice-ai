@@ -1,8 +1,7 @@
 import threading
-import time
 
 from .gamepad import GamepadMonitor, format_gamepad_hotkey
-from .hotkey_manager import _MODIFIER_ALIASES, _MODIFIERS, _key_to_str
+from .hotkey_manager import _MODIFIERS, _key_to_str
 
 
 def capture_hotkey(timeout: float = 10.0) -> str | None:

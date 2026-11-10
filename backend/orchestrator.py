@@ -17,6 +17,8 @@ from .services.brain import ClaudeBrain
 from .services.chats import ChatManager
 from .services.hotkey_manager import HotkeyManager
 from .services.media_search import MediaDispatcher
+from .services import rich_text
+from .services.reply_stream import ReplyComposer
 from .services.speech_engine import SpeechEngine
 from .services.tts import TextToSpeech
 from .settings_store import get_all as get_settings_all
@@ -54,6 +56,10 @@ class Orchestrator:
         # "Parar fala" (ícone da resposta no Chat IA): interrompe só o áudio da resposta atual,
         # o texto continua chegando normalmente
         self._speech_stop = threading.Event()
+        # fala tocando / áudio sendo preparado (o duplo clique no atalho da IA para a fala)
+        self._speaking_refs: set[str] = set()
+        self._preparing_refs: set[str] = set()
+        self._voice_text_done = False  # pergunta por voz: o texto da resposta já terminou (só falta a fala)
         # Cada "ouvir de novo" (e cada "parar") cria uma geração nova: áudio de uma geração antiga
         # que termina de ser gerado depois nunca toca (antes isso fazia falas se sobreporem)
         self._speech_gen = 0
@@ -67,6 +73,10 @@ class Orchestrator:
         self.settings = await get_settings_all()
 
         self.chats = ChatManager(self.settings)
+        from .services import claude_usage
+
+        # uso do plano do Claude (chega a cada resposta): a tela atualiza na hora
+        claude_usage.set_listener(lambda u: self.state.emit({"type": "claude_usage", "usage": u}))
         from .services import speech_cache
 
         speech_cache.set_notifier(self._on_speech_cache_change)
@@ -81,6 +91,7 @@ class Orchestrator:
             on_transcription_progress=lambda pct: self.state.emit({"type": "transcription_progress", "progress": pct}),
             options=self._engine_options(),
             on_loading=self._on_engine_loading,
+            on_partial=self._on_ptt_partial,
         )
 
         self.hotkey = HotkeyManager(
@@ -90,6 +101,8 @@ class Orchestrator:
             on_transcription_release=self._on_transcription_release,
             on_ai_press=self._on_ai_press,
             on_ai_release=self._on_ai_release,
+            window_key=self._hotkeys("window", "<ctrl>+<alt>+<f12>"),
+            on_window_press=self._on_window_press,
         )
 
         self.hotkey.start()
@@ -135,6 +148,10 @@ class Orchestrator:
                 keys = self._hotkeys("ai", None)
                 if keys:
                     self.hotkey.update_ai_key(keys)
+            if "window_key" in new_settings or "window_keys_extra" in new_settings:
+                keys = self._hotkeys("window", None)
+                if keys:
+                    self.hotkey.update_window_key(keys)
 
     def _hotkeys(self, kind: str, default: str | None) -> list[str]:
         """Atalho principal (`<kind>_key`) + adicionais (`<kind>_keys_extra`)."""
@@ -156,10 +173,16 @@ class Orchestrator:
             on_transcription_progress=lambda pct: self.state.emit({"type": "transcription_progress", "progress": pct}),
             options=self._engine_options(),
             on_loading=self._on_engine_loading,
+            on_partial=self._on_ptt_partial,
         )
         self._engine_thread = threading.Thread(target=self.engine.start, daemon=True)
         self._engine_thread.start()
         print("[orchestrator] engine reiniciado", flush=True)
+
+    def _on_ptt_partial(self, text: str) -> None:
+        """Texto parcial enquanto grava pelo atalho da IA: aparece na caixa de mensagem do Chat IA."""
+        if self._mode == "ai":
+            self.state.emit({"type": "ptt_partial", "text": text, "mode": "ai"})
 
     def _on_engine_loading(self, info: dict) -> None:
         """Andamento do carregamento do modelo do Whisper (janelinha, tela do microfone, Configurações)."""
@@ -174,7 +197,22 @@ class Orchestrator:
 
     def emit_speaking(self, ref: str, playing: bool, chat_id: int | None = None) -> None:
         """Avisa a UI que a voz começou/parou. ref="live" = resposta atual; senão, o id da mensagem repetida."""
+        key = f"{ref}:{chat_id}"
+        if playing:
+            self._speaking_refs.add(key)
+        else:
+            self._speaking_refs.discard(key)
         self.state.emit({"type": "tts_playing", "ref": ref, "playing": playing, "chat_id": chat_id})
+
+    def _emit_preparing(self, ref: str, preparing: bool) -> None:
+        if preparing:
+            self._preparing_refs.add(ref)
+        else:
+            self._preparing_refs.discard(ref)
+        self.state.emit({"type": "tts_preparing", "ref": ref, "preparing": preparing})
+
+    def _speech_active(self) -> bool:
+        return bool(self._speaking_refs or self._preparing_refs)
 
     def stop_speech(self) -> None:
         self._speech_stop.set()
@@ -211,7 +249,8 @@ class Orchestrator:
         if message_id is not None:
             m = chat_db.get_message(message_id)
             if m and m["role"] == "assistant" and m["content"]:
-                content, chat_id = m["content"], m["chat_id"]
+                # as posições (start/end) são no texto falado, sem a formatação
+                content, chat_id = rich_text.to_plain(m["content"]), m["chat_id"]
             else:
                 message_id = None
         if message_id is None:  # sem mensagem: o texto recebido já é o trecho a falar
@@ -228,7 +267,7 @@ class Orchestrator:
 
         def _run() -> None:
             # "preparando": o ícone mostra que o áudio está sendo gerado (ainda não está falando)
-            self.state.emit({"type": "tts_preparing", "ref": ref, "preparing": True})
+            self._emit_preparing(ref, True)
             started = False
             pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="tts-replay")
             futures: dict = {}
@@ -267,7 +306,7 @@ class Orchestrator:
                         break
                     if not started:
                         started = True
-                        self.state.emit({"type": "tts_preparing", "ref": ref, "preparing": False})
+                        self._emit_preparing(ref, False)
                         self.emit_speaking(ref, True)
                     try:
                         tts.play_file(path, words, on_start=self._words_emitter(ref, seg["text"]),
@@ -292,7 +331,7 @@ class Orchestrator:
                         except Exception:
                             pass
                 if not started:
-                    self.state.emit({"type": "tts_preparing", "ref": ref, "preparing": False})
+                    self._emit_preparing(ref, False)
                 else:
                     self.emit_speaking(ref, False)
 
@@ -362,15 +401,37 @@ class Orchestrator:
         self._ai_press_times = [t for t in self._ai_press_times if now - t < _CANCEL_WINDOW]
         if len(self._ai_press_times) >= _CANCEL_COUNT:
             self._ai_press_times.clear()
+            with self._ai_lock:
+                generating = self._ai_busy and not self._voice_text_done
+            # a IA ainda está escrevendo a resposta: cancela a pergunta (como antes)
+            if generating and self._try_cancel_ai():
+                return
+            # a resposta já está pronta e a voz está falando (ou preparando): só para a fala;
+            # a resposta fica salva e o "parou em" marca de onde continuar
+            if self._speech_active():
+                if self.engine:
+                    self.engine.cancel_ptt()  # o 1º clique começou a gravar: descarta
+                self.stop_speech()
+                print("[orchestrator] fala parada pelo usuário (duplo clique).", flush=True)
+                return
             if self._try_cancel_ai():
                 return
         with self._ai_lock:
             if self._ai_busy:
                 return
         self._mode = "ai"
-        self._ai_press_times.clear()  # reset para o double-click de cancel ser sempre fresco
+        # reset para o double-click de cancel ser sempre fresco; com a voz falando, este clique pode ser o
+        # 1º de um duplo clique para parar a fala, então ele continua contando
+        if not self._speech_active():
+            self._ai_press_times.clear()
         if self.engine:
-            self.engine.start_ptt()
+            self.state.emit({"type": "ptt_partial", "text": "", "mode": "ai"})  # a caixa de mensagem mostra "Ouvindo..."
+            self.engine.start_ptt(preview=self.engine._loaded_device == "cuda")
+
+    def _on_window_press(self) -> None:
+        """Atalho de mostrar/esconder: a tela do app pede ao Electron para trazer a janela para a frente."""
+        print("[orchestrator] atalho de mostrar/esconder a janela", flush=True)
+        self.state.emit({"type": "toggle_window"})
 
     def _on_ai_release(self) -> None:
         if self._mode == "ai" and self.engine:
@@ -413,6 +474,7 @@ class Orchestrator:
         self._cancel_evt.clear()
         with self._ai_lock:
             self._ai_busy = True
+            self._voice_text_done = False
 
         def emit(event: dict) -> None:
             self.state.emit({**event, "chat_id": chat_id})
@@ -428,7 +490,7 @@ class Orchestrator:
         self._speech_stop.clear()  # nova resposta: "parar fala" anterior não vale mais
         tools: list[dict] = []
         stream_end: list[float] = []
-        streamed: list[str] = []
+        composer = ReplyComposer()  # markdown da resposta + frases para a voz
         finalized = threading.Event()
         from .services import speech_cache
 
@@ -450,12 +512,17 @@ class Orchestrator:
 
         def _stream_claude() -> None:
             try:
-                for sentence in brain.ask_stream(text, on_media=media.request, on_tool=on_tool):
+                for delta in brain.ask_stream(text, on_media=media.request, on_tool=on_tool):
                     if self._cancel_evt.is_set():
                         break
-                    sentence_q.put((sentence, sum(len(x) + 1 for x in streamed)))
-                    streamed.append(sentence)
-                    emit({"type": "chat_chunk", "text": sentence, "done": False})
+                    delta, sentences = composer.feed(delta)
+                    if delta:
+                        emit({"type": "chat_delta", "text": delta})
+                    for sentence, offset in sentences:
+                        sentence_q.put((sentence, offset))
+                if not self._cancel_evt.is_set():
+                    for sentence, offset in composer.finish():
+                        sentence_q.put((sentence, offset))
             except Exception as e:
                 print(f"[orchestrator] stream error: {e}", flush=True)
             finally:
@@ -467,17 +534,19 @@ class Orchestrator:
             """Texto completo: salva a resposta e mostra hora/tempo/botões sem esperar a fala terminar."""
             if self._cancel_evt.is_set():
                 return
-            response = " ".join(streamed)
+            response = composer.md.strip()
             attachments = media.wait_all() if media.has_requests and not self._cancel_evt.is_set() else []
             if not (response or attachments) or self._cancel_evt.is_set():
                 return
             duration = stream_end[0] - t0
             print(f"[orchestrator] ⏱ resposta completa: {duration:.2f}s", flush=True)
-            self.state.emit({"type": "ai_response_ready", "text": response})
+            spoken = rich_text.to_plain(response)  # tela de logs e avisos: sem a formatação
+            self.state.emit({"type": "ai_response_ready", "text": spoken})
             if self._loop:
                 asyncio.run_coroutine_threadsafe(
-                    self._persist_log("ai", text, response, meta, attachments), self._loop
+                    self._persist_log("ai", text, spoken, meta, attachments), self._loop
                 )
+            self._voice_text_done = True
             saver.set_message(self._finalize_voice_chat(chat_id, user_msg_id, response, attachments, duration, tools))
             finalized.set()
 
@@ -661,6 +730,6 @@ class Orchestrator:
         m = chat_db.get_message(message_id)
         if not m or m["role"] != "assistant":
             return
-        pct = speech_cache.coverage(chat_id, message_id, self.tts.voice_key(), m["content"])
+        pct = speech_cache.coverage(chat_id, message_id, self.tts.voice_key(), rich_text.to_plain(m["content"]))
         self.state.emit({"type": "speech_cache_progress", "chat_id": chat_id, "message_id": message_id,
                          "audio_pct": pct, "audio_bytes": speech_cache.message_bytes(chat_id, message_id)})

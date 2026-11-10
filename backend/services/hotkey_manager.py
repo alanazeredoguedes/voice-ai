@@ -88,10 +88,14 @@ class HotkeyManager:
         on_transcription_release: Callable | None = None,
         on_ai_press: Callable | None = None,
         on_ai_release: Callable | None = None,
+        window_key: "str | list[str]" = "<ctrl>+<alt>+<f12>",
+        on_window_press: Callable | None = None,
     ) -> None:
         self._tr = _Action("transcription", _normalize_keys(transcription_key),
                            on_transcription_press, on_transcription_release)
         self._ai = _Action("ai", _normalize_keys(ai_key), on_ai_press, on_ai_release)
+        # mostrar/esconder a janela: só age ao apertar (não tem "soltar")
+        self._win = _Action("window", _normalize_keys(window_key), on_window_press, None)
 
         self._held_mods: set[str] = set()
         self._paused = False
@@ -100,11 +104,11 @@ class HotkeyManager:
         self._gamepad_subscribed = False
 
     @property
-    def _actions(self) -> tuple[_Action, _Action]:
-        return (self._tr, self._ai)
+    def _actions(self) -> tuple[_Action, _Action, _Action]:
+        return (self._tr, self._ai, self._win)
 
     def _all_keys(self) -> list[str]:
-        return self._tr.keys + self._ai.keys
+        return self._tr.keys + self._ai.keys + self._win.keys
 
     def start(self) -> None:
         self._start_keyboard()
@@ -129,6 +133,11 @@ class HotkeyManager:
 
     def update_ai_key(self, key: "str | list[str]") -> None:
         self._ai.set_keys(_normalize_keys(key))
+        self._restart_mouse_if_needed()
+        self._update_gamepad_subscription()
+
+    def update_window_key(self, key: "str | list[str]") -> None:
+        self._win.set_keys(_normalize_keys(key))
         self._restart_mouse_if_needed()
         self._update_gamepad_subscription()
 

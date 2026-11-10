@@ -27,12 +27,6 @@ class StateManager:
     def add_listener(self, listener: Listener) -> None:
         self._listeners.append(listener)
 
-    def remove_listener(self, listener: Listener) -> None:
-        try:
-            self._listeners.remove(listener)
-        except ValueError:
-            pass
-
     @property
     def state(self) -> str:
         return self._state

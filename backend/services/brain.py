@@ -1,6 +1,5 @@
 import json as _json
 import os
-import re
 import shutil
 import subprocess
 import hashlib
@@ -10,25 +9,18 @@ from collections.abc import Callable, Generator
 from datetime import datetime
 from pathlib import Path
 
+from . import claude_usage
 from .media_markers import MediaCallback, MediaMarkerFilter
 
-_MD_RE = re.compile(r"\*{1,3}([^*]+)\*{1,3}|_{1,3}([^_]+)_{1,3}|#{1,6}\s?|`{1,3}")
+# Versão das instruções do app: entra na chave da sessão, então mudar as instruções começa uma
+# sessão nova do Claude (o --resume ignoraria o system prompt novo)
+PROMPT_VERSION = "5"
 
-
-# Travessão (U+2014) e meia-risca (U+2013): o app usa só o hífen simples
-_LONG_DASH_RE = re.compile("[–—]")
-
-
-# Links: [texto](url) vira "texto"; URL solta sai (a resposta é lida em voz alta)
-_MD_LINK_RE = re.compile(r"\[([^\]]*)\]\((?:https?://)[^)\s]*\)")
-_URL_RE = re.compile(r"\s*\(?https?://[^\s)]+\)?")
-
-
-def _strip_md(text: str) -> str:
-    text = _MD_LINK_RE.sub(lambda m: m.group(1), text)
-    text = _URL_RE.sub("", text)
-    text = _MD_RE.sub(lambda m: m.group(1) or m.group(2) or "", text)
-    return _LONG_DASH_RE.sub("-", text)
+# Modelos que dá para escolher no app (apelidos do Claude Code: sempre a versão mais nova de cada um)
+CLAUDE_MODELS = ("haiku", "sonnet", "opus")
+DEFAULT_CLAUDE_MODEL = "haiku"
+# modelo que respondeu de verdade, por escolha - a tela mostra o nome/versão
+resolved_models: dict[str, str] = {}
 
 
 def _friendly_error(detail: str) -> str:
@@ -113,40 +105,37 @@ class ClaudeBrain:
         "Responda sempre em português do Brasil, adequado para ser lido em voz alta. "
         "Para perguntas simples e diretas: responda em no máximo 80 palavras. "
         "Para pedidos de resumo, análise, história ou explicação detalhada: responda de forma completa e sem limite de palavras. "
-        "Nunca use markdown, listas com hífens ou asteriscos, símbolos especiais ou emojis - apenas texto corrido em parágrafos. "
+        "Não use emojis. "
         "Tom informal e direto, como um amigo brasileiro conversando."
     )
 
     # Sempre anexado ao system prompt (mesmo customizado) quando "media_enabled" está ligado.
     MEDIA_INSTRUCTIONS = (
-        "\n\nMÍDIA NO CHAT: o app tem uma tela de chat que mostra imagens e vídeos do YouTube. "
-        "Quando o usuário pedir para VER, MOSTRAR, ACHAR ou BUSCAR imagens, fotos ou vídeos (de jogo, item, "
-        "personagem, lugar, pessoa, qualquer assunto), coloque na resposta um marcador, exatamente assim: "
-        "[[IMAGENS: termo de busca | 4]] ou [[VIDEOS: termo de busca | 3]]. "
-        "O app remove o marcador do texto, faz a busca na internet e coloca as miniaturas no chat. "
-        "Regras do termo de busca: seja específico; para jogos e temas internacionais escreva em inglês, sempre com o "
-        "nome completo do jogo mais o nome exato do item, local, chefe ou personagem "
-        "(ex.: 'Zelda Tears of the Kingdom Zonai Wing', 'Dark Souls Firelink Shrine Crestfallen Warrior'); "
-        "use o contexto da conversa para saber de qual jogo ou assunto o usuário está falando; "
-        "para temas brasileiros escreva em português (ex.: 'Praia de Copacabana Rio de Janeiro'); "
-        "para vídeos de jogo acrescente termos como guide, walkthrough, location ou boss fight quando fizer sentido. "
-        "O número depois da barra é a quantidade: padrão 4 imagens ou 3 vídeos, no máximo 8 imagens e 5 vídeos. "
-        "Pode usar mais de um marcador se o pedido tiver assuntos diferentes. "
-        "Nunca escreva links ou URLs. Você não vê o resultado da busca, então não descreva as imagens como se as tivesse "
-        "visto: diga algo curto e natural, como 'Coloquei umas imagens do item aí no chat pra você', e se souber, "
-        "complete com uma explicação útil sobre o assunto."
+        "\n\nIMAGENS E VÍDEOS NO CHAT: a tela do chat mostra imagens e vídeos no meio da sua resposta. Para colocar, "
+        "escreva numa linha sozinha, entre parágrafos, logo depois do trecho que elas ilustram:\n"
+        "[[IMAGENS: termo de busca | o que as imagens precisam mostrar]]\n"
+        "[[VIDEOS: termo de busca | o que o vídeo precisa mostrar]]\n"
+        "O app busca na internet, confere as imagens e coloca só as que mostram exatamente o que você descreveu, "
+        "enquanto você continua escrevendo: não espere, siga com o resto da resposta normalmente. "
+        "Termo de busca: específico; para jogos e temas internacionais em inglês, com o nome completo do jogo e o "
+        "nome exato do item, local, chefe ou personagem (ex.: 'Zelda Tears of the Kingdom Princess Zelda'); use o "
+        "contexto da conversa para saber de qual jogo ou assunto se trata; temas brasileiros em português (ex.: "
+        "'Praia de Copacabana Rio de Janeiro'); para vídeos de jogo acrescente guide, walkthrough, location ou boss "
+        "fight quando fizer sentido. Descrição: curta, em português, do que precisa aparecer (ex.: 'a Princesa Zelda "
+        "com a roupa de exploradora'). Pode haver mais de um marcador, cada um perto do assunto dele. "
+        "Nunca fale das imagens nem da busca: nada de 'aqui estão algumas imagens', 'vou buscar', 'deixei umas "
+        "imagens no chat' ou 'veja abaixo'. A resposta é lida em voz alta e as imagens simplesmente aparecem. "
+        "Nunca escreva links ou URLs."
     )
 
     # Mídia por iniciativa própria (setting "media_proactive"): a IA complementa a resposta sozinha
     MEDIA_PROACTIVE = (
-        " MÍDIA POR CONTA PRÓPRIA: você também pode, por iniciativa sua, complementar a resposta com imagens ou "
-        "um vídeo quando isso ajudar de verdade a entender, mesmo sem o usuário pedir. Bons casos: como é um item, "
-        "arma, armadura, personagem, inimigo, chefe, lugar ou mapa; onde fica algo; o visual de algo que você está "
-        "descrevendo; e vídeo quando a resposta envolve um passo a passo, um caminho, um puzzle, uma luta de chefe ou "
-        "uma técnica difícil de explicar só com palavras. Nesses casos use no máximo um marcador (normalmente 3 ou 4 "
-        "imagens, ou 2 vídeos) e avise de forma curta, como 'Deixei umas imagens do item no chat'. Não coloque mídia "
-        "em conversa casual, contas, opiniões, perguntas sim/não ou respostas que já ficam claras só com texto; "
-        "e não repita uma busca de mídia que já foi feita na mesma conversa sobre o mesmo assunto."
+        " Use imagens por conta própria sempre que uma referência visual ajudar a entender, mesmo sem o usuário "
+        "pedir: como é um item, arma, armadura, personagem, inimigo, chefe, lugar, mapa, objeto, produto, tela de "
+        "um programa ou uma pessoa conhecida; onde fica algo; um passo a passo que fica mais claro vendo. Vídeo "
+        "quando a resposta envolver um caminho, um puzzle, uma luta de chefe ou uma técnica difícil de explicar só "
+        "com palavras. Não use em conversa casual, contas, opiniões ou respostas que já ficam claras só com texto, "
+        "e não repita imagens de um assunto que já foi mostrado nesta conversa."
     )
     # Pesquisa na internet (setting "web_search"): libera as ferramentas WebSearch/WebFetch do Claude Code
     WEB_TOOLS = "WebSearch WebFetch"
@@ -157,8 +146,8 @@ class ClaudeBrain:
         "e, se a busca não trouxer o dia certo, abra com WebFetch a página inicial de um site de notícias (ex.: g1.globo.com). "
         "Para tempo/clima, não pesquise: abra direto com WebFetch https://wttr.in/NOME+DA+CIDADE?format=j1&lang=pt "
         "(dados atuais e previsão de hoje e dos próximos dias; ex.: https://wttr.in/Niteroi?format=j1&lang=pt). "
-        "Não pesquise para conversa casual ou o que você já sabe bem. Responda direto com o que encontrou, em texto "
-        "corrido: NUNCA liste fontes, links ou URLs no fim (a resposta é lida em voz alta); se for útil, cite só o "
+        "Não pesquise para conversa casual ou o que você já sabe bem. Responda direto com o que encontrou "
+        "e NUNCA liste fontes, links ou URLs no fim (a resposta é lida em voz alta); se for útil, cite só o "
         "nome do site no meio da frase, como 'segundo o g1'."
     )
 
@@ -169,6 +158,25 @@ class ClaudeBrain:
 
     MEDIA_ON_REQUEST_ONLY = (
         " Só use o marcador quando o usuário quiser ver ou achar mídia; perguntas normais não levam marcador."
+    )
+
+    # Formatação (sempre anexada, mesmo com system prompt do chat): a tela desenha markdown simples e a voz
+    # lê só o texto (sem os símbolos; tabelas não são lidas, ver services/rich_text.py)
+    FORMAT_INSTRUCTIONS = (
+        "\n\nFORMATAÇÃO: a tela do chat mostra markdown simples e a voz lê só o texto (os símbolos não são falados). "
+        "Use formatação quando ela deixar a resposta mais fácil de entender:\n"
+        "- '## ' para um subtítulo curto separando as partes de uma explicação maior ('### ' dentro de uma parte);\n"
+        "- **negrito** para nomes e termos importantes; em listas de características use '- **Termo:** explicação';\n"
+        "- '- ' para listas de itens, opções, dicas ou recompensas;\n"
+        "- '1. ', '2. '... para passo a passo, um passo por item, em frases completas;\n"
+        "- tabela (| coluna | coluna | com a linha |---|---| embaixo do cabeçalho) para comparar valores ou opções. "
+        "A voz não lê a tabela e avisa sozinha que ela está no chat, então não escreva 'segue a tabela' nem algo "
+        "parecido; depois dela, escreva em texto a conclusão principal;\n"
+        "- `código` só para comandos ou nomes técnicos.\n"
+        "Para conversa casual, respostas curtas, perguntas simples ou opiniões, responda em texto corrido, sem "
+        "títulos nem listas. Comece sempre com uma ou duas frases respondendo direto, antes de qualquer título ou "
+        "lista. Separe parágrafos, títulos, listas e tabelas com uma linha em branco. Não use emojis, citações (>), "
+        "linhas horizontais, links ou listas dentro de listas."
     )
 
     def __init__(
@@ -208,8 +216,8 @@ class ClaudeBrain:
         - o system prompt (ou a busca de mídia) mudou desde que a sessão começou;
         - o arquivo da sessão sumiu (limpeza automática do Claude Code)."""
         key = hashlib.sha256(
-            f"{self._base_prompt()}|{self._settings.get('media_enabled', True)}|"
-            f"{self._settings.get('media_proactive', True)}|{self._web_enabled()}".encode("utf-8")
+            f"v{PROMPT_VERSION}|{self._base_prompt()}|{self._settings.get('media_enabled', True)}|"
+            f"{self._settings.get('media_proactive', True)}|{self._web_enabled()}|False".encode("utf-8")
         ).hexdigest()
         if self._session_id is not None and self._session_key == key and _session_exists(self._session_id):
             return ["--resume", self._session_id], False
@@ -240,7 +248,7 @@ class ClaudeBrain:
             "use vírgula, ponto ou o hífen simples (-)."
         )
         web = self.WEB_INSTRUCTIONS if self._web_enabled() else self.WEB_OFF
-        return f"{base} Data e hora atuais: {now}.{style}{web}{media}"
+        return f"{base} Data e hora atuais: {now}.{style}{self.FORMAT_INSTRUCTIONS}{web}{media}"
 
     def _web_enabled(self) -> bool:
         return bool(self._settings.get("web_search", True))
@@ -250,9 +258,20 @@ class ClaudeBrain:
         Vale só para as chamadas do app: não mexe nas configurações do Claude Code da máquina."""
         # --tools limita as ferramentas que o Claude enxerga: sem isso ele também tentava usar terminal,
         # arquivos etc. (bloqueados), perdendo vários segundos antes de responder
-        if self._web_enabled():
-            return ["--tools", self.WEB_TOOLS, "--allowedTools", self.WEB_TOOLS]
-        return ["--tools", ""]
+        web = self._web_enabled()
+        args = ["--tools", self.WEB_TOOLS if web else ""]
+        if web:
+            args += ["--allowedTools", self.WEB_TOOLS]
+        # sem servidores MCP da máquina: mais rápido
+        return args + ["--strict-mcp-config"]
+
+    def _model_choice(self) -> str:
+        m = str(self._settings.get("claude_model") or "")
+        return m if m in CLAUDE_MODELS else DEFAULT_CLAUDE_MODEL
+
+    def _model_args(self) -> list[str]:
+        """Modelo escolhido no app: vale só para esta chamada (não mexe nas configurações do Claude Code)."""
+        return ["--model", self._model_choice()]
 
     def _with_history(self, question: str, new_session: bool) -> str:
         if not new_session or not self._history_seed:
@@ -267,7 +286,7 @@ class ClaudeBrain:
     def ask(self, question: str) -> str:
         args, new_session = self._session_args()
         question = self._with_history(question, new_session)
-        cmd = [_CLAUDE_BIN, "-p", "--system-prompt", self._system_prompt(), *self._tool_args(), *args]
+        cmd = [_CLAUDE_BIN, "-p", *self._model_args(), "--system-prompt", self._system_prompt(), *self._tool_args(), *args]
         print(f"[brain] CMD: {cmd[0]} -p --system-prompt ... {' '.join(cmd[-2:])}", flush=True)
         try:
             self._proc = subprocess.Popen(
@@ -303,10 +322,11 @@ class ClaudeBrain:
         on_media: MediaCallback | None = None,
         on_tool: Callable[[str, str], None] | None = None,
     ) -> Generator[str, None, None]:
-        """Yield frases completas conforme o Claude vai gerando a resposta.
+        """Yield o texto (markdown) conforme o Claude vai gerando, pedaço a pedaço.
+        O corte em frases para a voz fica com ``ReplyComposer`` (services/reply_stream.py).
 
-        Marcadores de mídia ([[IMAGENS: ...]] / [[VIDEOS: ...]]) são removidos do texto e
-        repassados para ``on_media(kind, query, n)``.
+        Marcadores de mídia ([[IMAGENS: ...]] / [[VIDEOS: ...]]) disparam a busca via
+        ``on_media(kind, query, n)`` e viram a linha ``[[media:id]]`` no lugar onde estavam.
         """
         media_filter = MediaMarkerFilter(on_media)
         effort = self._settings.get("effort", "low")
@@ -317,6 +337,7 @@ class ClaudeBrain:
             "--output-format", "stream-json",
             "--include-partial-messages",
             "--effort", effort,
+            *self._model_args(),
             *self._tool_args(),
             "--system-prompt", self._system_prompt(),
             *session_args,
@@ -339,8 +360,8 @@ class ClaudeBrain:
             self._proc.stdin.write(question)
             self._proc.stdin.close()
 
-            buf = ""
             first_content = True
+            new_block = False
             got_streaming = False
             got_text = False
             n = 0
@@ -356,6 +377,12 @@ class ClaudeBrain:
 
                 text = ""
                 t = obj.get("type", "")
+                if t == "rate_limit_event":
+                    # % usada da sessão (5 h) e do limite semanal do plano: a tela mostra
+                    claude_usage.record(obj.get("rate_limit_info") or {})
+                    continue
+                if t == "system" and obj.get("subtype") == "init" and obj.get("model"):
+                    resolved_models[self._model_choice()] = str(obj["model"])
                 if t == "stream_event":
                     # --include-partial-messages embrulha os eventos da API em {"type":"stream_event","event":{...}}
                     obj = obj.get("event") or {}
@@ -372,12 +399,19 @@ class ClaudeBrain:
                                 on_tool(str(block.get("name") or ""), detail)
                             except Exception as e:
                                 print(f"[brain] on_tool error: {e}", flush=True)
+                if t == "content_block_start" and (obj.get("content_block") or {}).get("type") == "text" \
+                        and got_streaming:
+                    # texto novo depois de uma ferramenta (ex.: busca de imagens): é outro parágrafo
+                    new_block = True
                 if t == "content_block_delta":
                     d = obj.get("delta", {})
                     if d.get("type") == "text_delta":
                         text = d.get("text", "")
                         if text:
                             got_streaming = True
+                            if new_block:
+                                text = "\n\n" + text
+                                new_block = False
                 elif t == "assistant" and not got_streaming:
                     for block in obj.get("message", {}).get("content", []):
                         if block.get("type") == "text":
@@ -401,38 +435,16 @@ class ClaudeBrain:
                 if first_content:
                     print(f"[brain] ⏱ primeiro token: {time.perf_counter()-t0:.2f}s", flush=True)
                     first_content = False
+                n += len(text)
+                yield text
 
-                buf += text
-                while len(buf) >= 2:
-                    boundary = -1
-                    for i in range(len(buf) - 1):
-                        if buf[i] in ".!?" and buf[i + 1] in " \n":
-                            boundary = i + 2
-                            break
-                        # vírgula também corta frases longas; no primeiro trecho corta mais cedo
-                        # (5 palavras) para o primeiro áudio ser pedido logo e a voz começar antes
-                        if buf[i] == "," and len(buf[: i + 1].split()) >= (5 if n == 0 else 20):
-                            boundary = i + 1
-                            break
-                    if boundary == -1:
-                        break
-                    sentence = _strip_md(buf[:boundary]).strip()
-                    buf = buf[boundary:]
-                    if sentence and len(sentence.split()) >= 3:
-                        n += 1
-                        print(f"[brain] ⏱ frase#{n}: {time.perf_counter()-t0:.2f}s | {len(sentence.split())} palavras", flush=True)
-                        yield sentence
-
-            buf += media_filter.flush()
-            remaining = _strip_md(buf).strip()
-            if remaining and len(remaining.split()) >= 2:
-                n += 1
-                print(f"[brain] ⏱ frase#{n} (fim): {time.perf_counter()-t0:.2f}s", flush=True)
-                yield remaining
+            rest = media_filter.flush()
+            if rest:
+                yield rest
 
             if self._proc:
                 self._proc.wait(timeout=10)
-            print(f"[brain] ⏱ Claude finalizado: {time.perf_counter()-t0:.2f}s | {n} frases", flush=True)
+            print(f"[brain] ⏱ Claude finalizado: {time.perf_counter()-t0:.2f}s | {n} caracteres", flush=True)
         except FileNotFoundError:
             print(f"[brain] claude não encontrado: {_CLAUDE_BIN}", flush=True)
             yield (

@@ -14,6 +14,8 @@ import WhisperModelPicker from '../components/WhisperModelPicker.vue'
 import HoldToReveal from '../components/HoldToReveal.vue'
 import CustomSelect from '../components/CustomSelect.vue'
 import ClaudeMonitoringStatus from '../components/ClaudeMonitoringStatus.vue'
+import { CLAUDE_MODEL_OPTIONS, DEFAULT_CLAUDE_MODEL } from '../utils/claudeModels'
+import ClaudeUsageCard from '../components/ClaudeUsageCard.vue'
 
 const store = useSettingsStore()
 const statusStore = useStatusStore()
@@ -225,12 +227,21 @@ onUnmounted(() => {
             @update:primary="(v) => set({ ai_key: v })"
             @update:extra="(v) => set({ ai_keys_extra: v })"
           />
+          <HotkeyList
+            label="Mostrar/esconder o Voice AI (por cima do jogo)"
+            :primary="store.settings.window_key ?? '<ctrl>+<alt>+<f12>'"
+            :extra="store.settings.window_keys_extra ?? []"
+            @update:primary="(v) => set({ window_key: v })"
+            @update:extra="(v) => set({ window_keys_extra: v })"
+          />
         </div>
         <p class="text-xs text-slate-500 leading-relaxed">
           <span class="text-slate-400 font-medium">Dica:</span>
           cada função aceita vários atalhos ao mesmo tempo (ex.: um no teclado/mouse e outro no controle).
           Dois cliques rápidos no botão de transcrição cancelam a transcrição em andamento.
-          Dois cliques rápidos no botão de IA cancelam a resposta em andamento.
+          Dois cliques rápidos no botão de IA cancelam a resposta em andamento (ou param a fala, se ela já terminou de responder).
+          O atalho de mostrar/esconder traz o Voice AI para a frente de qualquer janela, inclusive de jogos em tela cheia
+          sem bordas; apertando de novo, ele volta para trás.
         </p>
       </section>
 
@@ -424,6 +435,28 @@ onUnmounted(() => {
         </div>
         <!-- Coleta de dados do Claude Code pela empresa (telemetria): verificado ao abrir o app e a cada 30 min -->
         <ClaudeMonitoringStatus v-if="claudeAccount?.installed" class="-mt-1 pb-3 border-b border-slate-700/40" />
+        <div class="flex flex-col gap-1.5">
+          <p class="text-sm text-slate-200">Modelo do Claude</p>
+          <p class="text-xs text-slate-500 leading-relaxed">
+            Usado em todos os chats do Chat IA (também dá para trocar na caixa de mensagem). Vale só neste app:
+            o Claude Code usado fora daqui continua com o modelo dele.
+          </p>
+          <CustomSelect
+            :model-value="store.settings.claude_model || DEFAULT_CLAUDE_MODEL"
+            :options="CLAUDE_MODEL_OPTIONS"
+            @update:model-value="(v) => set({ claude_model: v })"
+          />
+        </div>
+        <div class="flex flex-col gap-2 rounded-xl border border-slate-700/50 bg-slate-900/40 p-3.5">
+          <div>
+            <p class="text-sm text-slate-200">Uso do plano</p>
+            <p class="text-xs text-slate-500 leading-relaxed mt-0.5">
+              Os mesmos números de claude.ai, em Configurações e Uso. Atualizam a cada resposta da IA
+              (também aparecem ao lado do botão de enviar, no Chat IA).
+            </p>
+          </div>
+          <ClaudeUsageCard />
+        </div>
         <SettingToggle
           :model-value="store.settings.web_search ?? true"
           label="Pesquisar na internet"

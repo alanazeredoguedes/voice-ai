@@ -8,6 +8,7 @@ import threading
 from typing import Any
 
 from ..config import DB_PATH
+from . import rich_text
 from .brain import ClaudeBrain
 
 # Quantas mensagens anteriores vão junto quando uma conversa precisa recomeçar no Claude
@@ -45,7 +46,7 @@ def list_chats() -> list[dict[str, Any]]:
     out = []
     for r in rows:
         d = _chat_row(r)
-        last = (d.get("last_message") or "").strip().replace("\n", " ")
+        last = rich_text.to_plain(d.get("last_message") or "").strip().replace("\n", " ")
         d["last_message"] = last[:120]
         d["audio_bytes"] = usage.get(d["id"], {}).get("bytes", 0)  # áudios salvos das respostas
         out.append(d)
@@ -187,7 +188,9 @@ def history_seed(chat_id: int, question: str) -> str:
             "SELECT role, content FROM chat_messages WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
             (chat_id, HISTORY_SEED_MESSAGES + 1),
         ).fetchall()
-    msgs = [(r["role"], (r["content"] or "").strip()) for r in reversed(rows)]
+    # respostas: só o texto (sem formatação nem marcadores de imagem)
+    msgs = [(r["role"], (r["content"] or "").strip() if r["role"] == "user" else rich_text.to_plain(r["content"] or ""))
+            for r in reversed(rows)]
     # a pergunta atual já foi salva antes de chamar o Claude: não repete
     if msgs and msgs[-1][0] == "user" and msgs[-1][1] == question.strip():
         msgs.pop()

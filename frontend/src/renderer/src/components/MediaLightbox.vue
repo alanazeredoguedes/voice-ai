@@ -3,9 +3,19 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { MediaItem } from '../types'
 import { preloadImages, preloadStatus } from '../utils/imagePreload'
 import { copyImage, saveImage } from '../utils/imageActions'
+import { stopSpeech } from '../api'
 import ImageMenu from './ImageMenu.vue'
 
 const props = defineProps<{ items: MediaItem[]; index: number }>()
+
+// abriu um vídeo (ele começa a tocar): para a voz da IA para dar para ouvir o vídeo
+watch(
+  () => props.items[props.index]?.kind,
+  (kind) => {
+    if (kind === 'video') void stopSpeech().catch(() => undefined)
+  },
+  { immediate: true }
+)
 const emit = defineEmits<{ close: []; 'update:index': [value: number] }>()
 
 const current = computed(() => props.items[props.index])

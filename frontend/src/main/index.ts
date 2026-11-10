@@ -9,6 +9,7 @@ import { createHash } from 'crypto'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { spawn, ChildProcess, SpawnOptions } from 'child_process'
 import { checkClaudeMonitoring, type MonitoringLevel, type MonitoringReport } from './claudeMonitoring'
+import { toggleWindowOnTop } from './windowToggle'
 
 const BACKEND_PORT = 18450
 const BACKEND_URL = `http://127.0.0.1:${BACKEND_PORT}`
@@ -843,6 +844,12 @@ ipcMain.handle('media:save-image', async (_e, opts: { urls: string[]; name?: str
   for (let i = 2; existsSync(path); i++) path = join(dir, `${base}-${i}.${ext}`)
   writeFileSync(path, img.data)
   return { ok: true, path }
+})
+
+// Atalho "mostrar/esconder": o backend avisa a tela, que pede isto aqui (ver windowToggle.ts)
+ipcMain.handle('window:toggle', () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return null
+  return toggleWindowOnTop(mainWindow)
 })
 
 ipcMain.handle('shell:show-item', (_e, path: string) => {

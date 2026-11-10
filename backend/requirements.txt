@@ -10,9 +10,7 @@ pynput>=1.7
 edge-tts>=7.0
 pyperclip>=1.9
 python-multipart
-anthropic
 elevenlabs
-aiofiles
 argostranslate
 pysdl2; sys_platform == "win32"
 pysdl2-dll; sys_platform == "win32"

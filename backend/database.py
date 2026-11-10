@@ -147,8 +147,3 @@ async def _migrate_first_chat(db: aiosqlite.Connection) -> None:
     )
     print(f"[db] chats: histórico atual migrado para 'Conversa principal' (id={chat_id})", flush=True)
 
-
-async def get_db() -> aiosqlite.Connection:
-    db = await aiosqlite.connect(DB_PATH)
-    db.row_factory = aiosqlite.Row
-    return db

@@ -3,6 +3,9 @@ export interface Settings {
   ai_key: string
   transcription_keys_extra?: string[]
   ai_keys_extra?: string[]
+  /** mostrar/esconder o Voice AI por cima de qualquer janela */
+  window_key?: string
+  window_keys_extra?: string[]
   model: 'tiny' | 'base' | 'small' | 'medium' | 'large-v3-turbo' | 'large-v3'
   device: 'auto' | 'cuda' | 'cpu'
   compute_type: string
@@ -25,6 +28,8 @@ export interface Settings {
   /** limite dos áudios salvos por chat (MB) */
   speech_cache_limit_mb?: number
   web_search?: boolean
+  /** modelo do Claude no Chat IA (todos os chats) */
+  claude_model?: 'haiku' | 'sonnet' | 'opus'
   serper_api_key?: string
   image_provider?: 'duckduckgo' | 'serper' | null
   [key: string]: unknown
@@ -67,9 +72,11 @@ export interface WhisperModel {
 }
 
 export interface StateEvent {
-  type: 'state_changed' | 'audio_level' | 'log_added' | 'transcription_ready' | 'transcription_progress' | 'translate_download_progress' | 'chat_chunk' | 'chat_error' | 'voice_user_message' | 'voice_chat_cancelled' | 'chat_media' | 'tts_playing' | 'chats_changed' | 'ai_rejected_busy' | 'chat_activity' | 'tts_preparing' | 'tts_words' | 'speech_cache_progress' | 'engine_loading' | 'benchmark_started' | 'benchmark_progress' | 'benchmark_result' | 'benchmark_done' | 'model_download_progress' | 'model_download_complete' | 'model_download_error' | 'pong'
+  type: 'state_changed' | 'audio_level' | 'log_added' | 'transcription_ready' | 'transcription_progress' | 'translate_download_progress' | 'chat_chunk' | 'chat_delta' | 'claude_usage' | 'ptt_partial' | 'toggle_window' | 'ai_rejected_short' | 'chat_error' | 'voice_user_message' | 'voice_chat_cancelled' | 'chat_media' | 'tts_playing' | 'chats_changed' | 'ai_rejected_busy' | 'chat_activity' | 'tts_preparing' | 'tts_words' | 'speech_cache_progress' | 'engine_loading' | 'benchmark_started' | 'benchmark_progress' | 'benchmark_result' | 'benchmark_done' | 'model_download_progress' | 'model_download_complete' | 'model_download_error' | 'pong'
   model?: string
   state?: AppState
+  /** ptt_partial: de qual atalho é a gravação ("ai" = falar com a IA) */
+  mode?: string
   level?: number
   entry?: LogEntry
   text?: string
@@ -96,6 +103,8 @@ export interface StateEvent {
   status?: MediaGroup['status']
   items?: MediaItem[]
   provider?: string
+  picked?: boolean
+  more?: MediaItem[]
   // tts_playing: ref = "live" (resposta atual) ou "msg:<id>" (repetição)
   ref?: string
   playing?: boolean
@@ -146,6 +155,10 @@ export interface MediaGroup {
   error?: string
   /** quem respondeu a busca: duckduckgo | serper | youtube */
   provider?: string
+  /** escolhidas pela IA depois de ver a busca (layout de destaque no meio do texto) */
+  picked?: boolean
+  /** o resto da busca: só aparece no visualizador ("+N") */
+  more?: MediaItem[]
 }
 
 export interface Chat {

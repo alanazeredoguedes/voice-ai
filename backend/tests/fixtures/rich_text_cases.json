@@ -1,0 +1,97 @@
+[
+  {
+    "name": "texto antigo (corrido)",
+    "md": "O Lula tem 81 anos. Ele nasceu em 1945, em Caetés.",
+    "plain": "O Lula tem 81 anos. Ele nasceu em 1945, em Caetés."
+  },
+  {
+    "name": "parágrafos",
+    "md": "Primeiro parágrafo.\n\nSegundo parágrafo.",
+    "plain": "Primeiro parágrafo.\nSegundo parágrafo."
+  },
+  {
+    "name": "negrito e itálico",
+    "md": "Os **amiibo** são *figuras* da Nintendo.",
+    "plain": "Os amiibo são figuras da Nintendo."
+  },
+  {
+    "name": "negrito no começo do item",
+    "md": "- **Baús:** com armas e itens.",
+    "plain": "Baús: com armas e itens."
+  },
+  {
+    "name": "título",
+    "md": "## Para que servem?\nExplicação aqui.",
+    "plain": "Para que servem?\nExplicação aqui."
+  },
+  {
+    "name": "lista numerada",
+    "md": "Como usar:\n1. Abra o menu.\n2. Selecione **amiibo**.",
+    "plain": "Como usar:\n1. Abra o menu.\n2. Selecione amiibo."
+  },
+  {
+    "name": "lista com asterisco",
+    "md": "* item um\n* item dois",
+    "plain": "item um\nitem dois"
+  },
+  {
+    "name": "tabela",
+    "md": "Os valores:\n| Item | Preço |\n|---|---|\n| Espada | 10 |\n| Escudo | 5 |\nDepois da tabela.",
+    "plain": "Os valores:\nDeixei uma tabela aqui no chat pra você dar uma olhada.\nDepois da tabela."
+  },
+  {
+    "name": "marcador de mídia",
+    "md": "Olha só:\n[[media:abc123]]\nDepois das imagens.",
+    "plain": "Olha só:\nDepois das imagens."
+  },
+  {
+    "name": "código",
+    "md": "Use `npm run dev` para rodar.",
+    "plain": "Use npm run dev para rodar."
+  },
+  {
+    "name": "link",
+    "md": "Veja no [site oficial](https://nintendo.com) agora.",
+    "plain": "Veja no site oficial agora."
+  },
+  {
+    "name": "url solta",
+    "md": "Mais em https://exemplo.com/x e pronto.",
+    "plain": "Mais em e pronto."
+  },
+  {
+    "name": "url entre parênteses",
+    "md": "Fonte (https://g1.globo.com) hoje.",
+    "plain": "Fonte hoje."
+  },
+  {
+    "name": "asterisco solto",
+    "md": "Conta: 5 * 3 = 15.",
+    "plain": "Conta: 5 * 3 = 15."
+  },
+  {
+    "name": "negrito sem fechar",
+    "md": "Texto **sem fechar até o fim",
+    "plain": "Texto sem fechar até o fim"
+  },
+  {
+    "name": "travessão vira hífen (normalize)",
+    "md": "Antes - depois.",
+    "plain": "Antes - depois."
+  },
+  {
+    "name": "linhas em branco extras",
+    "md": "A.\n\n\n\nB.",
+    "plain": "A.\nB."
+  },
+  {
+    "name": "colchete comum",
+    "md": "Valor [aprox] de 10.",
+    "plain": "Valor [aprox] de 10."
+  },
+  {
+    "name": "duas tabelas separadas",
+    "md": "| a | b |\n|---|---|\n| 1 | 2 |\n\nTexto.\n| c |\n|---|\n| 3 |",
+    "plain": "Deixei uma tabela aqui no chat pra você dar uma olhada.\nTexto.\nDeixei uma tabela aqui no chat pra você dar uma olhada."
+  }
+]

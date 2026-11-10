@@ -10,7 +10,8 @@ import threading
 import urllib.request
 
 
-_SENTENCE_END = re.compile(r"(?<=[.!?…])\s+")
+# fim de frase, ou fim de linha (título, item de lista, linha de tabela)
+_SENTENCE_END = re.compile(r"(?<=[.!?…])\s+|\s*\n\s*")
 
 
 def split_for_speech(text: str, max_words: int = 40) -> list[str]:
@@ -172,17 +173,6 @@ class TextToSpeech:
         do meio, parar no fim de um trecho). on_start(words, speed, lead) no instante em que o som começa."""
         self._play_mp3(path, (lambda speed, lead: on_start(words, speed, lead)) if on_start else None,
                        seek_s=seek_s, stop_s=stop_s)
-
-    def play_prepared(self, path: str, on_start=None) -> None:
-        """Toca o áudio preparado. ``on_start(words, speed, lead)`` é chamado no instante em que o som
-        começa a sair, com o tempo de cada palavra (ou None se o serviço não mandou), a velocidade
-        aplicada e o silêncio inicial em segundos."""
-        words, _ = self.take_meta(path)
-        try:
-            self.play_file(path, words, on_start)
-        finally:
-            if os.path.exists(path):
-                os.unlink(path)
 
     def _set_words(self, path: str, words: list[dict]) -> None:
         if words:

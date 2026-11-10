@@ -6,7 +6,12 @@ import { clearChatSpeechCache, getAudioRanges, getTtsMuted, getTtsSpeed, getTtsV
 import { useSettingsStore } from '../stores/settings'
 import type { Chat, ChatMessage } from '../types'
 import CopyButton from '../components/CopyButton.vue'
-import MediaGrid from '../components/MediaGrid.vue'
+import RichMessage from '../components/RichMessage.vue'
+import ClaudeModelPicker from '../components/ClaudeModelPicker.vue'
+import ClaudeUsageChip from '../components/ClaudeUsageChip.vue'
+import { rangeFor, plainOffset } from '../utils/textMap'
+import { stripMedia } from '../utils/richText'
+import { onWsMessage } from '../api/ws'
 import ChatSwitcher from '../components/ChatSwitcher.vue'
 import ChatFormModal from '../components/ChatFormModal.vue'
 import ConfirmModal from '../components/ConfirmModal.vue'
@@ -17,7 +22,8 @@ const messagesEl = ref<HTMLElement | null>(null)
 const textareaEl = ref<HTMLTextAreaElement | null>(null)
 const ttsMuted = ref(false)
 const ttsVolume = ref(1.0)
-const confirmDeleteId = ref<number | null>(null)
+// mensagem com o "Apagar? Sim / Não" aberto (pode ser uma que só existe na tela, ex.: resposta cancelada)
+const confirmDeleteMsg = ref<ChatMessage | null>(null)
 
 // ---------- vários chats ----------
 const formOpen = ref(false)
@@ -99,7 +105,7 @@ async function saveChatForm(data: { name: string; system_prompt: string }): Prom
 }
 
 async function selectChat(id: number): Promise<void> {
-  confirmDeleteId.value = null
+  confirmDeleteMsg.value = null
   await store.selectChat(id)
   scrollToBottom()
 }
@@ -261,11 +267,9 @@ const highlights = (globalThis as unknown as { CSS?: { highlights?: HighlightReg
 const HighlightCtor = (globalThis as unknown as { Highlight?: new (...r: AbstractRange[]) => { priority: number } })
   .Highlight
 
-/** Faixa [start, end) do texto de uma mensagem, ou null se o texto ainda não está na tela */
+/** Faixa [start, end) do texto falado de uma mensagem, ou null se o texto ainda não está na tela */
 function textRange(msg: ChatMessage, start: number, end: number): StaticRange | null {
-  const node = contentEls.get(msg)?.firstChild
-  if (!node || node.nodeType !== Node.TEXT_NODE || (node as Text).length < end || start >= end) return null
-  return new StaticRange({ startContainer: node, startOffset: start, endContainer: node, endOffset: end })
+  return rangeFor(contentEls.get(msg), start, end)
 }
 
 /** Pinta (ou apaga) uma marcação; quanto maior a prioridade, mais por cima ela fica */
@@ -503,9 +507,46 @@ function scrollToBottom(): void {
   })
 }
 
+// ---------- falando pelo atalho da IA: o texto vai aparecendo na caixa de mensagem ----------
+// (prévia enquanto grava; ao soltar, a transcrição completa vira a pergunta e vai para o chat)
+const voiceDraft = ref<string | null>(null)
+let lastVoiceState = ''
+let draftTimer: ReturnType<typeof setTimeout> | null = null
+
+function setVoiceDraft(v: string | null): void {
+  if (draftTimer) clearTimeout(draftTimer)
+  draftTimer = null
+  voiceDraft.value = v
+  nextTick(autoResize)
+}
+
+const unsubVoiceDraft = onWsMessage((e) => {
+  if (e.type === 'ptt_partial' && e.mode === 'ai') {
+    setVoiceDraft(e.text ?? '')
+  } else if (e.type === 'voice_user_message' || e.type === 'ai_rejected_short' || e.type === 'ai_rejected_busy') {
+    setVoiceDraft(null) // a pergunta foi para o chat (ou não foi aceita)
+  } else if (e.type === 'state_changed' && e.state) {
+    if (voiceDraft.value !== null && e.state === 'idle') {
+      // cancelou a gravação (ou não tinha fala): limpa; depois de processar, espera a pergunta chegar
+      if (lastVoiceState === 'recording') setVoiceDraft(null)
+      else draftTimer = setTimeout(() => setVoiceDraft(null), 2500)
+    }
+    lastVoiceState = e.state
+  }
+})
+onUnmounted(() => {
+  unsubVoiceDraft()
+  if (draftTimer) clearTimeout(draftTimer)
+})
+
+function onInputTyping(e: Event): void {
+  if (voiceDraft.value === null) input.value = (e.target as HTMLTextAreaElement).value
+  autoResize()
+}
+
 async function send(): Promise<void> {
   const text = input.value.trim()
-  if (!text || store.streaming) return
+  if (!text || store.streaming || voiceDraft.value !== null) return
   input.value = ''
   autoResize()
   await store.sendMessage(text)
@@ -552,13 +593,14 @@ async function speakFrom(msg: ChatMessage, start: number, end: number | null = n
     notice(msg, 'A voz está mutada')
     return
   }
-  const text = msg.content.slice(start, end ?? undefined)
+  const plain = store.plainOf(msg) // as posições são no texto falado (sem a formatação)
+  const text = plain.slice(start, end ?? undefined)
   if (!text.trim()) return
   // "Continuar" (de onde parou): o sublinhado do "parou em" fica até a voz começar.
   // Qualquer outro começo (seleção, do início): o sublinhado antigo sai na hora.
   const resume = store.resumeFor(msg)
   store.resumeMark = end === null && resume !== null && start === resume
-    ? { msg, start, end: store.resumeSnippetEnd(msg.content, start) }
+    ? { msg, start, end: store.resumeSnippetEnd(plain, start) }
     : null
   store.setSpeechStart(ref, start, end)
   forceFollow = true // clique seu: a tela vai até onde a fala começar
@@ -605,12 +647,9 @@ function paintCached(): void {
     highlights.delete('cached-hl')
     return
   }
-  const node = contentEls.get(h.msg)?.firstChild
-  if (!node || node.nodeType !== Node.TEXT_NODE) return
-  const len = (node as Text).length
-  const ranges = h.ranges
-    .filter(([a, b]) => a < b && b <= len)
-    .map(([a, b]) => new StaticRange({ startContainer: node, startOffset: a, endContainer: node, endOffset: b }))
+  const el = contentEls.get(h.msg)
+  const ranges = h.ranges.map(([a, b]) => rangeFor(el, a, b)).filter((r): r is StaticRange => r !== null)
+  if (!ranges.length) return
   const hl = new HighlightCtor(...ranges)
   hl.priority = -1 // por baixo das outras marcações (fala, seleção, "parou em")
   highlights.set('cached-hl', hl)
@@ -635,7 +674,7 @@ function audioPctTitle(pct: number, bytes: number): string {
 function resumeSnippet(msg: ChatMessage): string {
   const pos = store.resumeFor(msg)
   if (pos === null) return ''
-  const words = msg.content.slice(pos).trim().split(/\s+/).slice(0, 4).join(' ')
+  const words = store.plainOf(msg).slice(pos).trim().split(/\s+/).slice(0, 4).join(' ')
   return `...${words}...`
 }
 
@@ -682,13 +721,20 @@ function onSelectionDone(): void {
     const msg = messageOfEl(a.parentElement)
     const el = msg ? contentEls.get(msg) : null
     // só dentro do texto de uma única resposta da IA (que tenha id, ou seja, já salva)
-    if (!msg || !el || msg.id === undefined || messageOfEl(b.parentElement) !== msg || a !== el.firstChild || b !== el.firstChild) {
+    if (!msg || !el || msg.id === undefined || messageOfEl(b.parentElement) !== msg) {
       selMenu.value = null
       return
     }
-    const content = msg.content
-    let start = range.startOffset
-    let end = range.endOffset
+    // pode atravessar negrito, itens de lista e linhas: converte as pontas para o texto falado
+    const content = store.plainOf(msg)
+    const s0 = plainOffset(el, a, range.startOffset, false)
+    const e0 = plainOffset(el, b, range.endOffset, true)
+    if (s0 === null || e0 === null || e0 <= s0) {
+      selMenu.value = null
+      return
+    }
+    let start = s0
+    let end = e0
     // ajusta para palavras inteiras (seleção começou/terminou no meio de uma palavra)
     while (start > 0 && /\S/.test(content[start - 1])) start--
     while (end < content.length && /\S/.test(content[end])) end++
@@ -724,9 +770,9 @@ function onDocMouseDown(e: MouseEvent): void {
 onMounted(() => document.addEventListener('mousedown', onDocMouseDown, true))
 onUnmounted(() => document.removeEventListener('mousedown', onDocMouseDown, true))
 
-async function confirmDelete(id: number): Promise<void> {
-  await store.deleteMessage(id)
-  confirmDeleteId.value = null
+async function confirmDelete(msg: ChatMessage): Promise<void> {
+  await store.deleteMessage(msg)
+  confirmDeleteMsg.value = null
 }
 </script>
 
@@ -934,7 +980,7 @@ async function confirmDelete(id: number): Promise<void> {
     <div
       ref="messagesEl"
       :style="{ '--chat-font': chatFontPx }"
-      class="flex-1 overflow-y-auto flex flex-col gap-3 min-h-0 pr-1"
+      class="flex-1 overflow-y-auto flex flex-col gap-5 min-h-0 px-[5%]"
       @wheel.passive="markUserScroll"
       @touchmove.passive="markUserScroll"
       @mousedown="onMessagesMouseDown"
@@ -970,25 +1016,25 @@ async function confirmDelete(id: number): Promise<void> {
             <!-- Abaixo do card: ações (no hover) + hora -->
             <div class="flex justify-end items-center gap-1 mt-1 h-5">
               <div class="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-              <template v-if="msg.id !== undefined && confirmDeleteId === msg.id">
+              <template v-if="confirmDeleteMsg === msg">
                 <span class="text-xs text-slate-500 mr-1">Apagar?</span>
                 <button
                   class="text-xs text-red-400 hover:text-red-300 transition-colors"
-                  @click="confirmDelete(msg.id!)"
+                  @click="confirmDelete(msg)"
                 >Sim</button>
                 <span class="text-slate-600 text-xs">/</span>
                 <button
                   class="text-xs text-slate-400 hover:text-slate-200 transition-colors"
-                  @click="confirmDeleteId = null"
+                  @click="confirmDeleteMsg = null"
                 >Não</button>
               </template>
               <template v-else>
                 <CopyButton :text="msg.content" />
                 <button
-                  v-if="msg.id !== undefined"
+                  v-if="msg.id !== undefined || !store.streaming"
                   title="Apagar mensagem"
                   class="p-1 rounded text-slate-500 hover:text-red-400 transition-colors"
-                  @click="confirmDeleteId = msg.id!"
+                  @click="confirmDeleteMsg = msg"
                 >
                   <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
@@ -1001,10 +1047,15 @@ async function confirmDelete(id: number): Promise<void> {
           </div>
         </div>
 
-        <!-- Mensagem do assistente -->
-        <div v-else class="flex justify-start gap-2.5 group">
+        <!-- Mensagem do assistente: sem balão, ocupa a página (como no ChatGPT) -->
+        <div v-else class="group flex flex-col">
+          <!-- topo: fala da resposta (ouvir/parar, % de áudio salvo, "parou em", continuar, do início) -->
+          <div
+            v-if="msg.content !== '_(cancelado)_' && (msg.content || store.isSpeaking(msg) || store.isPreparing(msg))"
+            class="flex items-center gap-1 mb-2 min-h-7 flex-wrap"
+          >
           <!-- Ícone da resposta: pisca enquanto fala; clique = parar / ouvir de novo -->
-          <div class="relative flex-shrink-0 mt-0.5">
+          <div class="relative flex items-center gap-1.5 mr-1.5">
             <button
               type="button"
               :title="speechTitle(msg)"
@@ -1055,7 +1106,7 @@ async function confirmDelete(id: number): Promise<void> {
               v-if="msg.content && !msg.streaming && store.audioPct(msg) !== null"
               :title="audioPctTitle(store.audioPct(msg)!, store.audioBytes(msg))"
               :class="[
-                'block mt-1 text-[9.5px] leading-none text-center tabular-nums cursor-help transition-colors',
+                'text-[10.5px] leading-none tabular-nums cursor-help transition-colors',
                 cachedHover?.msg === msg ? 'text-teal-300' : store.audioPct(msg) === 100 ? 'text-purple-300/90' : 'text-slate-500'
               ]"
               @mouseenter="showCachedText(msg)"
@@ -1063,47 +1114,11 @@ async function confirmDelete(id: number): Promise<void> {
             >{{ store.audioPct(msg) }}%</span>
             <span
               v-if="speechNotice?.msg === msg"
-              class="absolute left-0 top-9 z-10 whitespace-nowrap text-[11px] bg-slate-800 border border-slate-700 text-slate-300 rounded-md px-2 py-1 shadow-lg"
+              class="absolute left-0 top-full mt-1 z-10 whitespace-nowrap text-[11px] bg-slate-800 border border-slate-700 text-slate-300 rounded-md px-2 py-1 shadow-lg"
             >{{ speechNotice.text }}</span>
           </div>
-          <div :class="['max-w-[80%] flex flex-col', msg.media?.length ? 'w-[80%]' : '']">
-            <div
-              v-if="msg.content || !msg.media?.length"
-              class="bg-slate-800/60 border border-slate-700/40 rounded-2xl rounded-tl-sm px-4 py-2.5"
-            >
-              <!-- Texto cancelado -->
-              <p v-if="msg.content === '_(cancelado)_'" class="text-slate-500 text-sm italic">cancelado</p>
-              <!-- Conteúdo normal -->
-              <!-- texto (com o trecho que está sendo falado destacado) -->
-              <p
-                v-else-if="msg.content"
-                :ref="(el) => setContentEl(msg, el)"
-                :data-speak-msg="msg.id ?? ''"
-                class="chat-text text-slate-200 whitespace-pre-wrap"
-              >{{ msg.content }}</p>
-              <!-- Pesquisando na internet (ou lendo uma página) antes de responder -->
-              <div v-else-if="msg.activity" class="flex items-center gap-2 py-0.5 text-sm text-sky-300/90">
-                <svg class="w-4 h-4 flex-shrink-0 animate-pulse" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M12 21a9.004 9.004 0 008.716-6.747M12 21a9.004 9.004 0 01-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 017.843 4.582M12 3a8.997 8.997 0 00-7.843 4.582m15.686 0A11.953 11.953 0 0112 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0121 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0112 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 013 12c0-1.605.42-3.113 1.157-4.418" />
-                </svg>
-                <span class="truncate">{{ activityText(msg.activity) }}…</span>
-              </div>
-              <!-- Loading inicial -->
-              <div v-else class="flex gap-1 py-0.5">
-                <span v-for="n in 3" :key="n" class="w-1.5 h-1.5 rounded-full bg-slate-500 animate-bounce" :style="`animation-delay:${(n-1)*0.15}s`" />
-              </div>
-            </div>
-            <!-- Imagens / vídeos encontrados pela IA -->
-            <MediaGrid
-              v-if="msg.media?.length"
-              :groups="msg.media"
-              :class="msg.content ? 'mt-2' : ''"
-            />
-            <!-- Ações abaixo do card (apenas após concluir e não cancelado) -->
-            <div
-              v-if="(msg.content || msg.media?.length) && !msg.streaming && msg.content !== '_(cancelado)_'"
-              class="flex items-center gap-1 mt-1 min-h-5 flex-wrap"
-            >
+            <!-- o resto só depois que a resposta terminou de chegar -->
+            <template v-if="!msg.streaming">
               <!-- parou no meio: continuar exatamente da palavra onde parou, ou do início -->
               <span
                 v-if="store.resumeFor(msg) !== null && !store.isSpeaking(msg) && !store.isPreparing(msg)"
@@ -1134,6 +1149,41 @@ async function confirmDelete(id: number): Promise<void> {
                 <span class="w-2.5 h-2.5 rounded-full border-[1.5px] border-sky-300/25 border-t-sky-300 animate-spin" />
                 Preparando a fala...
               </span>
+            </template>
+          </div>
+          <!-- Texto cancelado -->
+          <p v-if="msg.content === '_(cancelado)_'" class="text-slate-500 text-sm italic">cancelado</p>
+          <!-- texto e imagens no lugar onde a IA colocou (com o trecho que está sendo falado destacado) -->
+          <div
+            v-else-if="msg.content || msg.media?.length"
+            :ref="(el) => setContentEl(msg, el)"
+            :data-speak-msg="msg.id ?? ''"
+            class="chat-text text-slate-200"
+          >
+            <RichMessage :content="msg.content" :media="msg.media" :streaming="msg.streaming" />
+            <!-- ferramenta em uso no meio da resposta (ex.: pesquisando na internet) -->
+            <div v-if="msg.streaming && msg.activity" class="flex items-center gap-2 mt-2 text-sm text-sky-300/90">
+              <span class="w-3 h-3 rounded-full border-2 border-sky-300/25 border-t-sky-300 animate-spin flex-shrink-0" />
+              <span class="truncate">{{ activityText(msg.activity) }}…</span>
+            </div>
+          </div>
+          <!-- Pesquisando na internet (ou lendo uma página) antes de responder -->
+          <div v-else-if="msg.activity" class="flex items-center gap-2 py-0.5 text-sm text-sky-300/90">
+            <svg class="w-4 h-4 flex-shrink-0 animate-pulse" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M12 21a9.004 9.004 0 008.716-6.747M12 21a9.004 9.004 0 01-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 017.843 4.582M12 3a8.997 8.997 0 00-7.843 4.582m15.686 0A11.953 11.953 0 0112 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0121 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0112 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 013 12c0-1.605.42-3.113 1.157-4.418" />
+            </svg>
+            <span class="truncate">{{ activityText(msg.activity) }}…</span>
+          </div>
+          <!-- Loading inicial -->
+          <div v-else class="flex gap-1 py-2">
+            <span v-for="n in 3" :key="n" class="w-1.5 h-1.5 rounded-full bg-slate-500 animate-bounce" :style="`animation-delay:${(n-1)*0.15}s`" />
+          </div>
+          <!-- embaixo: só informações da resposta (hora, tempo, internet, copiar, apagar) -->
+          <div
+            v-if="msg.content !== '_(cancelado)_' && (msg.content || msg.media?.length) && !msg.streaming"
+            class="flex items-center gap-1 mt-2 min-h-5 flex-wrap"
+          >
+            <template v-if="!msg.streaming">
               <!-- hora, tempo de resposta e uso da internet -->
               <span v-if="msg.ts" class="text-[11px] text-slate-600 tabular-nums" :title="fullTime(msg.ts)">{{ fmtTime(msg.ts) }}</span>
               <template v-if="msg.duration_s !== undefined && msg.duration_s !== null">
@@ -1156,25 +1206,25 @@ async function confirmDelete(id: number): Promise<void> {
                 Pesquisou na internet
               </span>
               <div class="flex items-center gap-1 ml-1 opacity-0 group-hover:opacity-100 transition-opacity">
-              <template v-if="msg.id !== undefined && confirmDeleteId === msg.id">
+              <template v-if="confirmDeleteMsg === msg">
                 <span class="text-xs text-slate-500 mr-1">Apagar?</span>
                 <button
                   class="text-xs text-red-400 hover:text-red-300 transition-colors"
-                  @click="confirmDelete(msg.id!)"
+                  @click="confirmDelete(msg)"
                 >Sim</button>
                 <span class="text-slate-600 text-xs">/</span>
                 <button
                   class="text-xs text-slate-400 hover:text-slate-200 transition-colors"
-                  @click="confirmDeleteId = null"
+                  @click="confirmDeleteMsg = null"
                 >Não</button>
               </template>
               <template v-else>
-                <CopyButton v-if="msg.content" :text="msg.content" />
+                <CopyButton v-if="msg.content" :text="stripMedia(msg.content)" />
                 <button
-                  v-if="msg.id !== undefined"
+                  v-if="msg.id !== undefined || !store.streaming"
                   title="Apagar mensagem"
                   class="p-1 rounded text-slate-500 hover:text-red-400 transition-colors"
-                  @click="confirmDeleteId = msg.id!"
+                  @click="confirmDeleteMsg = msg"
                 >
                   <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
@@ -1182,7 +1232,7 @@ async function confirmDelete(id: number): Promise<void> {
                 </button>
               </template>
               </div>
-            </div>
+            </template>
           </div>
         </div>
 
@@ -1190,7 +1240,7 @@ async function confirmDelete(id: number): Promise<void> {
     </div>
 
     <!-- Erro -->
-    <div v-if="store.error" class="flex-shrink-0 mt-2 bg-red-500/10 border border-red-500/30 rounded-xl px-3 py-2 flex items-center gap-2">
+    <div v-if="store.error" class="flex-shrink-0 mt-2 mx-[5%] bg-red-500/10 border border-red-500/30 rounded-xl px-3 py-2 flex items-center gap-2">
       <svg class="w-4 h-4 text-red-400 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
       </svg>
@@ -1199,16 +1249,24 @@ async function confirmDelete(id: number): Promise<void> {
     </div>
 
     <!-- Input -->
-    <div class="flex-shrink-0 mt-3 flex gap-2 items-end bg-slate-800/60 border border-slate-700/40 rounded-2xl px-3 py-2.5">
+    <div class="flex-shrink-0 mt-3 mx-[5%] flex gap-2 items-end bg-slate-800/60 border border-slate-700/40 rounded-2xl px-3 py-2.5">
+      <!-- modelo do Claude (vale para todos os chats) -->
+      <ClaudeModelPicker />
       <textarea
         ref="textareaEl"
-        v-model="input"
-        :placeholder="busyElsewhere ? `Aguarde a resposta no chat &quot;${busyElsewhere.name}&quot; terminar...` : 'Digite sua mensagem… (Enter para enviar, Shift+Enter para nova linha)'"
+        :value="voiceDraft ?? input"
+        :readonly="voiceDraft !== null"
+        :placeholder="voiceDraft !== null ? 'Ouvindo… fale com a IA' : busyElsewhere ? `Aguarde a resposta no chat &quot;${busyElsewhere.name}&quot; terminar...` : 'Digite sua mensagem… (Enter para enviar, Shift+Enter para nova linha)'"
         rows="1"
-        class="flex-1 bg-transparent text-slate-200 text-sm leading-relaxed resize-none focus:outline-none placeholder-slate-600 min-h-[24px] max-h-40"
-        @input="autoResize"
+        :class="[
+          'flex-1 bg-transparent text-sm leading-relaxed resize-none focus:outline-none min-h-[24px] max-h-40',
+          voiceDraft !== null ? 'text-indigo-200 placeholder-indigo-300/70' : 'text-slate-200 placeholder-slate-600'
+        ]"
+        @input="onInputTyping"
         @keydown="onKeydown"
       />
+      <!-- uso do plano do Claude (sessão atual); clique mostra a sessão e o limite semanal -->
+      <ClaudeUsageChip />
       <button
         :disabled="!input.trim() || store.streaming"
         class="flex-shrink-0 p-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white transition-colors"

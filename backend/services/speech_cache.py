@@ -241,11 +241,6 @@ def message_bytes(chat_id: int, message_id: int) -> int:
     return _dir_bytes(d) if d.is_dir() else 0
 
 
-def chat_bytes(chat_id: int) -> int:
-    d = chat_dir(chat_id)
-    return _dir_bytes(d) if d.is_dir() else 0
-
-
 def usage() -> dict:
     """Uso por chat: {chat_id: {"bytes", "messages"}} e o total."""
     out: dict[int, dict] = {}

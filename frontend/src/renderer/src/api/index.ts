@@ -298,6 +298,12 @@ export function benchmarkAudioUrl(id: string): string {
 }
 
 /** Trechos [início, fim) do texto de uma resposta que já têm áudio salvo no computador */
+/** Modelo do Claude escolhido no app e o nome real de cada escolha (de quando já respondeu). */
+export async function getClaudeModel(): Promise<{ selected: string; options: string[]; resolved: Record<string, string> }> {
+  const { data } = await http.get('/chat/model')
+  return data
+}
+
 export async function getAudioRanges(messageId: number): Promise<{ ranges: [number, number][]; audio_pct: number }> {
   const { data } = await http.get(`/chat/messages/${messageId}/audio-ranges`)
   return data

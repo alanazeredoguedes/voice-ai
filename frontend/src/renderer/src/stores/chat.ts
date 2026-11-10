@@ -14,6 +14,7 @@ import {
   updateChat as apiUpdateChat
 } from '../api'
 import { onWsMessage } from '../api/ws'
+import { toPlain } from '../utils/richText'
 
 /** Respostas antigas podem ter travessão (o backend já troca nas novas): exibe com hífen simples */
 const noLongDash = (s: string): string => s.replace(/[–—]/g, '-')
@@ -77,10 +78,25 @@ export const useChatStore = defineStore('chat', () => {
     return null
   }
 
+  /**
+   * Texto falado da resposta (sem a formatação nem os marcadores de imagem). Todas as posições da fala
+   * (destaque, "parou em", trecho escolhido, cache de áudio) são nele, igual ao backend.
+   */
+  const plainCache = new WeakMap<ChatMessage, { content: string; streaming: boolean; plain: string }>()
+  function plainOf(msg: ChatMessage): string {
+    const streaming = !!msg.streaming
+    const c = plainCache.get(msg)
+    if (c && c.content === msg.content && c.streaming === streaming) return c.plain
+    const plain = toPlain(msg.content, streaming)
+    plainCache.set(msg, { content: msg.content, streaming, plain })
+    return plain
+  }
+
   function onSpeechWords(event: StateEvent): void {
     if (!event.ref || !event.words?.length) return
     const msg = speechMessage(event.ref, event.chat_id)
     if (!msg?.content) return
+    const text = plainOf(msg)
     const key = speechKey(event.ref, event.chat_id)
     let cur = hlCursor.get(key) ?? 0
     const speed = event.speed || 1
@@ -90,7 +106,7 @@ export const useChatStore = defineStore('chat', () => {
     for (const w of event.words) {
       const word = w.w.trim()
       if (!word) continue
-      const idx = msg.content.indexOf(word, cur)
+      const idx = text.indexOf(word, cur)
       if (idx < 0 || idx - cur > 400) continue
       words.push({ start: idx, end: idx + word.length, at: lead + (w.t * 1000) / speed })
       cur = idx + word.length
@@ -164,7 +180,7 @@ export const useChatStore = defineStore('chat', () => {
   function resumeFor(msg: ChatMessage): number | null {
     if (msg.id === undefined) return null
     const pos = resumeAt.value[msg.id]
-    return typeof pos === 'number' && pos > 0 && pos < msg.content.length ? pos : null
+    return typeof pos === 'number' && pos > 0 && pos < plainOf(msg).length ? pos : null
   }
 
   function clearResume(msg: ChatMessage): void {
@@ -185,22 +201,23 @@ export const useChatStore = defineStore('chat', () => {
     speechRange.delete(ref)
     const msg = spoken?.msg
     if (!spoken || !msg || msg.id === undefined) return
-    const limit = range?.end ?? msg.content.length
+    const plain = plainOf(msg)
+    const limit = range?.end ?? plain.length
     // ainda havia palavras depois da última falada? então foi parada no meio
-    const stoppedEarly = /[\p{L}\p{N}]/u.test(msg.content.slice(spoken.end, limit))
+    const stoppedEarly = /[\p{L}\p{N}]/u.test(plain.slice(spoken.end, limit))
     let pos: number | null = null
     if (stoppedEarly) pos = spoken.start // parada no meio: exatamente a palavra onde parou
     else if (range?.end != null) {
       // "ouvir este trecho" chegou ao fim do trecho: continua da próxima palavra depois dele
-      const m = /[\p{L}\p{N}]/u.exec(msg.content.slice(range.end))
+      const m = /[\p{L}\p{N}]/u.exec(plain.slice(range.end))
       pos = m ? range.end + m.index : null
-      while (pos !== null && pos > range.end && /\S/.test(msg.content[pos - 1])) pos-- // início da palavra
+      while (pos !== null && pos > range.end && /\S/.test(plain[pos - 1])) pos-- // início da palavra
     }
     setResume(msg.id, pos) // null = ouviu até o fim da resposta
     // Se ela parou porque você já pediu outra fala (seleção, continuar), não redesenha o sublinhado:
     // quem decide a marcação é o pedido novo
     if (pendingRange.size > 0) return
-    resumeMark.value = pos !== null ? { msg, start: pos, end: resumeSnippetEnd(msg.content, pos) } : null
+    resumeMark.value = pos !== null ? { msg, start: pos, end: resumeSnippetEnd(plain, pos) } : null
   }
 
   // ---------- % do texto de cada resposta que já tem áudio salvo ----------
@@ -358,7 +375,14 @@ export const useChatStore = defineStore('chat', () => {
         return
       }
       if (cid === null) return
-      if (event.type === 'chat_chunk') {
+      if (event.type === 'chat_delta') {
+        // pedaço do texto (markdown) da resposta: entra exatamente como chegou
+        const last = currentAssistant(cid, !!event.text)
+        if (last && event.text) {
+          last.content += event.text
+          last.activity = null
+        }
+      } else if (event.type === 'chat_chunk') {
         onChunk(cid, event.text ?? '', event.done ?? false, event.message_id, event.user_message_id, event.still_busy)
         if (event.done) {
           const msgs = list(cid)
@@ -525,7 +549,7 @@ export const useChatStore = defineStore('chat', () => {
     }
 
     if (!done) {
-      last.content += (last.content && text ? ' ' : '') + text
+      last.content += text
       last.activity = null
       return
     }
@@ -560,6 +584,7 @@ export const useChatStore = defineStore('chat', () => {
         g.items = event.items ?? g.items
         g.error = event.error
         g.provider = event.provider ?? g.provider
+        if (event.more) g.more = event.more
         return
       }
     }
@@ -572,7 +597,9 @@ export const useChatStore = defineStore('chat', () => {
       status: event.status ?? 'loading',
       items: event.items ?? [],
       error: event.error,
-      provider: event.provider
+      provider: event.provider,
+      picked: event.picked,
+      more: event.more
     }
     last.media = [...(last.media ?? []), group]
   }
@@ -605,12 +632,19 @@ export const useChatStore = defineStore('chat', () => {
     if (busyChatId.value === chatId) busyChatId.value = null
   }
 
-  async function deleteMessage(id: number): Promise<void> {
+  /**
+   * Apaga uma mensagem. Sem id ela nunca foi salva (ex.: resposta cancelada no meio, que o backend
+   * descarta): só sai da tela.
+   */
+  async function deleteMessage(msg: ChatMessage): Promise<void> {
     try {
-      await deleteChatMessage(id)
-      if (id in resumeAt.value) setResume(id, null)
+      const id = msg.id
+      if (id !== undefined) {
+        await deleteChatMessage(id)
+        if (id in resumeAt.value) setResume(id, null)
+      }
       for (const msgs of Object.values(messagesByChat.value)) {
-        const idx = msgs.findIndex((m) => m.id === id)
+        const idx = msgs.findIndex((m) => m === msg || (id !== undefined && m.id === id))
         if (idx !== -1) {
           msgs.splice(idx, 1)
           break
@@ -637,6 +671,7 @@ export const useChatStore = defineStore('chat', () => {
     highlightFor,
     resumeAt,
     resumeFor,
+    plainOf,
     resumeMark,
     speechStartSeq,
     audioPct,

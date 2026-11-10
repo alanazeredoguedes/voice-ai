@@ -10,7 +10,8 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from ..services import chats as chat_db
-from ..services import speech_cache
+from ..services import rich_text, speech_cache
+from ..services.reply_stream import ReplyComposer
 from ..services.media_search import MediaDispatcher
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -105,6 +106,33 @@ async def activate_chat(chat_id: int, request: Request) -> dict:
 
 # ---------- mensagens ----------
 
+@router.get("/usage")
+async def plan_usage() -> dict:
+    """Uso do plano do Claude: % da sessão (5 h) e do limite semanal, do último valor recebido."""
+    from ..services import claude_usage
+
+    return {"usage": claude_usage.get()}
+
+
+@router.post("/usage/refresh")
+async def plan_usage_refresh() -> dict:
+    """Atualiza os números agora (chamada mínima ao Claude Code, com o Haiku)."""
+    from ..services import brain, claude_usage
+
+    usage = await asyncio.to_thread(claude_usage.refresh, brain._CLAUDE_BIN, brain._claude_cwd(), brain._claude_env())
+    return {"usage": usage}
+
+
+@router.get("/model")
+async def claude_model(request: Request) -> dict:
+    """Modelo do Claude escolhido no app e o nome real de cada um (de quando já respondeu)."""
+    from ..services.brain import CLAUDE_MODELS, DEFAULT_CLAUDE_MODEL, resolved_models
+
+    orchestrator = request.app.state.orchestrator
+    selected = (orchestrator.settings.get("claude_model") if orchestrator else None) or DEFAULT_CLAUDE_MODEL
+    return {"selected": selected, "options": list(CLAUDE_MODELS), "resolved": dict(resolved_models)}
+
+
 @router.get("/chats/{chat_id}/messages")
 async def get_messages(chat_id: int, request: Request, limit: int = 500) -> list[dict]:
     _require_chat(chat_id)
@@ -116,7 +144,7 @@ async def get_messages(chat_id: int, request: Request, limit: int = 500) -> list
         def _pct() -> None:
             for m in msgs:
                 if m["role"] == "assistant":
-                    m["audio_pct"] = speech_cache.coverage(chat_id, m["id"], voice, m["content"])
+                    m["audio_pct"] = speech_cache.coverage(chat_id, m["id"], voice, rich_text.to_plain(m["content"]))
                     m["audio_bytes"] = speech_cache.message_bytes(chat_id, m["id"])
 
         await asyncio.to_thread(_pct)
@@ -148,8 +176,9 @@ async def audio_ranges(message_id: int, request: Request) -> dict:
     if not m or m["role"] != "assistant" or not tts:
         return {"ranges": [], "audio_pct": 0}
     voice = tts.voice_key()
-    ranges = await asyncio.to_thread(speech_cache.covered_ranges, m["chat_id"], message_id, voice, m["content"])
-    pct = await asyncio.to_thread(speech_cache.coverage, m["chat_id"], message_id, voice, m["content"])
+    plain = rich_text.to_plain(m["content"])  # posições da fala são no texto falado
+    ranges = await asyncio.to_thread(speech_cache.covered_ranges, m["chat_id"], message_id, voice, plain)
+    pct = await asyncio.to_thread(speech_cache.coverage, m["chat_id"], message_id, voice, plain)
     return {"ranges": ranges, "audio_pct": pct}
 
 
@@ -200,7 +229,6 @@ async def send_message(
 
     def _run_chat() -> None:
         tts = orchestrator.tts
-        chunks: list[str] = []
         sentence_q: queue.Queue = queue.Queue()
         audio_q: queue.Queue = queue.Queue(maxsize=3)
         media = MediaDispatcher(emit, orchestrator.settings)
@@ -282,13 +310,17 @@ async def send_message(
         player = threading.Thread(target=_play_audio, daemon=True)
         player.start()
 
-        offset = 0  # posição de cada frase no texto final da mensagem (" ".join das frases)
+        # markdown da resposta + frases para a voz (com a posição de cada uma no texto falado)
+        composer = ReplyComposer()
         try:
-            for sentence in brain.ask_stream(body.text, on_media=media.request, on_tool=on_tool):
-                chunks.append(sentence)
-                emit({"type": "chat_chunk", "text": sentence, "done": False})
+            for delta in brain.ask_stream(body.text, on_media=media.request, on_tool=on_tool):
+                delta, sentences = composer.feed(delta)
+                if delta:
+                    emit({"type": "chat_delta", "text": delta})
+                for sentence, offset in sentences:
+                    sentence_q.put((sentence, offset))
+            for sentence, offset in composer.finish():
                 sentence_q.put((sentence, offset))
-                offset += len(sentence) + 1
         except Exception as e:
             print(f"[chat] erro no stream: {e}", flush=True)
             emit({"type": "chat_error", "error": str(e)})
@@ -301,7 +333,7 @@ async def send_message(
 
         # Texto completo: salva e mostra hora/tempo/botões já, sem esperar a fala terminar.
         # "speaking" avisa a UI que o chat ainda está ocupado (falando) até o "chats_changed" do fim.
-        full = " ".join(chunks)
+        full = composer.md.strip()
         attachments = media.wait_all() if media.has_requests else []
         msg_id = None
         if full or attachments:

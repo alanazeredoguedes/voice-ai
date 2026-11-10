@@ -18,6 +18,8 @@ BATCH_MIN_S = 30.0
 BATCH_SIZE = 8
 # Transcrever enquanto fala: a cada ~25 s gravados, transcreve o trecho (cortando numa pausa entre 18 e 27 s)
 STREAM_TRIGGER_S = 25.0
+# prévia do texto enquanto grava: só os últimos ~25 s são refeitos a cada vez (o começo fica fixado)
+PREVIEW_WINDOW_S = 25.0
 STREAM_CUT_MIN_S = 18.0
 STREAM_CUT_MAX_S = 27.0
 
@@ -124,7 +126,9 @@ class SpeechEngine:
         on_transcription_progress: Callable[[float], None] | None = None,
         options: dict | None = None,
         on_loading: Callable[[dict], None] | None = None,
+        on_partial: Callable[[str], None] | None = None,
     ) -> None:
+        self._on_partial = on_partial
         self._model_size = model_size
         self._language = language
         self._device = device
@@ -205,12 +209,15 @@ class SpeechEngine:
         if self._stt_thread:
             self._stt_thread.join(timeout=3)
 
-    def start_ptt(self) -> None:
+    def start_ptt(self, preview: bool = False) -> None:
+        """preview: enquanto grava, manda para a tela o texto parcial (``on_partial``), como uma prévia."""
         self._ptt_buffer = []
         self._ptt_gen += 1
         self._stream_job = None
         self._recording = True
         self._emit_state("recording")
+        if preview and self._on_partial:
+            threading.Thread(target=self._preview_worker, args=(self._ptt_gen,), daemon=True).start()
         if self._opts["stream"]:
             job = {"gen": self._ptt_gen, "consumed": 0, "parts": [], "proc_s": 0.0, "thread": None}
             job["thread"] = threading.Thread(target=self._stream_worker, args=(job,), daemon=True)
@@ -588,6 +595,56 @@ class SpeechEngine:
         if on_progress:
             on_progress(100.0)
         return " ".join(parts).strip()
+
+    # ---------- prévia do texto enquanto grava (aparece na caixa de mensagem do Chat IA) ----------
+    def _preview_worker(self, gen: int) -> None:
+        """A cada ~0,7 s transcreve (modo rápido) o que já foi falado e manda o texto parcial.
+        Trechos longos: o começo é fixado numa pausa e só o final é refeito. Só usa o modelo quando ele
+        está livre e para na hora em que a tecla é solta (a transcrição final não espera)."""
+        window = int(PREVIEW_WINDOW_S * SAMPLE_RATE)
+        base = 0           # até onde o texto já está fixado
+        committed = ""     # texto fixado
+        last_len = 0
+        while self._recording and self._ptt_gen == gen:
+            time.sleep(0.7)
+            if not self._ready.is_set() or not self._recording or self._ptt_gen != gen:
+                continue
+            chunks = list(self._ptt_buffer)
+            if not chunks:
+                continue
+            audio = np.concatenate(chunks)
+            if len(audio) - last_len < int(SAMPLE_RATE * 0.5):
+                continue  # quase nada novo
+            if not self._infer_lock.acquire(blocking=False):
+                continue  # o modelo está ocupado (ex.: transcrever enquanto fala): tenta na próxima
+            try:
+                if len(audio) - base > window:
+                    cut = base + _quietest_point(audio[base:], int(window * 0.6), window)
+                    committed = (committed + " " + self._quick_text(audio[base:cut])).strip()
+                    base = cut
+                tail = self._quick_text(audio[base:])
+            except Exception as e:
+                print(f"[voice] prévia falhou: {e}", flush=True)
+                return
+            finally:
+                self._infer_lock.release()
+            last_len = len(audio)
+            if self._recording and self._ptt_gen == gen:
+                try:
+                    self._on_partial((committed + " " + tail).strip())
+                except Exception:
+                    pass
+
+    def _quick_text(self, audio: np.ndarray) -> str:
+        """Transcrição rápida da prévia (chamar com o _infer_lock já pego)."""
+        if len(audio) < int(SAMPLE_RATE * 0.3):
+            return ""
+        segments, _ = self._whisper.transcribe(
+            audio, language=self._language, beam_size=1, temperature=0, condition_on_previous_text=False,
+            no_speech_threshold=0.5, vad_filter=False, without_timestamps=True,
+        )
+        text = " ".join(s.text for s in segments).strip()
+        return "" if self._is_hallucination(text) else text
 
     # ---------- transcrever enquanto fala ----------
     def _stream_worker(self, job: dict) -> None:

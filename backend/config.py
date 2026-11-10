@@ -17,6 +17,9 @@ PORT = int(os.environ.get("VOICE_AI_PORT", "18450"))
 DEFAULT_SETTINGS: dict = {
     "transcription_key": "<ctrl>+t",
     "ai_key": "<ctrl>+i",
+    # Mostrar/esconder o Voice AI por cima de qualquer janela (até jogos em tela cheia sem bordas)
+    "window_key": "<ctrl>+<alt>+<f12>",
+    "window_keys_extra": [],
     "model": "tiny",
     "device": "auto",
     # Gravação pelo atalho: modo em lote (áudios > 30 s, ligado), pular silêncios e transcrever
@@ -40,6 +43,9 @@ DEFAULT_SETTINGS: dict = {
     "sound_copied": True,
     "system_prompt": "",
     "effort": "low",
+    # Modelo do Claude no Chat IA (vale para todos os chats; só para o app, não muda o Claude Code da máquina):
+    # "haiku" | "sonnet" | "opus"
+    "claude_model": "haiku",
     # Imagens/vídeos no Chat IA
     "media_enabled": True,
     "media_max_images": 4,
