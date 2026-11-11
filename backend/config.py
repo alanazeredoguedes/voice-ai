@@ -34,6 +34,8 @@ DEFAULT_SETTINGS: dict = {
     "tts_volume": 1.0,
     # áudios das respostas do Chat IA guardados no disco: limite por chat (as mais antigas saem primeiro)
     "speech_cache_limit_mb": 20,
+    # anexos do Chat IA (imagem ou arquivo de texto): tamanho máximo de cada um
+    "upload_limit_mb": 2,
     "elevenlabs_api_key": "",
     "elevenlabs_voice_id": "",
     "elevenlabs_voice_name": "",

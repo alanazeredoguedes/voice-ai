@@ -122,7 +122,11 @@ class ClaudeBrain:
         "contexto da conversa para saber de qual jogo ou assunto se trata; temas brasileiros em português (ex.: "
         "'Praia de Copacabana Rio de Janeiro'); para vídeos de jogo acrescente guide, walkthrough, location ou boss "
         "fight quando fizer sentido. Descrição: curta, em português, do que precisa aparecer (ex.: 'a Princesa Zelda "
-        "com a roupa de exploradora'). Pode haver mais de um marcador, cada um perto do assunto dele. "
+        "com a roupa de exploradora'). Seja EXATO: o termo e a descrição são tudo o que o app sabe do pedido. "
+        "Diga a versão e a edição precisas (original, remaster, remake, console, temporada, DLC), use o nome oficial "
+        "do jogo ou da versão em vez de apelidos que sirvam para outra versão, e diga em uma frase o que NÃO deve "
+        "aparecer (ex.: 'do remake de Switch 2, não do jogo original de N64; sem foto do aparelho nem banner'). "
+        "Pode haver mais de um marcador, cada um perto do assunto dele. "
         "Nunca fale das imagens nem da busca: nada de 'aqui estão algumas imagens', 'vou buscar', 'deixei umas "
         "imagens no chat' ou 'veja abaixo'. A resposta é lida em voz alta e as imagens simplesmente aparecem. "
         "Nunca escreva links ou URLs."
@@ -206,6 +210,11 @@ class ClaudeBrain:
 
     def set_chat_prompt(self, prompt: str) -> None:
         self._chat_prompt = (prompt or "").strip()
+
+    @property
+    def chat_prompt(self) -> str:
+        """Instruções próprias do chat (ex.: "especialista no remake"): vão também para a busca de imagens."""
+        return self._chat_prompt
 
     def _base_prompt(self) -> str:
         return self._chat_prompt or self.DEFAULT_SYSTEM_PROMPT
@@ -321,6 +330,7 @@ class ClaudeBrain:
         question: str,
         on_media: MediaCallback | None = None,
         on_tool: Callable[[str, str], None] | None = None,
+        attachments: list[dict] | None = None,
     ) -> Generator[str, None, None]:
         """Yield o texto (markdown) conforme o Claude vai gerando, pedaço a pedaço.
         O corte em frases para a voz fica com ``ReplyComposer`` (services/reply_stream.py).
@@ -332,8 +342,24 @@ class ClaudeBrain:
         effort = self._settings.get("effort", "low")
         session_args, new_session = self._session_args()
         question = self._with_history(question, new_session)
+        stdin_text = question
+        input_args: list[str] = []
+        if attachments:
+            # com anexos a pergunta vai como mensagem estruturada: imagens em blocos próprios e arquivos de
+            # texto dentro do texto (a sessão e o histórico da conversa continuam os mesmos)
+            body = question
+            blocks: list[dict] = []
+            for a in attachments:
+                if a["kind"] == "image":
+                    blocks.append({"type": "image", "source": {"type": "base64", "media_type": a["mime"], "data": a["b64"]}})
+                else:
+                    body += f"\n\n[Arquivo anexado: {a['name']}]\n```\n{a['text']}\n```"
+            stdin_text = _json.dumps({"type": "user", "message": {"role": "user", "content": [
+                {"type": "text", "text": body}, *blocks]}}) + "\n"
+            input_args = ["--input-format", "stream-json"]
         cmd = [
             _CLAUDE_BIN, "-p", "--verbose",
+            *input_args,
             "--output-format", "stream-json",
             "--include-partial-messages",
             "--effort", effort,
@@ -357,7 +383,7 @@ class ClaudeBrain:
                 env=_claude_env(),
             )
             print(f"[brain] PID={self._proc.pid} | iniciado em {time.perf_counter()-t0:.2f}s", flush=True)
-            self._proc.stdin.write(question)
+            self._proc.stdin.write(stdin_text)
             self._proc.stdin.close()
 
             first_content = True

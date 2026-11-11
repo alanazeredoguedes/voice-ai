@@ -82,7 +82,7 @@ onUnmounted(() => {
     <!-- lista abre para cima (a caixa de mensagem fica no rodapé) -->
     <div
       v-if="open"
-      class="absolute bottom-full left-0 mb-2 z-30 w-72 p-1 rounded-xl border border-slate-700 bg-slate-900/95 backdrop-blur shadow-2xl shadow-black/50"
+      class="absolute bottom-full right-0 mb-2 z-30 w-72 p-1 rounded-xl border border-slate-700 bg-slate-900/95 backdrop-blur shadow-2xl shadow-black/50"
     >
       <p class="px-2.5 pt-1.5 pb-1 text-[10.5px] uppercase tracking-wide text-slate-500">Modelo do Claude (todos os chats)</p>
       <button

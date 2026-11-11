@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { inject, onMounted, onUnmounted } from 'vue'
+import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { useStatusStore } from '../stores/status'
 import { onWsMessage } from '../api/ws'
 import StatusBadge from '../components/StatusBadge.vue'
@@ -20,15 +20,29 @@ const modelLabel = (id?: string | null): string => (id ? (MODEL_NAMES[id] ?? id)
 const navigate = inject<(v: string) => void>('navigate')
 
 // confirma o modelo em uso ao abrir a tela (as mudanças depois chegam pelo WebSocket)
-onMounted(() => void statusStore.syncEngineLoading())
+onMounted(() => {
+  void statusStore.syncEngineLoading()
+  void statusStore.loadRecentTranscriptions()
+})
+
+// transcrições anteriores (a mais recente fica em destaque; as outras ficam discretas no rodapé)
+const previous = computed(() => statusStore.recentTranscriptions.slice(1))
+const openPrevious = ref<number | null>(null)
+/** hora (HH:MM); se não for de hoje, mostra o dia junto (dd/mm HH:MM) */
+const fmtTime = (ts: string): string => {
+  const d = new Date(ts)
+  if (d.toDateString() === new Date().toDateString()) {
+    return d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+  }
+  return d.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+}
+const fullTime = (ts: string): string => new Date(ts).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'medium' })
 
 const unsub = onWsMessage((event) => {
   if (event.type === 'state_changed' && event.state) {
     statusStore.setState(event.state)
   } else if (event.type === 'audio_level' && event.level !== undefined) {
     statusStore.setAudioLevel(event.level)
-  } else if (event.type === 'transcription_ready' && event.text) {
-    statusStore.setLastTranscription(event.text)
   } else if (event.type === 'transcription_progress' && event.progress !== undefined) {
     statusStore.setTranscriptionProgress(event.progress)
   }
@@ -38,11 +52,24 @@ onUnmounted(() => unsub())
 </script>
 
 <template>
-  <div class="flex flex-col gap-6">
+  <div class="flex flex-col gap-6 min-h-full">
     <div class="flex flex-wrap items-start justify-between gap-3">
       <div>
         <h1 class="text-xl font-semibold text-slate-100">Transcrição de Microfone</h1>
         <p class="text-sm text-slate-500 mt-1">Estado do assistente em tempo real</p>
+        <button
+          type="button"
+          class="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-700 hover:border-indigo-500/60 hover:bg-indigo-600/10 text-xs text-slate-300 hover:text-slate-100 transition-colors"
+          @click="navigate?.('transcribe')"
+        >
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+          </svg>
+          Quer transcrever um arquivo de áudio ou vídeo?
+          <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+          </svg>
+        </button>
       </div>
       <!-- modelo que está na memória e transcrevendo agora -->
       <button
@@ -125,10 +152,44 @@ onUnmounted(() => unsub())
 
     <div v-if="statusStore.lastTranscription" class="bg-slate-800/60 rounded-2xl p-4 border border-slate-700/40">
       <div class="flex items-center justify-between mb-2">
-        <p class="text-xs text-slate-500 uppercase tracking-wide">Última transcrição</p>
+        <div class="flex items-baseline gap-2">
+          <p class="text-xs text-slate-500 uppercase tracking-wide">Última transcrição</p>
+          <span
+            v-if="statusStore.recentTranscriptions[0]"
+            class="text-[11px] text-slate-500 tabular-nums"
+            :title="fullTime(statusStore.recentTranscriptions[0].ts)"
+          >{{ fmtTime(statusStore.recentTranscriptions[0].ts) }}</span>
+        </div>
         <CopyButton :text="statusStore.lastTranscription" />
       </div>
       <p class="text-slate-200 text-sm leading-relaxed">{{ statusStore.lastTranscription }}</p>
+    </div>
+
+    <!-- anteriores: discretas, no rodapé; clique abre o texto inteiro -->
+    <div v-if="previous.length" class="mt-auto flex flex-col gap-1.5 pt-2">
+      <p class="px-1 text-[11px] uppercase tracking-wide text-slate-600">Anteriores</p>
+      <div
+        v-for="(t, i) in previous"
+        :key="t.ts + i"
+        class="rounded-lg border border-slate-800 hover:border-slate-700 transition-colors"
+      >
+        <div class="flex items-center gap-2 px-3 py-2 cursor-pointer select-none" @click="openPrevious = openPrevious === i ? null : i">
+          <svg
+            :class="['w-3 h-3 flex-shrink-0 text-slate-600 transition-transform', openPrevious === i ? 'rotate-90' : '']"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.2"
+            viewBox="0 0 24 24"
+          >
+            <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+          </svg>
+          <span class="text-[11px] text-slate-600 tabular-nums flex-shrink-0" :title="fullTime(t.ts)">{{ fmtTime(t.ts) }}</span>
+          <span v-if="openPrevious !== i" class="text-xs text-slate-500 truncate flex-1 min-w-0">{{ t.text }}</span>
+          <span v-else class="flex-1" />
+          <CopyButton :text="t.text" size="sm" />
+        </div>
+        <p v-if="openPrevious === i" class="px-3 pb-3 text-xs text-slate-400 leading-relaxed whitespace-pre-wrap select-text">{{ t.text }}</p>
+      </div>
     </div>
 
   </div>

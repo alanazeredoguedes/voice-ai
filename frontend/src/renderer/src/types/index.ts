@@ -27,6 +27,8 @@ export interface Settings {
   whisper_stream?: boolean
   /** limite dos áudios salvos por chat (MB) */
   speech_cache_limit_mb?: number
+  /** tamanho máximo de cada anexo do chat (MB) */
+  upload_limit_mb?: number
   web_search?: boolean
   /** modelo do Claude no Chat IA (todos os chats) */
   claude_model?: 'haiku' | 'sonnet' | 'opus'
@@ -72,7 +74,7 @@ export interface WhisperModel {
 }
 
 export interface StateEvent {
-  type: 'state_changed' | 'audio_level' | 'log_added' | 'transcription_ready' | 'transcription_progress' | 'translate_download_progress' | 'chat_chunk' | 'chat_delta' | 'claude_usage' | 'ptt_partial' | 'toggle_window' | 'ai_rejected_short' | 'chat_error' | 'voice_user_message' | 'voice_chat_cancelled' | 'chat_media' | 'tts_playing' | 'chats_changed' | 'ai_rejected_busy' | 'chat_activity' | 'tts_preparing' | 'tts_words' | 'speech_cache_progress' | 'engine_loading' | 'benchmark_started' | 'benchmark_progress' | 'benchmark_result' | 'benchmark_done' | 'model_download_progress' | 'model_download_complete' | 'model_download_error' | 'pong'
+  type: 'state_changed' | 'audio_level' | 'log_added' | 'transcription_ready' | 'transcription_progress' | 'translate_download_progress' | 'chat_chunk' | 'chat_delta' | 'claude_usage' | 'ptt_partial' | 'toggle_window' | 'ai_rejected_short' | 'chat_error' | 'voice_user_message' | 'voice_chat_cancelled' | 'chat_media' | 'chat_media_preview' | 'tts_playing' | 'chats_changed' | 'ai_rejected_busy' | 'chat_activity' | 'tts_preparing' | 'tts_words' | 'speech_cache_progress' | 'engine_loading' | 'benchmark_started' | 'benchmark_progress' | 'benchmark_result' | 'benchmark_done' | 'model_download_progress' | 'model_download_complete' | 'model_download_error' | 'pong'
   model?: string
   state?: AppState
   /** ptt_partial: de qual atalho é a gravação ("ai" = falar com a IA) */
@@ -105,6 +107,9 @@ export interface StateEvent {
   provider?: string
   picked?: boolean
   more?: MediaItem[]
+  took_s?: number
+  timing?: MediaGroup['timing']
+  preview?: boolean
   // tts_playing: ref = "live" (resposta atual) ou "msg:<id>" (repetição)
   ref?: string
   playing?: boolean
@@ -141,6 +146,8 @@ export interface MediaItem {
   page_url: string
   width?: number | null
   height?: number | null
+  /** frase curta do que aparece na imagem (escrita pela IA que escolheu) */
+  caption?: string
   // vídeo (YouTube)
   video_id?: string
   duration?: number | null
@@ -150,6 +157,12 @@ export interface MediaGroup {
   group_id: string
   kind: MediaKind
   query: string
+  /** o que a imagem precisa mostrar (pedido da IA, mais o que o usuário refinou) */
+  desc?: string
+  /** buscando de novo (as imagens antigas continuam na tela, esmaecidas, até a nova busca terminar ou ser cancelada) */
+  refreshing?: boolean
+  /** aviso do último "repesquisar/refinar" que não achou nada (o bloco antigo continua) */
+  notice?: string
   status: 'loading' | 'done' | 'error'
   items: MediaItem[]
   error?: string
@@ -159,6 +172,15 @@ export interface MediaGroup {
   picked?: boolean
   /** o resto da busca: só aparece no visualizador ("+N") */
   more?: MediaItem[]
+  /** quanto tempo levou para gerar este bloco (segundos) e em que etapas */
+  took_s?: number
+  timing?: { rewrite?: number; search?: number; search_calls?: number; preview?: number; thumbs?: number; judge?: number; cost_usd?: number; tokens?: number; calls?: number }
+  /** true: são as primeiras da busca, ainda sem a conferência da IA (a tela mostra "conferindo..." e depois troca) */
+  preview?: boolean
+  /** repesquisar/refinar: as primeiras da nova busca, mostradas enquanto a IA confere (as antigas só voltam se der erro ou cancelar) */
+  refreshPreview?: MediaItem[]
+  /** sobe a cada repesquisa/refinar que terminou bem (a tela mostra "Conferido pela IA") */
+  verifiedTick?: number
 }
 
 export interface Chat {
@@ -267,6 +289,17 @@ export interface BenchmarkInfo {
   last_report: BenchmarkJob | null
 }
 
+/** arquivo anexado a uma mensagem do usuário (imagem ou arquivo de texto) */
+export interface ChatFile {
+  id: string
+  name: string
+  mime: string
+  kind: 'image' | 'text'
+  size: number
+  /** endereço local da imagem enquanto a mensagem ainda não foi recarregada do servidor */
+  url?: string
+}
+
 export interface ChatMessage {
   id?: number
   ts?: string
@@ -274,6 +307,8 @@ export interface ChatMessage {
   content: string
   streaming?: boolean
   media?: MediaGroup[]
+  /** mensagem do usuário: arquivos anexados */
+  files?: ChatFile[]
   /** tempo até a resposta ficar completa (segundos) */
   duration_s?: number | null
   tools?: ChatTool[]

@@ -10,10 +10,12 @@ import {
   deleteChatMessage,
   getChatMessages,
   listChats,
+  refreshMediaGroup,
   sendChatMessage,
   updateChat as apiUpdateChat
 } from '../api'
 import { onWsMessage } from '../api/ws'
+import type { PendingFile } from '../utils/attachments'
 import { toPlain } from '../utils/richText'
 
 /** Respostas antigas podem ter travessão (o backend já troca nas novas): exibe com hífen simples */
@@ -394,6 +396,8 @@ export const useChatStore = defineStore('chat', () => {
         }
       } else if (event.type === 'chat_media') {
         onMedia(cid, event)
+      } else if (event.type === 'chat_media_preview') {
+        onMediaPreview(cid, event)
       } else if (event.type === 'chat_activity' && event.tool) {
         const last = currentAssistant(cid, true)
         if (last) {
@@ -497,20 +501,35 @@ export const useChatStore = defineStore('chat', () => {
 
   // ---------- mensagens ----------
 
-  async function sendMessage(text: string): Promise<void> {
+  async function sendMessage(text: string, attachments: PendingFile[] = []): Promise<void> {
     const cid = activeChatId.value
-    if (!text.trim() || streaming.value || cid === null) return
+    if ((!text.trim() && !attachments.length) || streaming.value || cid === null) return
     error.value = null
 
     const msgs = list(cid)
-    msgs.push({ role: 'user', content: text, ts: new Date().toISOString() })
+    msgs.push({
+      role: 'user',
+      content: text,
+      ts: new Date().toISOString(),
+      files: attachments.length
+        ? attachments.map((a) => ({ id: a.id, name: a.name, mime: a.mime, kind: a.kind, size: a.size, url: a.previewUrl }))
+        : undefined
+    })
     msgs.push({ role: 'assistant', content: '', streaming: true })
     busyChatId.value = cid
 
     try {
-      const { user_message_id } = await sendChatMessage(cid, text)
+      const { user_message_id, files } = await sendChatMessage(
+        cid,
+        text,
+        attachments.map(({ name, mime, data }) => ({ name, mime, data }))
+      )
       const u = [...msgs].reverse().find((m) => m.role === 'user' && m.id === undefined)
-      if (u) u.id = user_message_id
+      if (u) {
+        u.id = user_message_id
+        // passa a usar os ids do servidor (a miniatura local continua valendo até recarregar)
+        if (u.files) u.files = u.files.map((f, i) => ({ ...f, id: files[i]?.id ?? f.id }))
+      }
     } catch (e) {
       busyChatId.value = null
       msgs.pop()
@@ -585,6 +604,9 @@ export const useChatStore = defineStore('chat', () => {
         g.error = event.error
         g.provider = event.provider ?? g.provider
         if (event.more) g.more = event.more
+        if (event.took_s !== undefined) g.took_s = event.took_s
+        if (event.timing) g.timing = event.timing
+        g.preview = event.preview ?? false
         return
       }
     }
@@ -599,9 +621,58 @@ export const useChatStore = defineStore('chat', () => {
       error: event.error,
       provider: event.provider,
       picked: event.picked,
-      more: event.more
+      more: event.more,
+      took_s: event.took_s,
+      timing: event.timing,
+      preview: event.preview
     }
     last.media = [...(last.media ?? []), group]
+  }
+
+  /** "Repesquisar" (sem texto) ou "Refinar" (com texto): troca só as imagens daquele bloco.
+   *  Enquanto busca, as imagens antigas continuam na tela (esmaecidas) e dá para cancelar: elas ficam como estavam.
+   *  Se não achar nada, o bloco antigo continua com um aviso. */
+  const refreshing = new Map<string, AbortController>()
+
+  /** repesquisar/refinar: as primeiras da nova busca chegam antes da conferência da IA (as antigas ficam guardadas) */
+  function onMediaPreview(chatId: number, event: StateEvent): void {
+    const g = list(chatId).find((m) => m.id === event.message_id)?.media?.find((x) => x.group_id === event.group_id)
+    if (g?.refreshing && event.items?.length) g.refreshPreview = event.items
+  }
+
+  async function refreshMedia(messageId: number, groupId: string, note = ''): Promise<void> {
+    const chatId = activeChatId.value
+    if (chatId === null) return
+    const g = list(chatId).find((m) => m.id === messageId)?.media?.find((x) => x.group_id === groupId)
+    if (!g || g.status === 'loading' || g.refreshing) return
+    const ctrl = new AbortController()
+    refreshing.set(groupId, ctrl)
+    g.notice = undefined
+    g.refreshing = true
+    const verb = note ? 'refinar' : 'repesquisar'
+    try {
+      const r = await refreshMediaGroup(messageId, groupId, note, ctrl.signal)
+      if (ctrl.signal.aborted) return
+      if (r.ok && r.group) {
+        Object.assign(g, r.group, { notice: undefined, refreshing: false, refreshPreview: undefined })
+        g.verifiedTick = (g.verifiedTick ?? 0) + 1
+      } else {
+        // sem resultado ou erro: as imagens antigas voltam e a tela avisa o que aconteceu
+        const msg = r.error ?? 'Não foi possível buscar agora'
+        g.notice = /^(Nenhum|A busca não achou)/.test(msg) ? msg : `Deu erro ao ${verb}: ${msg}`
+      }
+    } catch {
+      if (!ctrl.signal.aborted) g.notice = `Deu erro ao ${verb}: não foi possível buscar agora`
+    } finally {
+      if (refreshing.get(groupId) === ctrl) refreshing.delete(groupId)
+      g.refreshing = false
+      g.refreshPreview = undefined
+    }
+  }
+
+  /** "Cancelar nova busca": as imagens que estavam antes continuam (o backend não troca nada se a conexão caiu). */
+  function cancelRefreshMedia(groupId: string): void {
+    refreshing.get(groupId)?.abort()
   }
 
   function onError(chatId: number, msg: string): void {
@@ -691,6 +762,8 @@ export const useChatStore = defineStore('chat', () => {
     deleteChat,
     clearChat,
     sendMessage,
-    deleteMessage
+    deleteMessage,
+    refreshMedia,
+    cancelRefreshMedia
   }
 })

@@ -2,7 +2,7 @@ import json
 from datetime import datetime
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 State = Literal["idle", "recording", "processing", "thinking", "speaking"]
 Mode = Literal["transcription", "ai", "file"]
@@ -74,6 +74,7 @@ class SettingsPatch(BaseModel):
     whisper_vad: Optional[bool] = None
     whisper_stream: Optional[bool] = None
     speech_cache_limit_mb: Optional[float] = None
+    upload_limit_mb: Optional[float] = Field(default=None, ge=1, le=20)  # tamanho máximo de cada anexo do chat
     web_search: Optional[bool] = None
     serper_api_key: Optional[str] = None
     image_provider: Optional[Literal["duckduckgo", "serper"]] = None

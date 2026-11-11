@@ -69,6 +69,28 @@ async def transcribe_audio_file(request: Request, file: UploadFile = File(...)) 
     return result
 
 
+@router.post("/voice-note")
+async def transcribe_voice_note(request: Request, file: UploadFile = File(...)) -> dict:
+    """Transcreve uma fala curta gravada na tela (ex.: refinar imagens por voz). Não entra no histórico."""
+    suffix = Path(file.filename or "voz.webm").suffix.lower() or ".webm"
+    if suffix not in ALLOWED:
+        raise HTTPException(400, f"Formato não suportado: {suffix}")
+    content = await file.read()
+    engine = request.app.state.orchestrator.engine
+    if engine is None or engine._whisper is None:
+        raise HTTPException(503, "O Whisper ainda está carregando, tente de novo em instantes")
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+    try:
+        result = await asyncio.to_thread(engine.transcribe_file, tmp_path, None)
+    except Exception as e:
+        raise HTTPException(500, f"Erro na transcrição: {e}")
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+    return {"text": (result.get("text") or "").strip()}
+
+
 @router.post("/cancel", status_code=204)
 async def cancel_transcription(request: Request) -> None:
     engine = request.app.state.orchestrator.engine

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, inject, onMounted, onUnmounted } from 'vue'
 import { transcribeFile, cancelTranscription } from '../api'
 import CopyButton from '../components/CopyButton.vue'
 import { useTranscribeStore } from '../stores/transcribe'
@@ -9,6 +9,7 @@ const SUPPORTED = ['.mp3', '.wav', '.ogg', '.m4a', '.flac', '.webm', '.aac', '.m
 const ACCEPT = SUPPORTED.join(',')
 
 const store = useTranscribeStore()
+const navigate = inject<(v: string) => void>('navigate')
 
 const fileInput = ref<HTMLInputElement | null>(null)
 const dragging = ref(false)
@@ -165,6 +166,16 @@ function fmtSize(bytes: number): string {
 <template>
   <div class="flex flex-col gap-6 h-full">
     <div>
+      <button
+        type="button"
+        class="mb-2 flex items-center gap-1 text-xs text-slate-400 hover:text-slate-200 transition-colors"
+        @click="navigate?.('status')"
+      >
+        <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
+        </svg>
+        Transcrição de microfone
+      </button>
       <h1 class="text-xl font-semibold text-slate-100">Transcrever Arquivo</h1>
       <p class="text-sm text-slate-500 mt-1">Transcreva MP3, OGG, WAV, M4A e outros formatos usando Whisper</p>
     </div>

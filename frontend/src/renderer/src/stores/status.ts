@@ -1,12 +1,14 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import type { AppState, StateEvent } from '../types'
-import { getEngineStatus, type EngineLoading } from '../api'
+import { getEngineStatus, getLogs, type EngineLoading } from '../api'
 
 export const useStatusStore = defineStore('status', () => {
   const state = ref<AppState>('idle')
   const audioLevel = ref(0)
-  const lastTranscription = ref('')
+  /** as 3 últimas transcrições de microfone, a mais recente primeiro */
+  const recentTranscriptions = ref<{ text: string; ts: string }[]>([])
+  const lastTranscription = computed(() => recentTranscriptions.value[0]?.text ?? '')
   const transcriptionProgress = ref(0)
   /** modelo do Whisper carregando (ao abrir o app ou trocar de modelo) */
   const engineLoading = ref<EngineLoading | null>(null)
@@ -62,7 +64,21 @@ export const useStatusStore = defineStore('status', () => {
   }
 
   function setLastTranscription(text: string): void {
-    lastTranscription.value = text
+    if (!text) return
+    recentTranscriptions.value = [{ text, ts: new Date().toISOString() }, ...recentTranscriptions.value].slice(0, 3)
+  }
+
+  /** traz as últimas do histórico (o banco é a verdade): ao abrir o app e ao abrir a tela do microfone */
+  async function loadRecentTranscriptions(): Promise<void> {
+    try {
+      const page = await getLogs(3, 0, 'transcription')
+      const fromDb = page.items.filter((i) => i.text).map((i) => ({ text: i.text, ts: i.ts }))
+      // uma que chegou ao vivo agora e ainda não apareceu no histórico fica na frente
+      const justNow = recentTranscriptions.value.filter((l) => !fromDb.some((d) => d.text === l.text) && Date.now() - new Date(l.ts).getTime() < 15000)
+      recentTranscriptions.value = [...justNow, ...fromDb].slice(0, 3)
+    } catch {
+      // backend ainda subindo
+    }
   }
 
   function setTranscriptionProgress(pct: number): void {
@@ -73,6 +89,8 @@ export const useStatusStore = defineStore('status', () => {
     state,
     audioLevel,
     lastTranscription,
+    recentTranscriptions,
+    loadRecentTranscriptions,
     transcriptionProgress,
     engineLoading,
     engineInfo,

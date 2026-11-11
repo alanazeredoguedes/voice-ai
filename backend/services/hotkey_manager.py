@@ -34,15 +34,21 @@ def _is_keyboard(hotkey: str) -> bool:
     return not _is_mouse(hotkey) and not is_gamepad_hotkey(hotkey)
 
 
+def is_blocked_hotkey(hotkey: str) -> bool:
+    """O clique esquerdo do mouse não pode ser atalho (nem combinado com teclas): ele é usado o tempo todo,
+    e um atalho nele dispararia a cada clique em qualquer lugar do computador."""
+    return hotkey.split("+")[-1].strip() == "mouse:left"
+
+
 def _normalize_keys(keys: "str | list[str] | None") -> list[str]:
-    """Aceita um atalho (str) ou vários (lista); remove vazios e duplicados mantendo a ordem."""
+    """Aceita um atalho (str) ou vários (lista); remove vazios, duplicados e os não permitidos, mantendo a ordem."""
     if keys is None:
         return []
     if isinstance(keys, str):
         keys = [keys]
     out: list[str] = []
     for k in keys:
-        if isinstance(k, str) and k.strip() and k not in out:
+        if isinstance(k, str) and k.strip() and k not in out and not is_blocked_hotkey(k):
             out.append(k)
     return out
 

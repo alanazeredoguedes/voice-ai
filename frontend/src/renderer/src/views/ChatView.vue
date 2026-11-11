@@ -4,7 +4,18 @@ import axios from 'axios'
 import { useChatStore } from '../stores/chat'
 import { clearChatSpeechCache, getAudioRanges, getTtsMuted, getTtsSpeed, getTtsVolume, replaySpeech, setTtsMuted, setTtsSpeed, setTtsVolume, stopSpeech } from '../api'
 import { useSettingsStore } from '../stores/settings'
-import type { Chat, ChatMessage } from '../types'
+import type { Chat, ChatFile, ChatMessage, MediaItem } from '../types'
+import { chatFileUrl } from '../api'
+import {
+  ACCEPT,
+  DEFAULT_UPLOAD_MB,
+  MAX_FILES,
+  dataUrlToFile,
+  fmtFileSize,
+  prepareFile,
+  type PendingFile
+} from '../utils/attachments'
+import MediaLightbox from '../components/MediaLightbox.vue'
 import CopyButton from '../components/CopyButton.vue'
 import RichMessage from '../components/RichMessage.vue'
 import ClaudeModelPicker from '../components/ClaudeModelPicker.vue'
@@ -544,16 +555,90 @@ function onInputTyping(e: Event): void {
   autoResize()
 }
 
+// ---------- anexos: imagens e arquivos de texto (escolher, colar com Ctrl+V / Alt+V ou arrastar) ----------
+const pending = ref<PendingFile[]>([])
+const fileInput = ref<HTMLInputElement | null>(null)
+
+async function addFiles(files: File[]): Promise<void> {
+  for (const f of files) {
+    if (pending.value.length >= MAX_FILES) {
+      store.error = `No máximo ${MAX_FILES} anexos por mensagem.`
+      break
+    }
+    try {
+      pending.value = [...pending.value, await prepareFile(f, settingsStore.settings?.upload_limit_mb ?? DEFAULT_UPLOAD_MB)]
+    } catch (e) {
+      store.error = e instanceof Error ? e.message : 'Não consegui anexar o arquivo.'
+    }
+  }
+}
+
+function onPickFiles(e: Event): void {
+  const el = e.target as HTMLInputElement
+  void addFiles([...(el.files ?? [])])
+  el.value = '' // permite escolher o mesmo arquivo de novo
+}
+
+/** Ctrl+V: se a área de transferência tem arquivo/imagem (ex.: um print), anexa; texto comum cola normalmente */
+function onPaste(e: ClipboardEvent): void {
+  const files = [...(e.clipboardData?.files ?? [])]
+  if (!files.length) return
+  e.preventDefault()
+  void addFiles(files)
+}
+
+function onDrop(e: DragEvent): void {
+  void addFiles([...(e.dataTransfer?.files ?? [])])
+}
+
+/** Alt+V: pega a imagem da área de transferência direto pelo Windows (como o Claude Code no terminal) */
+async function pasteImageFromClipboard(): Promise<void> {
+  const r = (await window.electron?.ipcRenderer?.invoke('clipboard:read-image')) as { dataUrl: string } | null | undefined
+  if (r?.dataUrl) await addFiles([await dataUrlToFile(r.dataUrl, 'image.png')])
+  else store.error = 'Não há imagem na área de transferência.'
+}
+
+function removePending(id: string): void {
+  pending.value = pending.value.filter((p) => p.id !== id)
+}
+
+// anexos já enviados (no balão do usuário)
+const fileViewer = ref<{ items: MediaItem[]; index: number } | null>(null)
+const fileSrc = (f: ChatFile): string =>
+  f.url ?? (store.activeChatId !== null ? chatFileUrl(store.activeChatId, f.id) : '')
+
+function openFile(msg: ChatMessage, f: ChatFile): void {
+  const images = (msg.files ?? []).filter((x) => x.kind === 'image')
+  const items: MediaItem[] = images.map((x) => ({
+    kind: 'image',
+    url: fileSrc(x),
+    thumb: fileSrc(x),
+    title: x.name,
+    source: '',
+    page_url: ''
+  }))
+  fileViewer.value = { items, index: Math.max(0, images.indexOf(f)) }
+}
+
+const canSend = computed(() => (input.value.trim() !== '' || pending.value.length > 0) && !store.streaming)
+
 async function send(): Promise<void> {
   const text = input.value.trim()
-  if (!text || store.streaming || voiceDraft.value !== null) return
+  if ((!text && !pending.value.length) || store.streaming || voiceDraft.value !== null) return
+  const files = pending.value
   input.value = ''
+  pending.value = []
   autoResize()
-  await store.sendMessage(text)
+  await store.sendMessage(text, files)
   scrollToBottom()
 }
 
 function onKeydown(e: KeyboardEvent): void {
+  if (e.altKey && e.key.toLowerCase() === 'v') {
+    e.preventDefault()
+    void pasteImageFromClipboard()
+    return
+  }
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault()
     send()
@@ -1011,7 +1096,31 @@ async function confirmDelete(msg: ChatMessage): Promise<void> {
         <div v-if="msg.role === 'user'" class="flex justify-end group">
           <div class="max-w-[80%]">
             <div class="bg-indigo-600/80 border border-indigo-500/30 rounded-2xl rounded-tr-sm px-4 py-2.5">
-              <p class="chat-text text-slate-100 whitespace-pre-wrap">{{ msg.content }}</p>
+              <!-- arquivos anexados -->
+              <div v-if="msg.files?.length" :class="['flex flex-wrap gap-2', msg.content ? 'mb-2' : '']">
+                <template v-for="f in msg.files" :key="f.id">
+                  <button
+                    v-if="f.kind === 'image'"
+                    type="button"
+                    :title="`${f.name} (${fmtFileSize(f.size)})`"
+                    class="rounded-lg overflow-hidden border border-indigo-300/30 hover:border-indigo-200/70 transition-colors"
+                    @click="openFile(msg, f)"
+                  >
+                    <img :src="fileSrc(f)" :alt="f.name" class="block max-h-40 max-w-[16rem] object-cover" />
+                  </button>
+                  <span
+                    v-else
+                    :title="`${f.name} (${fmtFileSize(f.size)})`"
+                    class="flex items-center gap-1.5 rounded-lg bg-indigo-900/40 border border-indigo-300/20 px-2 py-1 text-xs text-indigo-100"
+                  >
+                    <svg class="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+                    </svg>
+                    <span class="truncate max-w-[12rem]">{{ f.name }}</span>
+                  </span>
+                </template>
+              </div>
+              <p v-if="msg.content" class="chat-text text-slate-100 whitespace-pre-wrap">{{ msg.content }}</p>
             </div>
             <!-- Abaixo do card: ações (no hover) + hora -->
             <div class="flex justify-end items-center gap-1 mt-1 h-5">
@@ -1160,7 +1269,7 @@ async function confirmDelete(msg: ChatMessage): Promise<void> {
             :data-speak-msg="msg.id ?? ''"
             class="chat-text text-slate-200"
           >
-            <RichMessage :content="msg.content" :media="msg.media" :streaming="msg.streaming" />
+            <RichMessage :content="msg.content" :media="msg.media" :streaming="msg.streaming" :message-id="msg.id" />
             <!-- ferramenta em uso no meio da resposta (ex.: pesquisando na internet) -->
             <div v-if="msg.streaming && msg.activity" class="flex items-center gap-2 mt-2 text-sm text-sky-300/90">
               <span class="w-3 h-3 rounded-full border-2 border-sky-300/25 border-t-sky-300 animate-spin flex-shrink-0" />
@@ -1249,9 +1358,52 @@ async function confirmDelete(msg: ChatMessage): Promise<void> {
     </div>
 
     <!-- Input -->
-    <div class="flex-shrink-0 mt-3 mx-[5%] flex gap-2 items-end bg-slate-800/60 border border-slate-700/40 rounded-2xl px-3 py-2.5">
-      <!-- modelo do Claude (vale para todos os chats) -->
-      <ClaudeModelPicker />
+    <div
+      class="flex-shrink-0 mt-3 mx-[5%] flex flex-col gap-2 bg-slate-800/60 border border-slate-700/40 rounded-2xl px-3 py-2.5"
+      @dragover.prevent
+      @drop.prevent="onDrop"
+    >
+      <!-- anexos prontos para enviar -->
+      <div v-if="pending.length" class="flex flex-wrap gap-2">
+        <div
+          v-for="p in pending"
+          :key="p.id"
+          class="relative flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-900/60 pl-1.5 pr-7 py-1.5 max-w-[16rem]"
+        >
+          <img v-if="p.kind === 'image'" :src="p.previewUrl" :alt="p.name" class="w-10 h-10 rounded-lg object-cover flex-shrink-0" />
+          <span v-else class="w-10 h-10 rounded-lg bg-slate-800 flex items-center justify-center flex-shrink-0 text-slate-400">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+            </svg>
+          </span>
+          <span class="min-w-0">
+            <span class="block text-xs text-slate-200 truncate">{{ p.name }}</span>
+            <span class="block text-[10px] text-slate-500">{{ fmtFileSize(p.size) }}</span>
+          </span>
+          <button
+            type="button"
+            title="Remover anexo"
+            class="absolute top-1 right-1 p-0.5 rounded-md text-slate-500 hover:text-red-400 transition-colors"
+            @click="removePending(p.id)"
+          >
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+      </div>
+      <div class="flex gap-2 items-end">
+      <input ref="fileInput" type="file" multiple :accept="ACCEPT" class="hidden" @change="onPickFiles" />
+      <button
+        type="button"
+        :title="`Anexar imagens ou arquivos de texto (até ${settingsStore.settings?.upload_limit_mb ?? DEFAULT_UPLOAD_MB} MB cada). Também dá para colar uma imagem com Ctrl+V ou Alt+V, ou arrastar para cá`"
+        class="flex-shrink-0 self-end p-1.5 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-700/60 transition-colors"
+        @click="fileInput?.click()"
+      >
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M18.375 12.739l-7.693 7.693a4.5 4.5 0 01-6.364-6.364l10.94-10.94A3 3 0 1119.5 7.372L8.552 18.32m.009-.01l-.01.01m5.699-9.941l-7.81 7.81a1.5 1.5 0 002.112 2.13" />
+        </svg>
+      </button>
       <textarea
         ref="textareaEl"
         :value="voiceDraft ?? input"
@@ -1264,11 +1416,15 @@ async function confirmDelete(msg: ChatMessage): Promise<void> {
         ]"
         @input="onInputTyping"
         @keydown="onKeydown"
+        @paste="onPaste"
       />
-      <!-- uso do plano do Claude (sessão atual); clique mostra a sessão e o limite semanal -->
-      <ClaudeUsageChip />
+      <!-- modelo do Claude (vale para todos os chats) e, colado à direita dele, o uso do plano (só a %) -->
+      <div class="flex-shrink-0 flex items-center gap-1.5 self-end">
+        <ClaudeModelPicker />
+        <ClaudeUsageChip />
+      </div>
       <button
-        :disabled="!input.trim() || store.streaming"
+        :disabled="!canSend"
         class="flex-shrink-0 p-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white transition-colors"
         @click="send"
       >
@@ -1276,7 +1432,11 @@ async function confirmDelete(msg: ChatMessage): Promise<void> {
           <path stroke-linecap="round" stroke-linejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
         </svg>
       </button>
+      </div>
     </div>
+
+    <!-- visualizador das imagens anexadas nas mensagens -->
+    <MediaLightbox v-if="fileViewer" v-model:index="fileViewer.index" :items="fileViewer.items" @close="fileViewer = null" />
 
     <!-- Menu da seleção de texto numa resposta: ouvir a partir dali, ou só o trecho -->
     <Teleport to="body">

@@ -7,18 +7,26 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from ..services import chats as chat_db
-from ..services import rich_text, speech_cache
+from ..services import chat_files, prompt_gen, rich_text, speech_cache
 from ..services.reply_stream import ReplyComposer
-from ..services.media_search import MediaDispatcher
+from ..services.media_search import MediaDispatcher, attach_context, rerun_group
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
+class AttachmentIn(BaseModel):
+    name: str
+    mime: str = ""
+    data: str  # conteúdo em base64
+
+
 class MessageBody(BaseModel):
-    text: str
+    text: str = ""
+    attachments: list[AttachmentIn] = []
 
 
 class ChatCreate(BaseModel):
@@ -182,6 +190,91 @@ async def audio_ranges(message_id: int, request: Request) -> dict:
     return {"ranges": ranges, "audio_pct": pct}
 
 
+@router.get("/chats/{chat_id}/files/{file_id}")
+async def get_chat_file(chat_id: int, file_id: str) -> FileResponse:
+    """Anexo de uma mensagem (a tela mostra a miniatura da imagem no histórico)."""
+    path = chat_files.path_of(chat_id, file_id)
+    if path is None:
+        raise HTTPException(404, "Arquivo não encontrado")
+    return FileResponse(path, media_type=chat_files.media_type(path))
+
+
+class PromptGenBody(BaseModel):
+    description: str = Field(min_length=1, max_length=2000)
+    current: str = Field(default="", max_length=8000)  # com texto: pede ajustes nesse prompt em vez de criar um novo
+
+
+@router.post("/system-prompt/generate")
+async def generate_system_prompt(body: PromptGenBody, request: Request) -> dict:
+    """A IA (Sonnet) escreve o system prompt de um chat a partir da descrição, ou ajusta o prompt atual.
+    Se o usuário cancelar (a conexão cai), a chamada ao Claude é encerrada na hora."""
+    cancel = threading.Event()
+
+    async def _watch() -> None:
+        while not cancel.is_set():
+            if await request.is_disconnected():
+                cancel.set()
+                return
+            await asyncio.sleep(0.25)
+
+    watcher = asyncio.create_task(_watch())
+    try:
+        prompt = await asyncio.to_thread(prompt_gen.generate, body.description, body.current, cancel)
+    finally:
+        watcher.cancel()
+    if cancel.is_set():
+        return {"ok": False, "error": "Cancelado"}
+    if not prompt:
+        return {"ok": False, "error": "Não consegui criar o prompt agora. Tente de novo."}
+    return {"ok": True, "prompt": prompt}
+
+
+class MediaRefreshBody(BaseModel):
+    note: str = Field(default="", max_length=400)  # vazio = repesquisar; com texto = refinar
+
+
+@router.post("/messages/{message_id}/media/{group_id}/refresh")
+async def refresh_media(message_id: int, group_id: str, body: MediaRefreshBody, request: Request) -> dict:
+    """Busca de novo as imagens de UM bloco da resposta e troca só esse bloco (o resto da resposta não muda).
+    Se não achar nada, devolve o erro e o bloco antigo continua como estava."""
+    group = await asyncio.to_thread(chat_db.get_media_group, message_id, group_id)
+    if group is None:
+        raise HTTPException(404, "Bloco de imagens não encontrado")
+    settings = dict(request.app.state.orchestrator.settings)
+    # se o usuário cancelar (a conexão cai), a chamada ao Claude é encerrada na hora e nada é salvo
+    cancel = threading.Event()
+
+    async def _watch() -> None:
+        while not cancel.is_set():
+            if await request.is_disconnected():
+                cancel.set()
+                return
+            await asyncio.sleep(0.25)
+
+    # as primeiras da busca vão para a tela como prévia (evento pelo WebSocket) enquanto a IA confere
+    msg = await asyncio.to_thread(chat_db.get_message, message_id)
+    chat_id = msg["chat_id"] if msg else None
+    state = request.app.state.orchestrator.state
+
+    def on_preview(items: list[dict]) -> None:
+        if not cancel.is_set():
+            state.emit({"type": "chat_media_preview", "chat_id": chat_id, "message_id": message_id,
+                        "group_id": group_id, "items": items})
+
+    watcher = asyncio.create_task(_watch())
+    try:
+        new = await asyncio.to_thread(rerun_group, group, body.note, settings, cancel, on_preview)
+    finally:
+        watcher.cancel()
+    if cancel.is_set() or await request.is_disconnected():
+        return {"ok": False, "error": "Cancelado"}
+    if new.get("error"):
+        return {"ok": False, "error": new["error"]}
+    if not await asyncio.to_thread(chat_db.replace_media_group, message_id, new):
+        raise HTTPException(404, "Bloco de imagens não encontrado")
+    return {"ok": True, "group": new}
+
+
 @router.delete("/messages/{message_id}", status_code=204)
 async def delete_message(message_id: int) -> None:
     await asyncio.to_thread(chat_db.delete_message, message_id)
@@ -194,8 +287,13 @@ async def send_message(
     background_tasks: BackgroundTasks,
     request: Request,
 ) -> dict:
-    if not body.text.strip():
+    if not body.text.strip() and not body.attachments:
         raise HTTPException(400, "Mensagem vazia")
+    try:
+        limit_mb = request.app.state.orchestrator.settings.get("upload_limit_mb", chat_files.DEFAULT_UPLOAD_MB)
+        files = chat_files.prepare([a.model_dump() for a in body.attachments], limit_mb)
+    except chat_files.AttachmentError as e:
+        raise HTTPException(400, str(e))
     t0 = time.perf_counter()
     orchestrator, manager = _manager(request)
     _require_chat(chat_id)
@@ -206,7 +304,8 @@ async def send_message(
     try:
         brain = manager.get_brain(chat_id)
         # salva antes de chamar o Claude (o histórico de reserva da sessão depende disso)
-        user_msg_id = chat_db.save_message(chat_id, "user", body.text)
+        metas = chat_files.save(chat_id, files) if files else None
+        user_msg_id = chat_db.save_message(chat_id, "user", body.text, attachments=metas)
     except Exception:
         manager.end(chat_id)
         raise
@@ -231,7 +330,7 @@ async def send_message(
         tts = orchestrator.tts
         sentence_q: queue.Queue = queue.Queue()
         audio_q: queue.Queue = queue.Queue(maxsize=3)
-        media = MediaDispatcher(emit, orchestrator.settings)
+        media = MediaDispatcher(emit, orchestrator.settings, body.text, brain.chat_prompt)
         orchestrator._speech_stop.clear()  # nova resposta: "parar fala" anterior não vale mais
 
         # Gera o áudio de até 3 frases ao mesmo tempo (o serviço de voz leva 1 a 2,5 s por frase,
@@ -313,7 +412,8 @@ async def send_message(
         # markdown da resposta + frases para a voz (com a posição de cada uma no texto falado)
         composer = ReplyComposer()
         try:
-            for delta in brain.ask_stream(body.text, on_media=media.request, on_tool=on_tool):
+            for delta in brain.ask_stream(body.text.strip() or "Analise o anexo.", on_media=media.request, on_tool=on_tool,
+                                       attachments=files):
                 delta, sentences = composer.feed(delta)
                 if delta:
                     emit({"type": "chat_delta", "text": delta})
@@ -335,6 +435,7 @@ async def send_message(
         # "speaking" avisa a UI que o chat ainda está ocupado (falando) até o "chats_changed" do fim.
         full = composer.md.strip()
         attachments = media.wait_all() if media.has_requests else []
+        attach_context(attachments, body.text, full, brain.chat_prompt)
         msg_id = None
         if full or attachments:
             msg_id = chat_db.save_message(chat_id, "assistant", full, attachments, duration, tools)
@@ -357,4 +458,4 @@ async def send_message(
             saver.set_message(None)  # sem resposta salva: descarta
 
     background_tasks.add_task(asyncio.to_thread, do_chat)
-    return {"queued": True, "user_message_id": user_msg_id}
+    return {"queued": True, "user_message_id": user_msg_id, "files": metas or []}

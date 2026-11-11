@@ -52,11 +52,24 @@ def record(info: dict) -> None:
             "resets_at": w.get("resetsAt"),
             "status": w.get("status"),
         }
-    if not windows and info.get("rateLimitType"):  # formato sem as janelas separadas
-        windows[info["rateLimitType"]] = {"pct": None, "resets_at": info.get("resetsAt"), "status": info.get("status")}
+    kind = info.get("rateLimitType")
+    if kind and kind not in windows:
+        # o Claude Code cita a janela da vez (ex.: five_hour) fora de unifiedWindows, às vezes sem a porcentagem
+        windows[kind] = {"pct": None, "resets_at": info.get("resetsAt"), "status": info.get("status")}
     if not windows:
         return
-    data = {"windows": windows, "status": info.get("status"), "updated_at": time.time()}
+    now = time.time()
+    for w in windows.values():
+        # horário de reinício já vencido e sem número: não dá para saber o uso (o Claude Code não informa)
+        r = w.get("resets_at")
+        if w["pct"] is None and isinstance(r, (int, float)) and r <= now:
+            w["resets_at"] = None
+    # cada evento traz só algumas janelas: junta com as que já tinha (menos as que já reiniciaram)
+    before = (get() or {}).get("windows") or {}
+    merged = {k: v for k, v in before.items()
+              if not (isinstance(v.get("resets_at"), (int, float)) and v["resets_at"] <= now)}
+    merged.update(windows)
+    data = {"windows": merged, "status": info.get("status"), "updated_at": now}
     with _lock:
         _current = data
         try:

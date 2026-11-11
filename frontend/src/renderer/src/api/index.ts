@@ -15,8 +15,8 @@ export async function updateSettings(patch: Partial<Settings>): Promise<Settings
   return data
 }
 
-export async function getLogs(limit = 100, offset = 0): Promise<LogsPage> {
-  const { data } = await http.get('/logs', { params: { limit, offset } })
+export async function getLogs(limit = 100, offset = 0, mode?: 'transcription' | 'ai' | 'file'): Promise<LogsPage> {
+  const { data } = await http.get('/logs', { params: { limit, offset, mode } })
   return data
 }
 
@@ -105,9 +105,47 @@ export async function getChatMessages(chatId: number): Promise<import('../types'
   return data
 }
 
-export async function sendChatMessage(chatId: number, text: string): Promise<{ user_message_id: number }> {
-  const { data } = await http.post(`/chat/chats/${chatId}/message`, { text })
+export async function sendChatMessage(
+  chatId: number,
+  text: string,
+  attachments: { name: string; mime: string; data: string }[] = []
+): Promise<{ user_message_id: number; files: { id: string }[] }> {
+  const { data } = await http.post(`/chat/chats/${chatId}/message`, { text, attachments }, { timeout: 60000 })
   return data
+}
+
+/** endereço de um arquivo anexado a uma mensagem (a tela mostra a miniatura no histórico) */
+export function chatFileUrl(chatId: number, fileId: string): string {
+  return `${BASE_URL}/chat/chats/${chatId}/files/${fileId}`
+}
+
+/** Busca de novo as imagens de UM bloco da resposta. Sem `note`: repesquisar; com texto: refinar. */
+export async function refreshMediaGroup(
+  messageId: number,
+  groupId: string,
+  note = '',
+  signal?: AbortSignal
+): Promise<{ ok: boolean; error?: string; group?: import('../types').MediaGroup }> {
+  const { data } = await http.post(`/chat/messages/${messageId}/media/${groupId}/refresh`, { note }, { timeout: 120000, signal })
+  return data
+}
+
+/** Transcreve uma fala curta gravada na tela (refinar por voz). Não fica no histórico. */
+export async function transcribeVoiceNote(blob: Blob): Promise<string> {
+  const form = new FormData()
+  form.append('file', blob, 'voz.webm')
+  const { data } = await http.post('/transcribe/voice-note', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 60000
+  })
+  return String(data?.text ?? '').trim()
+}
+
+/** A IA (Sonnet) escreve o system prompt de um chat. Com `current`, ajusta esse prompt conforme `description`. */
+export async function generateSystemPrompt(description: string, current = '', signal?: AbortSignal): Promise<string> {
+  const { data } = await http.post('/chat/system-prompt/generate', { description, current }, { timeout: 150000, signal })
+  if (!data?.ok) throw new Error(data?.error || 'Não consegui criar o prompt agora')
+  return String(data.prompt)
 }
 
 export async function clearChatMessages(chatId: number): Promise<void> {

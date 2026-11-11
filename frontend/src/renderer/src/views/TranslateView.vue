@@ -9,7 +9,8 @@ import CustomSelect from '../components/CustomSelect.vue'
 const store = useTranslationStore()
 
 const translating = ref(false)
-const modelsOpen = ref(true)
+// Gerenciar Modelos: ao entrar na tela, abre fechado se já existe algum modelo baixado (senão abre, para baixar)
+const modelsOpen = ref(!store.hasAnyInstalled)
 const downloadProgress = ref<Record<string, number>>({})  // "en>pt" → 0-100
 const error = ref<string | null>(null)
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
@@ -31,7 +32,10 @@ const unsub = onWsMessage((event) => {
   }
 })
 
-onMounted(() => store.fetchPackages())
+onMounted(async () => {
+  await store.fetchPackages()
+  if (store.hasAnyInstalled) modelsOpen.value = false
+})
 onUnmounted(() => unsub())
 
 // Pares disponíveis para o seletor de origem

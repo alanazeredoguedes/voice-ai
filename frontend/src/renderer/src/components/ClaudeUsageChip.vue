@@ -1,17 +1,32 @@
 <script setup lang="ts">
 /** Indicador compacto do uso do plano (sessão atual) na caixa de mensagem; clique abre os detalhes. */
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { barColor, resetText, startUsage, usage } from '../utils/claudeUsage'
+import { resetText, startUsage, usage } from '../utils/claudeUsage'
 import ClaudeUsageCard from './ClaudeUsageCard.vue'
 
 const open = ref(false)
 const root = ref<HTMLElement | null>(null)
 const session = computed(() => usage.value?.windows?.five_hour ?? null)
 const week = computed(() => usage.value?.windows?.seven_day ?? null)
+// só a porcentagem; se o Claude Code não informar a da sessão (acontece), mostra a semanal, com "sem."
+const shown = computed(() => {
+  if (session.value?.pct != null) return { pct: session.value.pct, label: `${session.value.pct}%` }
+  if (week.value?.pct != null) return { pct: week.value.pct, label: `${week.value.pct}% sem.` }
+  return null
+})
+// muda de cor quando o limite aperta (60% amarelo, 85% vermelho)
+const pctColor = computed(() => {
+  const p = shown.value?.pct ?? 0
+  return p >= 85 ? "text-red-300" : p >= 60 ? "text-amber-300" : ""
+})
 
 const title = computed(() => {
-  if (!session.value) return 'Uso do plano do Claude: clique para ver'
-  const lines = [`Sessão atual: ${session.value.pct ?? '?'}% usado. ${resetText(session.value.resets_at)}`]
+  if (!shown.value) return 'Uso do plano do Claude: clique para ver'
+  const lines = [
+    session.value?.pct != null
+      ? `Sessão atual: ${session.value.pct}% usado. ${resetText(session.value.resets_at)}`
+      : 'Sessão atual: o Claude Code não informa esta porcentagem (veja em claude.ai, Configurações, Uso)'
+  ]
   if (week.value) lines.push(`Limite semanal: ${week.value.pct ?? '?'}% usado. ${resetText(week.value.resets_at)}`)
   return lines.join('\n')
 })
@@ -37,10 +52,7 @@ onUnmounted(() => document.removeEventListener('mousedown', onDocDown, true))
       ]"
       @click="open = !open"
     >
-      <span class="w-8 h-1.5 rounded-full bg-slate-700 overflow-hidden">
-        <span :class="['block h-full rounded-full', barColor(session?.pct)]" :style="{ width: `${session?.pct ?? 0}%` }" />
-      </span>
-      {{ session?.pct != null ? `${session.pct}%` : 'Uso' }}
+      <span :class="pctColor">{{ shown?.label ?? 'Uso' }}</span>
     </button>
     <div
       v-if="open"

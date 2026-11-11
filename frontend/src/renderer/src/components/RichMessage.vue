@@ -10,7 +10,7 @@ import { buildDoc, type Run } from '../utils/richText'
 import MediaGrid from './MediaGrid.vue'
 import MediaBlock from './MediaBlock.vue'
 
-const props = defineProps<{ content: string; media?: MediaGroup[]; streaming?: boolean }>()
+const props = defineProps<{ content: string; media?: MediaGroup[]; streaming?: boolean; messageId?: number }>()
 
 const doc = computed(() => buildDoc(props.content, !!props.streaming))
 
@@ -73,7 +73,12 @@ function runClass(r: Run): string[] {
       <template v-else-if="b.type === 'media'">
         <template v-if="groupById.get(b.id)">
           <!-- escolhidas pela IA depois de ver a busca: layout de destaque -->
-          <MediaBlock v-if="groupById.get(b.id)!.picked" :group="groupById.get(b.id)!" class="rich-media" />
+          <MediaBlock
+            v-if="groupById.get(b.id)!.picked"
+            :group="groupById.get(b.id)!"
+            :message-id="streaming ? undefined : messageId"
+            class="rich-media"
+          />
           <MediaGrid v-else :groups="[groupById.get(b.id)!]" class="rich-media" />
         </template>
       </template>

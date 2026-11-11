@@ -20,12 +20,15 @@ const rows = computed(() => {
       <div v-for="r in rows" :key="r.key" class="flex flex-col gap-1">
         <div class="flex items-baseline justify-between gap-3">
           <span class="text-sm text-slate-200">{{ r.label }}</span>
-          <span class="text-xs tabular-nums text-slate-300">{{ r.pct ?? '?' }}% usado</span>
+          <span class="text-xs tabular-nums text-slate-300">{{ r.pct != null ? `${r.pct}% usado` : 'não informado' }}</span>
         </div>
         <div class="h-2 rounded-full bg-slate-800 overflow-hidden">
           <div :class="['h-full rounded-full transition-all duration-500', barColor(r.pct)]" :style="{ width: `${r.pct ?? 0}%` }" />
         </div>
-        <span class="text-[11px] text-slate-500">{{ resetText(r.resets_at) }}</span>
+        <span v-if="r.pct == null" class="text-[11px] text-slate-500">
+          O Claude Code não informa esta porcentagem. Veja em claude.ai, Configurações, Uso.
+        </span>
+        <span v-else class="text-[11px] text-slate-500">{{ resetText(r.resets_at) }}</span>
       </div>
     </template>
     <p v-else class="text-xs text-slate-500">

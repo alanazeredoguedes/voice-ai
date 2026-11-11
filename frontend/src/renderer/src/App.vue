@@ -50,8 +50,8 @@ function onSetupDone() {
 
   <!-- App normal -->
   <div v-else class="flex h-screen bg-slate-950 text-slate-100 overflow-hidden">
-    <!-- na página de teste, a barra mostra "Configurações" selecionada (é de lá que ela é aberta) -->
-    <Sidebar :model-value="currentView === 'benchmark' ? 'settings' : currentView" @update:model-value="(v) => (currentView = v)" />
+    <!-- páginas abertas por um botão de outra tela mostram selecionada a tela de origem na barra (teste de desempenho: Configurações; transcrever arquivo: microfone) -->
+    <Sidebar :model-value="currentView === 'benchmark' ? 'settings' : currentView === 'transcribe' ? 'status' : currentView" @update:model-value="(v) => (currentView = v)" />
     <main class="flex-1 overflow-auto p-6">
       <StatusView v-if="currentView === 'status'" />
       <SettingsView v-else-if="currentView === 'settings'" />

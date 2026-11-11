@@ -847,6 +847,12 @@ ipcMain.handle('media:save-image', async (_e, opts: { urls: string[]; name?: str
 })
 
 // Atalho "mostrar/esconder": o backend avisa a tela, que pede isto aqui (ver windowToggle.ts)
+// Alt+V no chat: imagem que está na área de transferência (ex.: um print da tela)
+ipcMain.handle('clipboard:read-image', () => {
+  const img = clipboard.readImage()
+  return img.isEmpty() ? null : { dataUrl: img.toDataURL() }
+})
+
 ipcMain.handle('window:toggle', () => {
   if (!mainWindow || mainWindow.isDestroyed()) return null
   return toggleWindowOnTop(mainWindow)

@@ -44,6 +44,8 @@ def capture_hotkey(timeout: float = 10.0) -> str | None:
     def on_click(x, y, button, pressed):
         if not pressed:
             return
+        if button.name == "left":
+            return  # o clique esquerdo não pode ser atalho: ignora e continua esperando outro
         btn_str = f"mouse:{button.name}"
         hotkey = "+".join(sorted(held_mods) + [btn_str])
         _finish(hotkey)

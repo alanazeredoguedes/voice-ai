@@ -12,15 +12,18 @@ router = APIRouter(prefix="/logs", tags=["logs"])
 async def list_logs(
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    mode: str | None = Query(None, pattern="^(transcription|ai|file)$"),
 ) -> LogsPage:
+    """`mode`: só um tipo (transcription = microfone, ai = pergunta por voz, file = arquivo)."""
+    where, args = ("WHERE mode = ?", [mode]) if mode else ("", [])
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        cur = await db.execute("SELECT COUNT(*) AS c FROM transcription_logs")
+        cur = await db.execute(f"SELECT COUNT(*) AS c FROM transcription_logs {where}", args)
         total_row = await cur.fetchone()
         total = total_row["c"] if total_row else 0
         cur = await db.execute(
-            "SELECT * FROM transcription_logs ORDER BY ts DESC LIMIT ? OFFSET ?",
-            (limit, offset),
+            f"SELECT * FROM transcription_logs {where} ORDER BY ts DESC LIMIT ? OFFSET ?",
+            [*args, limit, offset],
         )
         rows = await cur.fetchall()
     items = [LogOut(**dict(row)) for row in rows]

@@ -16,7 +16,7 @@ from .services import chats as chat_db
 from .services.brain import ClaudeBrain
 from .services.chats import ChatManager
 from .services.hotkey_manager import HotkeyManager
-from .services.media_search import MediaDispatcher
+from .services.media_search import MediaDispatcher, attach_context
 from .services import rich_text
 from .services.reply_stream import ReplyComposer
 from .services.speech_engine import SpeechEngine
@@ -486,7 +486,7 @@ class Orchestrator:
         full_response: list[str] = []
         sentence_q: queue.Queue = queue.Queue()
         audio_q: queue.Queue = queue.Queue(maxsize=3)
-        media = MediaDispatcher(emit, self.settings)
+        media = MediaDispatcher(emit, self.settings, text, brain.chat_prompt)
         self._speech_stop.clear()  # nova resposta: "parar fala" anterior não vale mais
         tools: list[dict] = []
         stream_end: list[float] = []
@@ -536,6 +536,7 @@ class Orchestrator:
                 return
             response = composer.md.strip()
             attachments = media.wait_all() if media.has_requests and not self._cancel_evt.is_set() else []
+            attach_context(attachments, text, response, brain.chat_prompt)
             if not (response or attachments) or self._cancel_evt.is_set():
                 return
             duration = stream_end[0] - t0

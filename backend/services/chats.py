@@ -8,7 +8,7 @@ import threading
 from typing import Any
 
 from ..config import DB_PATH
-from . import rich_text
+from . import chat_files, rich_text
 from .brain import ClaudeBrain
 
 # Quantas mensagens anteriores vão junto quando uma conversa precisa recomeçar no Claude
@@ -93,12 +93,14 @@ def delete_chat(chat_id: int) -> None:
         conn.execute("DELETE FROM chats WHERE id = ?", (chat_id,))
         conn.commit()
     speech_cache.delete_chat(chat_id)
+    chat_files.delete_chat(chat_id)
 
 
 def clear_messages(chat_id: int) -> None:
     from . import speech_cache
 
     speech_cache.delete_chat(chat_id)
+    chat_files.delete_chat(chat_id)
     with _conn() as conn:
         conn.execute("DELETE FROM chat_messages WHERE chat_id = ?", (chat_id,))
         conn.execute("UPDATE chats SET session_id = NULL, session_key = NULL WHERE id = ?", (chat_id,))
@@ -142,10 +144,52 @@ def delete_message(message_id: int) -> None:
     from . import speech_cache
 
     with _conn() as conn:
-        row = conn.execute("SELECT chat_id FROM chat_messages WHERE id = ?", (message_id,)).fetchone()
+        row = conn.execute("SELECT chat_id, role, attachments FROM chat_messages WHERE id = ?", (message_id,)).fetchone()
         conn.execute("DELETE FROM chat_messages WHERE id = ?", (message_id,))
         conn.commit()
     speech_cache.delete_message(row["chat_id"] if row else None, message_id)
+    if row and row["role"] == "user" and row["attachments"]:
+        try:
+            chat_files.delete_files(row["chat_id"], json.loads(row["attachments"]))
+        except ValueError:
+            pass
+
+
+def get_media_group(message_id: int, group_id: str) -> dict | None:
+    """Um bloco de imagens de uma resposta da IA (ou None se a mensagem/bloco não existir)."""
+    with _conn() as conn:
+        row = conn.execute("SELECT role, attachments FROM chat_messages WHERE id = ?", (message_id,)).fetchone()
+    if not row or row["role"] != "assistant" or not row["attachments"]:
+        return None
+    try:
+        groups = json.loads(row["attachments"])
+    except ValueError:
+        return None
+    return next((g for g in groups if isinstance(g, dict) and g.get("group_id") == group_id), None)
+
+
+def replace_media_group(message_id: int, group: dict) -> bool:
+    """Troca, na resposta salva, o bloco de imagens de mesmo group_id (os outros blocos ficam como estão)."""
+    with _conn() as conn:
+        row = conn.execute("SELECT role, attachments FROM chat_messages WHERE id = ?", (message_id,)).fetchone()
+        if not row or row["role"] != "assistant" or not row["attachments"]:
+            return False
+        try:
+            groups = json.loads(row["attachments"])
+        except ValueError:
+            return False
+        done = False
+        for i, g in enumerate(groups):
+            if isinstance(g, dict) and g.get("group_id") == group.get("group_id"):
+                groups[i] = group
+                done = True
+        if done:
+            conn.execute(
+                "UPDATE chat_messages SET attachments = ? WHERE id = ?",
+                (json.dumps(groups, ensure_ascii=False), message_id),
+            )
+            conn.commit()
+        return done
 
 
 def get_message(message_id: int) -> dict | None:
@@ -168,9 +212,12 @@ def get_messages(chat_id: int, limit: int = 500) -> list[dict[str, Any]]:
         d = _chat_row(r)
         raw = d.pop("attachments", None)
         try:
-            d["media"] = json.loads(raw) if raw else []
+            items = json.loads(raw) if raw else []
         except ValueError:
-            d["media"] = []
+            items = []
+        # resposta da IA: imagens/vídeos no texto ("media"); mensagem do usuário: arquivos anexados ("files")
+        d["media"] = items if d["role"] == "assistant" else []
+        d["files"] = items if d["role"] == "user" else []
         raw_tools = d.pop("tools", None)
         try:
             d["tools"] = json.loads(raw_tools) if raw_tools else []

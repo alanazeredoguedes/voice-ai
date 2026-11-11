@@ -32,9 +32,23 @@ const fullFailed = computed(() => failedHere.value || (current.value ? preloadSt
 
 const embedUrl = computed(() =>
   current.value?.video_id
-    ? `https://www.youtube-nocookie.com/embed/${current.value.video_id}?autoplay=1&rel=0`
+    ? `https://www.youtube-nocookie.com/embed/${current.value.video_id}?autoplay=1&rel=0&enablejsapi=1`
     : ''
 )
+
+// vídeos sempre abrem com 30% de volume (nunca no máximo): o player do YouTube aceita o comando por postMessage
+const VIDEO_VOLUME = 30
+const ytFrame = ref<HTMLIFrameElement | null>(null)
+function applyVideoVolume(): void {
+  const w = ytFrame.value?.contentWindow
+  if (!w) return
+  w.postMessage(JSON.stringify({ event: 'listening', id: 1, channel: 'widget' }), '*')
+  w.postMessage(JSON.stringify({ event: 'command', func: 'setVolume', args: [VIDEO_VOLUME] }), '*')
+}
+function onVideoLoad(): void {
+  // o player demora um pouco para aceitar comandos: tenta algumas vezes
+  for (const ms of [0, 400, 1200, 2500]) setTimeout(applyVideoVolume, ms)
+}
 
 function go(delta: number): void {
   if (!hasMany.value) return
@@ -243,8 +257,10 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
           <!-- Vídeo do YouTube -->
           <div v-if="current.kind === 'video'" class="w-full max-w-4xl aspect-video rounded-xl overflow-hidden bg-black shadow-2xl">
             <iframe
+              ref="ytFrame"
               :key="current.video_id"
               :src="embedUrl"
+              @load="onVideoLoad"
               :title="current.title"
               class="w-full h-full"
               frameborder="0"
@@ -313,7 +329,8 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
       <!-- Rodapé: título + abrir fora -->
       <div v-if="current" class="flex items-center justify-center gap-3 px-4 py-3 flex-shrink-0 min-w-0">
         <div class="min-w-0 text-center">
-          <p class="text-sm text-slate-200 truncate max-w-[60vw]">{{ current.title }}</p>
+          <p v-if="current.caption" class="text-sm text-slate-100 max-w-[60vw]">{{ current.caption }}</p>
+          <p :class="current.caption ? 'text-xs text-slate-400' : 'text-sm text-slate-200'" class="truncate max-w-[60vw]">{{ current.title }}</p>
           <p class="text-xs text-slate-500 truncate">{{ current.source }}</p>
         </div>
         <button

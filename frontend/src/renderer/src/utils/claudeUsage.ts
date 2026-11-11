@@ -60,7 +60,7 @@ const WEEKDAY = ['dom.', 'seg.', 'ter.', 'qua.', 'qui.', 'sex.', 'sáb.']
 
 /** "Redefine às 15:00" (hoje) ou "Reinicia sáb., 08:00" */
 export function resetText(epoch: number | null | undefined): string {
-  if (!epoch) return ''
+  if (!epoch || epoch * 1000 <= Date.now()) return ''
   const d = new Date(epoch * 1000)
   const hm = d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
   const now = new Date()
@@ -74,8 +74,8 @@ export function resetText(epoch: number | null | undefined): string {
 /** cor da barra: perto do limite fica amarela, no limite vermelha */
 export function barColor(pct: number | null | undefined): string {
   if (pct == null) return 'bg-slate-600'
-  if (pct >= 95) return 'bg-red-500'
-  if (pct >= 80) return 'bg-amber-400'
+  if (pct >= 85) return 'bg-red-500'
+  if (pct >= 60) return 'bg-amber-400'
   return 'bg-indigo-500'
 }
 

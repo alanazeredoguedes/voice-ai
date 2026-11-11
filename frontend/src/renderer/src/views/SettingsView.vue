@@ -15,6 +15,12 @@ import HoldToReveal from '../components/HoldToReveal.vue'
 import CustomSelect from '../components/CustomSelect.vue'
 import ClaudeMonitoringStatus from '../components/ClaudeMonitoringStatus.vue'
 import { CLAUDE_MODEL_OPTIONS, DEFAULT_CLAUDE_MODEL } from '../utils/claudeModels'
+
+const UPLOAD_LIMITS = [1, 2, 3, 5, 10, 15, 20].map((v) => ({
+  value: String(v),
+  label: `${v} MB por anexo`,
+  description: v === 2 ? 'Padrão' : undefined
+}))
 import ClaudeUsageCard from '../components/ClaudeUsageCard.vue'
 
 const store = useSettingsStore()
@@ -451,8 +457,8 @@ onUnmounted(() => {
           <div>
             <p class="text-sm text-slate-200">Uso do plano</p>
             <p class="text-xs text-slate-500 leading-relaxed mt-0.5">
-              Os mesmos números de claude.ai, em Configurações e Uso. Atualizam a cada resposta da IA
-              (também aparecem ao lado do botão de enviar, no Chat IA).
+              Os mesmos números de claude.ai, em Configurações e Uso. Atualizam depois de cada uso da IA: respostas do chat,
+              busca e conferência de imagens, system prompt (também aparecem ao lado do botão de enviar, no Chat IA).
             </p>
           </div>
           <ClaudeUsageCard />
@@ -463,6 +469,19 @@ onUnmounted(() => {
           description="A IA pode buscar notícias e informações recentes (preços, resultados, lançamentos) quando a pergunta pedir. As respostas com pesquisa demoram alguns segundos a mais."
           @update:model-value="(v) => set({ web_search: v })"
         />
+        <div class="flex flex-col gap-1.5">
+          <p class="text-sm text-slate-200">Tamanho máximo dos anexos do chat</p>
+          <p class="text-xs text-slate-500 leading-relaxed">
+            Vale para cada imagem ou arquivo de texto anexado no Chat IA. Imagens grandes são reduzidas antes de enviar.
+            Arquivo de texto muito grande gasta mais do seu plano: a IA lê no máximo uns 200 mil caracteres de cada um.
+            Fica a seu critério, de acordo com o uso da sua conta.
+          </p>
+          <CustomSelect
+            :model-value="String(store.settings.upload_limit_mb ?? 2)"
+            :options="UPLOAD_LIMITS"
+            @update:model-value="(v) => set({ upload_limit_mb: Number(v) })"
+          />
+        </div>
         <p class="text-xs text-slate-500 leading-relaxed">
           O system prompt e o contexto da conversa agora são de cada chat: no Chat IA, use o seletor no topo
           para trocar de chat, o <span class="text-slate-400">+</span> para criar um novo e a engrenagem para
