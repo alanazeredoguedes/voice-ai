@@ -11,6 +11,10 @@ build/
 
 # Python embutido (binário grande, não vai pro repo)
 backend/python-dist/
+# gerados pelo build (bibliotecas Python e modelo Whisper que vão dentro do instalador)
+backend/python-packages/
+backend/hf-cache/
+backend/translate-lock.txt
 
 # Electron / Node
 frontend/node_modules/
@@ -46,3 +50,39 @@ Thumbs.db
 
 # Superpowers workspace (scratch, não é código)
 .superpowers/
+
+# Instaladores e pacotes gerados pelo build (nunca vão pro repo)
+*.exe
+*.msi
+*.blockmap
+*.AppImage
+*.dmg
+*.deb
+*.rpm
+*.snap
+*.zip
+*.7z
+.requirements-hash
+*.tsbuildinfo
+
+# Modelos e áudios baixados / de teste
+*.onnx
+*.gguf
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+models/
+
+# Arquivos temporários e de teste
+*.tmp
+*.tmp.*
+vite.*.tmp.config.mjs
+.pytest_cache/
+.coverage
+htmlcov/
+npm-debug.log*
+yarn-error.log*
+
+# Ferramentas de IA (configuração local)
+.claude/

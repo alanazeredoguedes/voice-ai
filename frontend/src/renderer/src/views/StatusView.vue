@@ -1,12 +1,22 @@
 <script setup lang="ts">
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { useStatusStore } from '../stores/status'
+import { useSettingsStore } from '../stores/settings'
+import { prettyHotkey } from '../utils/hotkeys'
 import { onWsMessage } from '../api/ws'
 import StatusBadge from '../components/StatusBadge.vue'
 import AudioLevelBar from '../components/AudioLevelBar.vue'
 import CopyButton from '../components/CopyButton.vue'
 
 const statusStore = useStatusStore()
+const settingsStore = useSettingsStore()
+
+/** atalho(s) que ligam a transcrição (o principal e os extras), para mostrar ao lado do modelo */
+const transcriptionKeys = computed(() => {
+  const s = settingsStore.settings
+  if (!s) return []
+  return [s.transcription_key, ...(s.transcription_keys_extra ?? [])].filter(Boolean).map(prettyHotkey)
+})
 
 const MODEL_NAMES: Record<string, string> = {
   tiny: 'Tiny',
@@ -23,6 +33,7 @@ const navigate = inject<(v: string) => void>('navigate')
 onMounted(() => {
   void statusStore.syncEngineLoading()
   void statusStore.loadRecentTranscriptions()
+  if (!settingsStore.settings) void settingsStore.fetchSettings()
 })
 
 // transcrições anteriores (a mais recente fica em destaque; as outras ficam discretas no rodapé)
@@ -71,6 +82,22 @@ onUnmounted(() => unsub())
           </svg>
         </button>
       </div>
+      <div class="flex flex-wrap items-stretch gap-2">
+      <!-- atalho que liga a transcrição -->
+      <button
+        v-if="transcriptionKeys.length"
+        title="Atalho que liga a transcrição pelo microfone. Clique para mudar nas Configurações"
+        class="flex items-center gap-2.5 rounded-xl border border-slate-700/60 bg-slate-800/60 hover:border-indigo-500/60 hover:bg-indigo-600/10 px-3.5 py-2 text-left transition-colors"
+        @click="navigate?.('settings')"
+      >
+        <svg class="w-4 h-4 text-slate-400 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0021 18V6a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 6v12a2.25 2.25 0 002.25 2.25z" />
+        </svg>
+        <span class="flex flex-col">
+          <span class="text-[11px] text-slate-500 leading-tight">Atalho para transcrever</span>
+          <span class="text-sm text-slate-100 font-medium leading-tight">{{ transcriptionKeys.join('  ou  ') }}</span>
+        </span>
+      </button>
       <!-- modelo que está na memória e transcrevendo agora -->
       <button
         v-if="statusStore.engineInfo"
@@ -96,6 +123,7 @@ onUnmounted(() => unsub())
           </span>
         </span>
       </button>
+      </div>
     </div>
 
     <!-- modelo carregando (ao abrir o app ou trocar de modelo) -->

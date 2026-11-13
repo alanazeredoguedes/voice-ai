@@ -3,6 +3,12 @@ productName: Voice AI
 directories:
   buildResources: build
   output: dist
+# compressão máxima do instalador (build mais lento, arquivo menor)
+compression: maximum
+# idiomas do Chromium: só os do app (os outros ~50 não são usados)
+electronLanguages:
+  - pt-BR
+  - en-US
 files:
   - out/**/*
   - "!**/*.{ts,map}"
@@ -28,8 +34,16 @@ extraResources:
       - "!venv/**"
       - "!venv-dist/**"
       - "!python-dist/**"
+      - "!python-packages/**"
+      - "!hf-cache/**"
       - "!__pycache__/**"
       - "!**/*.pyc"
+  # bibliotecas Python instaladas no build (build.ps1): o app instalado abre sem baixar nada
+  - from: ../backend/python-packages
+    to: python-packages
+    filter:
+      - "**/*"
+      - "!**/*.pdb"
   - from: ../backend/python-dist
     to: python-dist
     filter:
@@ -38,4 +52,8 @@ extraResources:
       - "!**/*.pyc"
       - "!share/doc/**"
       - "!share/man/**"
+      # partes do Python que o app não usa (testes da biblioteca padrão, IDLE, demos)
+      - "!Lib/test/**"
+      - "!Lib/idlelib/**"
+      - "!Lib/turtledemo/**"
       - "!**/*.pdb"

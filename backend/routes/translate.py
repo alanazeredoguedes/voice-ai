@@ -1,12 +1,21 @@
 import asyncio
+import importlib.util
 import tempfile
 import time
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-router = APIRouter(prefix="/translate", tags=["translate"])
+
+def _require_argos() -> None:
+    """O motor de tradução (argostranslate, com o torch) é baixado na instalação do app (os idiomas, não: esses o
+    usuário baixa na aba Traduzir). Se o motor ainda não está aí (instalação interrompida), avisa em vez de dar erro."""
+    if importlib.util.find_spec("argostranslate") is None:
+        raise HTTPException(503, "O motor de tradução ainda não foi instalado. Feche e abra o app para concluir a instalação.")
+
+
+router = APIRouter(prefix="/translate", tags=["translate"], dependencies=[Depends(_require_argos)])
 
 # Cache do índice de pacotes para evitar bater no servidor Argos a cada request
 _package_index_cache: list | None = None

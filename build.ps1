@@ -34,6 +34,38 @@ foreach ($dll in $vcDlls) {
     }
 }
 
+# Bibliotecas Python DENTRO do app: o NÚCLEO (requirements-core.txt) é instalado aqui, no build, com o Python
+# embutido. A tradução (argostranslate + torch, spacy...) pesa centenas de MB e NÃO vai no instalador: o app a
+# baixa na primeira instalação, a partir de backend\translate-lock.txt (gerado abaixo).
+$PyPackages = Join-Path $Root 'backend\python-packages'
+$coreFile = Join-Path $Root 'backend\requirements-core.txt'
+$fullFile = Join-Path $Root 'backend\requirements.txt'
+$lockFile = Join-Path $Root 'backend\translate-lock.txt'
+$PyExe = Join-Path $PyDist 'python.exe'
+$reqHash = (Get-FileHash $coreFile -Algorithm SHA256).Hash + (Get-FileHash $fullFile -Algorithm SHA256).Hash
+$hashFile = Join-Path $PyPackages '.requirements-hash'
+if (-not (Test-Path $hashFile) -or (Get-Content $hashFile -Raw).Trim() -ne $reqHash -or -not (Test-Path $lockFile)) {
+    Write-Host "[build] instalando as bibliotecas do nucleo dentro do app..."
+    if (Test-Path $PyPackages) { Remove-Item -Recurse -Force $PyPackages }
+    New-Item -ItemType Directory -Force $PyPackages | Out-Null
+    & $PyExe -m pip install -r $coreFile --target $PyPackages --no-warn-script-location --disable-pip-version-check
+    if ($LASTEXITCODE -ne 0) { throw "pip falhou ($LASTEXITCODE)" }
+
+    Write-Host "[build] gerando a lista do pacote de traducao (baixado na instalacao do app)..."
+    & $PyExe (Join-Path $Root 'tools\make_translate_lock.py')
+    if ($LASTEXITCODE -ne 0) { throw "make_translate_lock falhou ($LASTEXITCODE)" }
+
+    # limpeza: testes, cache de codigo, cabecalhos e scripts que o app nao usa (menos MB no instalador)
+    Write-Host "[build] limpando arquivos que o app nao usa..."
+    $dirs = Get-ChildItem $PyPackages -Recurse -Directory -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -in '__pycache__', 'tests', 'test' } | Select-Object -ExpandProperty FullName
+    foreach ($d in $dirs) { if (Test-Path $d) { Remove-Item -Recurse -Force $d -ErrorAction SilentlyContinue } }
+    Get-ChildItem $PyPackages -Recurse -File -Force -Include *.pyi, *.h, *.hpp, *.lib, *.pdb, *.pyc -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+    $bin = Join-Path $PyPackages 'bin'
+    if (Test-Path $bin) { Remove-Item -Recurse -Force $bin }
+
+    Set-Content -Path $hashFile -Value $reqHash
+}
+
 # electron-builder: o pacote winCodeSign contém symlinks de macOS que o Windows não cria sem
 # modo desenvolvedor/admin. Pré-extrai no cache ignorando a pasta darwin (não usada no Windows).
 $wcsDir = Join-Path $env:LOCALAPPDATA 'electron-builder\Cache\winCodeSign\winCodeSign-2.6.0'

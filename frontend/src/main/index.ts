@@ -47,6 +47,16 @@ function getBundledPython(): string {
     : join(process.resourcesPath, 'python-dist', 'bin', 'python3')
 }
 
+/**
+ * Bibliotecas Python que já vêm dentro do instalador (resources/python-packages): o build as instala lá,
+ * então o app instalado abre sem baixar nada. Em desenvolvimento não existe (usa o venv).
+ */
+function getBundledPackagesDir(): string | null {
+  if (!app.isPackaged) return null
+  const dir = join(process.resourcesPath, 'python-packages')
+  return existsSync(dir) ? dir : null
+}
+
 function getBackendCwd(): string {
   if (!app.isPackaged) return join(__dirname, '..', '..', '..')
   return process.resourcesPath
@@ -56,16 +66,38 @@ function getBackendCwd(): string {
 // Setup state
 // ---------------------------------------------------------------------------
 
-function getRequirementsPath(): string {
+function getBackendFile(name: string): string {
   return app.isPackaged
-    ? join(process.resourcesPath, 'backend', 'requirements.txt')
-    : join(__dirname, '..', '..', '..', 'backend', 'requirements.txt')
+    ? join(process.resourcesPath, 'backend', name)
+    : join(__dirname, '..', '..', '..', 'backend', name)
 }
 
-/** Hash do requirements.txt: quando muda (nova versão do app), o setup instala só o que falta. */
+/** Lista completa (núcleo + tradução). Sem bibliotecas embutidas (Linux), é ela que o setup instala. */
+function getRequirementsPath(): string {
+  return getBackendFile('requirements.txt')
+}
+
+/**
+ * Pacotes que só a tradução precisa (argostranslate e o que ela puxa: torch, spacy...), gerados no build.
+ * O instalador não os leva (pesam centenas de MB): o setup os baixa na primeira instalação.
+ */
+function getTranslateLockPath(): string | null {
+  const p = getBackendFile('translate-lock.txt')
+  return existsSync(p) ? p : null
+}
+
+/** Hash das listas de dependências: quando mudam (nova versão do app), o setup instala só o que falta. */
 function requirementsHash(): string {
   try {
-    return createHash('sha256').update(readFileSync(getRequirementsPath())).digest('hex').slice(0, 16)
+    const parts = ['requirements.txt', 'requirements-core.txt', 'translate-lock.txt'].map((f) => {
+      try {
+        return readFileSync(getBackendFile(f), 'utf8')
+      } catch {
+        return ''
+      }
+    })
+    if (!parts[0]) return ''
+    return createHash('sha256').update(parts.join('\n--\n')).digest('hex').slice(0, 16)
   } catch {
     return ''
   }
@@ -209,7 +241,8 @@ const NOTABLE_PACKAGES: Record<string, string> = {
   fastapi: 'Servidor interno do app (FastAPI)',
   nvidia_cublas_cu12: 'NVIDIA cuBLAS (cálculo na GPU)',
   nvidia_cudnn_cu12: 'NVIDIA cuDNN (redes neurais na GPU)',
-  nvidia_cuda_nvrtc_cu12: 'NVIDIA NVRTC'
+  nvidia_cuda_nvrtc_cu12: 'NVIDIA NVRTC',
+  sympy: 'Matemática simbólica (usada pelo PyTorch)'
 }
 
 /**
@@ -301,17 +334,25 @@ async function pipInstall(
   onProgress({ step: 'pip', message: `${label}: concluído`, percent: to })
 }
 
-/** Lista (linhas do requirements.txt) os pacotes que ainda não estão instalados em `packagesDir`. */
-async function missingRequirements(python: string, packagesDir: string, requirementsPath: string): Promise<string[]> {
+/** Lista (linhas do arquivo de dependências, seguindo "-r outro.txt") o que ainda não está instalado nas pastas dadas. */
+async function missingRequirements(python: string, packagesDirs: string[], requirementsPath: string): Promise<string[]> {
   const script = [
-    'import sys, json',
-    `sys.path.insert(0, ${JSON.stringify(packagesDir)})`,
+    'import sys, json, os',
+    ...packagesDirs.map((d) => `sys.path.insert(0, ${JSON.stringify(d)})`),
     'from importlib.metadata import distribution, PackageNotFoundError',
     'from pip._vendor.packaging.requirements import Requirement',
+    'def lines(path):',
+    '    base = os.path.dirname(path)',
+    '    for raw in open(path, encoding="utf-8"):',
+    '        line = raw.split("#")[0].strip()',
+    '        if not line: continue',
+    '        if line.startswith("-r "):',
+    '            yield from lines(os.path.join(base, line[3:].strip()))',
+    '            continue',
+    '        if line.startswith("-"): continue',
+    '        yield line',
     'missing = []',
-    `for raw in open(${JSON.stringify(requirementsPath)}, encoding="utf-8"):`,
-    '    line = raw.split("#")[0].strip()',
-    '    if not line: continue',
+    `for line in lines(${JSON.stringify(requirementsPath)}):`,
     '    r = Requirement(line)',
     '    if r.marker and not r.marker.evaluate(): continue',
     '    try: v = distribution(r.name).version',
@@ -487,11 +528,21 @@ async function runSetup(onProgress: ProgressFn, mode: SetupMode, opts: SetupOpti
     // Nova versão do app: instala só o que falta/mudou, sem baixar tudo de novo
     await step('deps', async () => {
       onProgress({ step: 'pip', message: 'Verificando componentes...', percent: 3 })
-      const missing = await missingRequirements(bundledPython, packagesDir, requirementsPath)
-      log(`[setup] pacotes faltando: ${missing.length ? missing.join(', ') : 'nenhum'}`)
-      if (!missing.length) return 'já estava tudo instalado'
-      await pipInstall(bundledPython, ['install', ...missing, ...target, '--upgrade'], 5, 85, 'Atualizando', 'deps', onProgress, log, pipEnv)
-      return `${missing.length} componente(s) novo(s)`
+      const bundled = getBundledPackagesDir()
+      const dirs = [packagesDir, ...(bundled ? [bundled] : [])]
+      const lock = bundled ? getTranslateLockPath() : null
+      // com bibliotecas embutidas, o núcleo vem no app e a tradução tem lista própria; senão, tudo vem do requirements.txt
+      const missing = await missingRequirements(bundledPython, dirs, bundled ? getBackendFile('requirements-core.txt') : requirementsPath)
+      const missingTranslate = lock ? await missingRequirements(bundledPython, dirs, lock) : []
+      log(`[setup] pacotes faltando: ${[...missing, ...missingTranslate].join(', ') || 'nenhum'}`)
+      if (!missing.length && !missingTranslate.length) return 'já estava tudo instalado'
+      if (missing.length) {
+        await pipInstall(bundledPython, ['install', ...missing, ...target, '--upgrade'], 5, missingTranslate.length ? 20 : 85, 'Atualizando', 'deps', onProgress, log, pipEnv)
+      }
+      if (missingTranslate.length) {
+        await pipInstall(bundledPython, ['install', '--no-deps', ...missingTranslate, ...target, '--upgrade'], missing.length ? 20 : 5, 85, 'Motor de tradução', 'deps', onProgress, log, pipEnv)
+      }
+      return `${missing.length + missingTranslate.length} componente(s) novo(s)`
     })
   } else {
     const gpu = hasNvidiaGpu()
@@ -499,6 +550,12 @@ async function runSetup(onProgress: ProgressFn, mode: SetupMode, opts: SetupOpti
     const wantCuda = gpu && opts.useGpu && !sysCuda
 
     await step('deps', async () => {
+      if (getBundledPackagesDir()) {
+        // o núcleo (voz, transcrição, FFmpeg...) já vem dentro do app, instalado no build: nada para baixar
+        log(`[setup] bibliotecas embutidas no app: ${getBundledPackagesDir()}`)
+        onProgress({ step: 'pip', message: 'Componentes de voz já vêm dentro do app', percent: 3 })
+        return 'já vêm dentro do app, sem baixar'
+      }
       onProgress({ step: 'pip', message: 'Atualizando pip...', percent: 1 })
       await runCmd(bundledPython, ['-m', 'pip', 'install', '--upgrade', 'pip', '--quiet', ...target], { env: pipEnv }, log)
       await pipInstall(
@@ -512,7 +569,30 @@ async function runSetup(onProgress: ProgressFn, mode: SetupMode, opts: SetupOpti
         log,
         pipEnv
       )
+      return ''
     })
+
+    // motor de tradução (argostranslate + torch, spacy...): fica fora do instalador e é baixado aqui. Os IDIOMAS não: o usuário baixa na aba Traduzir
+    if (getBundledPackagesDir()) {
+      await step('translate', async () => {
+        const lock = getTranslateLockPath()
+        if (!lock) throw new Error('lista de pacotes da tradução não encontrada no app')
+        await pipInstall(
+          bundledPython,
+          ['install', '--no-deps', '-r', lock, ...target],
+          3,
+          wantCuda ? 50 : 78,
+          'Motor de tradução',
+          'translate',
+          onProgress,
+          log,
+          pipEnv
+        )
+        return ''
+      })
+    } else {
+      task('translate', 'skipped', 'já incluso nos componentes acima')
+    }
 
     if (!gpu) {
       task('cuda', 'skipped', 'sem placa NVIDIA - a transcrição usa o processador')
@@ -548,8 +628,10 @@ async function runSetup(onProgress: ProgressFn, mode: SetupMode, opts: SetupOpti
           '-c',
           [
             'import os, sys',
-            `sys.path.insert(0, ${JSON.stringify(packagesDir)})`,
+            ...[getBundledPackagesDir(), packagesDir].filter(Boolean).map((d) => `sys.path.insert(0, ${JSON.stringify(d)})`),
             "os.environ['HF_HUB_DISABLE_PROGRESS_BARS'] = '0'",
+            // Windows sem Modo Desenvolvedor não cria symlinks: o cache funciona igual, só avisa (aviso inofensivo)
+            "os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'",
             'from huggingface_hub import snapshot_download',
             "snapshot_download('Systran/faster-whisper-tiny')",
             "print('Modelo baixado com sucesso')"
@@ -607,7 +689,8 @@ const HIDDEN_ARG = '--hidden'
 const startedHidden = process.argv.includes(HIDDEN_ARG)
 
 function canUseAutostart(): boolean {
-  return IS_WIN && app.isPackaged
+  // VOICE_AI_NO_AUTOSTART: só para testar o app empacotado sem registrar a inicialização com o Windows
+  return IS_WIN && app.isPackaged && !process.env['VOICE_AI_NO_AUTOSTART']
 }
 
 function isAutostartEnabled(): boolean {
@@ -639,11 +722,14 @@ function spawnBackend(): void {
   const cwd = getBackendCwd()
   const packagesDir = getPackagesDir()
   const existingPythonPath = process.env['PYTHONPATH'] || ''
+  // primeiro as bibliotecas que vêm dentro do app; depois as da pasta de dados (CUDA/atualizações)
+  const pythonPath = [getBundledPackagesDir(), packagesDir, existingPythonPath].filter(Boolean).join(delimiter)
   const env = {
     ...process.env,
     VOICE_AI_PORT: String(BACKEND_PORT),
     VOICE_AI_DATA_DIR: getDataDir(),
-    PYTHONPATH: existingPythonPath ? `${packagesDir}${delimiter}${existingPythonPath}` : packagesDir,
+    HF_HUB_DISABLE_SYMLINKS_WARNING: '1',
+    PYTHONPATH: pythonPath,
     // Windows: força UTF-8 no stdout/stderr do Python (logs com acentos/emoji)
     ...(process.platform === 'win32' ? { PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' } : {})
   }

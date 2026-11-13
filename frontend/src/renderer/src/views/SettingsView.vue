@@ -321,7 +321,7 @@ onUnmounted(() => {
               @update:model-value="(v) => set({ whisper_vad: v })"
             />
             <SettingToggle
-              :model-value="store.settings.whisper_stream ?? false"
+              :model-value="store.settings.whisper_stream ?? true"
               label="Transcrever enquanto fala"
               description="Desligado (padrão): grava enquanto você segura a tecla e só transcreve quando solta. Ligado: vai transcrevendo durante a fala, e ao soltar o texto sai quase na hora. Cancelar continua igual."
               @update:model-value="(v) => set({ whisper_stream: v })"
@@ -514,7 +514,7 @@ onUnmounted(() => {
               class="w-36 flex-shrink-0"
               size="sm"
               align="right"
-              :model-value="String(store.settings.media_max_images ?? 4)"
+              :model-value="String(store.settings.media_max_images ?? 8)"
               :options="[2, 3, 4, 6, 8].map((n) => ({ value: String(n), label: `${n} imagens` }))"
               @update:model-value="(v) => set({ media_max_images: Number(v) })"
             />

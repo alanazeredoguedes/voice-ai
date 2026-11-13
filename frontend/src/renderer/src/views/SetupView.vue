@@ -20,7 +20,7 @@ const logContainer = ref<HTMLElement | null>(null)
 const showLogs = ref(false)
 const copied = ref(false)
 
-// GPU NVIDIA: a pessoa escolhe se quer baixar a aceleração (~2 GB)
+// GPU NVIDIA: a pessoa escolhe se quer baixar a aceleração (~1,3 GB de download)
 const gpu = ref(false)
 const systemCuda = ref(false)
 const useGpu = ref(true)
@@ -32,7 +32,8 @@ function makeTasks(): Task[] {
   }
   return [
     t('python', 'Python'),
-    t('deps', 'Voz, transcrição e tradução (inclui FFmpeg)'),
+    t('deps', 'Voz e transcrição (inclui FFmpeg)'),
+    t('translate', 'Motor de tradução (inclui o PyTorch, ~170 MB)'),
     t('cuda', 'Aceleração da placa NVIDIA (CUDA)'),
     t('model', 'Modelo de transcrição Whisper tiny'),
     t('claude', 'Claude Code (assistente do Chat IA)')
@@ -186,7 +187,7 @@ const otherCount = (t: Task): { done: number; total: number } => {
   const others = t.items.filter((i) => !i.notable)
   return { done: others.filter((i) => i.status === 'done').length, total: others.length }
 }
-const cudaSize = computed(() => (systemCuda.value ? 'já instalado no computador' : '+ ~2 GB de download'))
+const cudaSize = computed(() => (systemCuda.value ? 'já instalado no computador' : '+ ~1,3 GB de download'))
 </script>
 
 <template>
@@ -210,14 +211,9 @@ const cudaSize = computed(() => (systemCuda.value ? 'já instalado no computador
         <!-- Descricao inicial (antes de comecar) -->
         <div v-if="!hasStarted" class="flex flex-col gap-3">
           <p class="text-slate-300 text-sm leading-relaxed">
-            Na primeira execução, o app baixa tudo o que precisa: componentes de voz, transcrição e tradução
-            (com o FFmpeg já incluso), o modelo <span class="text-indigo-400 font-medium">Whisper tiny</span> e o
-            <span class="text-indigo-400 font-medium">Claude Code</span> (assistente do Chat IA).
-            Não é preciso instalar mais nada no computador.
+            Vamos preparar o app para você. Isso baixa o que falta e leva só alguns minutos.
           </p>
-          <p class="text-slate-500 text-xs">
-            Requer internet. Cerca de 1 GB de download; leva de 5 a 15 minutos, dependendo da conexão.
-          </p>
+          <p class="text-slate-500 text-xs">Precisa de internet.</p>
 
           <!-- Opção da GPU NVIDIA -->
           <label
@@ -227,12 +223,10 @@ const cudaSize = computed(() => (systemCuda.value ? 'já instalado no computador
             <input v-model="useGpu" type="checkbox" class="mt-0.5 w-4 h-4 accent-indigo-500" :disabled="systemCuda" />
             <span class="flex flex-col gap-0.5">
               <span class="text-sm text-slate-200">
-                Usar a placa de vídeo NVIDIA na transcrição
+                Usar a placa de vídeo NVIDIA
                 <span class="text-xs text-slate-500">({{ cudaSize }})</span>
               </span>
-              <span class="text-xs text-slate-500">
-                Transcreve várias vezes mais rápido. Sem isso, o processador faz o trabalho (funciona, só é mais lento).
-              </span>
+              <span class="text-xs text-slate-500">Deixa a transcrição bem mais rápida.</span>
             </span>
           </label>
         </div>
@@ -425,9 +419,6 @@ const cudaSize = computed(() => (systemCuda.value ? 'já instalado no computador
 
       </div>
 
-      <p class="text-center text-slate-700 text-xs mt-4">
-        Componentes em <code class="text-slate-600">%APPDATA%\voice-ai\packages</code>
-      </p>
     </div>
   </div>
 </template>

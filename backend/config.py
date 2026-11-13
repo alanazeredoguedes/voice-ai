@@ -22,11 +22,11 @@ DEFAULT_SETTINGS: dict = {
     "window_keys_extra": [],
     "model": "tiny",
     "device": "auto",
-    # Gravação pelo atalho: modo em lote (áudios > 30 s, ligado), pular silêncios e transcrever
-    # enquanto fala (desligados)
+    # Gravação pelo atalho: modo em lote (áudios > 30 s) e transcrever enquanto fala (os dois ligados por
+    # padrão); pular silêncios fica desligado
     "whisper_batched": True,
     "whisper_vad": False,
-    "whisper_stream": False,
+    "whisper_stream": True,
     "tts_backend": "edge",
     "edge_voice": "pt-BR-AntonioNeural",
     # velocidade da fala (1.0 = normal, até 2.0)
@@ -50,7 +50,7 @@ DEFAULT_SETTINGS: dict = {
     "claude_model": "haiku",
     # Imagens/vídeos no Chat IA
     "media_enabled": True,
-    "media_max_images": 4,
+    "media_max_images": 8,
     # A IA pode mandar imagens/vídeos por conta própria quando ajudar a explicar
     "media_proactive": True,
     "serper_api_key": "",
