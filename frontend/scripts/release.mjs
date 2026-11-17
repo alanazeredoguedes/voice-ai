@@ -16,7 +16,7 @@ import { dirname, join } from 'path'
 import { fileURLToPath } from 'url'
 
 const frontend = join(dirname(fileURLToPath(import.meta.url)), '..')
-const sh = (cmd, opts = {}) => execSync(cmd, { cwd: frontend, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], ...opts }).trim()
+const sh = (cmd, opts = {}) => (execSync(cmd, { cwd: frontend, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], ...opts }) ?? '').trim()
 const fail = (msg) => {
   console.error(`\n✗ ${msg}\n`)
   process.exit(1)
