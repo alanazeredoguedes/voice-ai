@@ -29,6 +29,11 @@ let overlayHideTimer: ReturnType<typeof setTimeout> | null = null
 // Paths
 // ---------------------------------------------------------------------------
 
+// O dev usa uma pasta própria do Electron (~/.config/voice-ai-dev, %APPDATA%\voice-ai-dev): apagar o app instalado
+// para um teste limpo não mexe no dev, e os dois podem ficar abertos juntos (a trava de instância única também é por pasta).
+// Precisa vir antes de qualquer uso de userData (inclusive requestSingleInstanceLock).
+if (!app.isPackaged) app.setPath('userData', join(app.getPath('appData'), 'voice-ai-dev'))
+
 function getDataDir(): string {
   if (app.isPackaged) return app.getPath('userData')
   return join(homedir(), '.local', 'share', 'voice-ai')
