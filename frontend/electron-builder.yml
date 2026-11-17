@@ -25,6 +25,10 @@ linux:
   target:
     - AppImage
   category: Utility
+appImage:
+  # gzip, e não o xz do "compression: maximum": o AppImage descomprime o app a cada abertura, e com xz só ler
+  # o Electron levava ~7 s (o arquivo fica um pouco maior, mas abre bem mais rápido)
+  compression: gzip
 afterPack: after-pack.js
 extraResources:
   - from: ../backend
