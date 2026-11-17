@@ -1,7 +1,9 @@
-import { app, BrowserWindow, Tray, Menu, nativeImage, shell, ipcMain, session, screen, Notification, clipboard, net } from 'electron'
+import { app, BrowserWindow, Tray, Menu, nativeImage, shell, ipcMain, session, screen, Notification, clipboard, ClipboardItem, net } from 'electron'
 
 // Must be called before app is ready - fixes SUID sandbox error on Linux AppImage
 if (process.platform === 'linux') app.commandLine.appendSwitch('no-sandbox')
+// Chamada: o áudio dos outros participantes toca sem exigir um clique antes
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
 import { join, delimiter } from 'path'
 import { homedir } from 'os'
 import { existsSync, writeFileSync, mkdirSync, readFileSync, readdirSync } from 'fs'
@@ -10,6 +12,7 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { spawn, ChildProcess, SpawnOptions } from 'child_process'
 import { checkClaudeMonitoring, type MonitoringLevel, type MonitoringReport } from './claudeMonitoring'
 import { toggleWindowOnTop } from './windowToggle'
+import { downloadCloudflared, findCloudflared, registerCallIpc } from './call'
 
 const BACKEND_PORT = 18450
 const BACKEND_URL = `http://127.0.0.1:${BACKEND_PORT}`
@@ -80,11 +83,16 @@ function getSetupMode(): SetupMode {
   const marker = join(getPackagesDir(), SETUP_MARKER)
   if (!existsSync(marker)) return 'install'
   let hash = ''
+  let cloudflaredDone = false
   try {
-    hash = JSON.parse(readFileSync(marker, 'utf8')).hash ?? ''
+    const info = JSON.parse(readFileSync(marker, 'utf8'))
+    hash = info.hash ?? ''
+    cloudflaredDone = !!info.cloudflared
   } catch {
     // marcador antigo (só a data): instalação feita antes da checagem por hash
   }
+  // instalação anterior à aba de Chamada: passa pelo setup uma vez para baixar o cloudflared
+  if (!cloudflaredDone && !findCloudflared(getDataDir())) return 'update'
   return hash && hash === requirementsHash() ? 'ok' : 'update'
 }
 
@@ -97,7 +105,8 @@ function markSetupComplete(): void {
   mkdirSync(dir, { recursive: true })
   writeFileSync(
     join(dir, SETUP_MARKER),
-    JSON.stringify({ hash: requirementsHash(), installedAt: new Date().toISOString() })
+    // cloudflared: true = o download já foi tentado (se falhou, a aba de Chamada baixa na primeira sala)
+    JSON.stringify({ hash: requirementsHash(), cloudflared: true, installedAt: new Date().toISOString() })
   )
 }
 
@@ -574,6 +583,31 @@ async function runSetup(onProgress: ProgressFn, mode: SetupMode, opts: SetupOpti
     })
   }
 
+  // cloudflared: túnel usado pela aba de Chamada (voz e compartilhamento de tela)
+  if (findCloudflared(getDataDir())) {
+    task('cloudflared', 'done', 'já estava instalado')
+  } else {
+    task('cloudflared', 'running')
+    try {
+      let lastSent = 0
+      await downloadCloudflared(getDataDir(), (done, total) => {
+        if (Date.now() - lastSent < 200 && done !== total) return
+        lastSent = Date.now()
+        onProgress({
+          step: 'progress',
+          message: `Baixando o componente de chamadas - ${fmtMB(done)}${total ? '/' + fmtMB(total) : ''} MB`,
+          percent: 90
+        })
+      })
+      task('cloudflared', 'done', 'instalado')
+    } catch (e) {
+      // Não bloqueia o resto do app: a aba de Chamada tenta de novo ao criar a primeira sala
+      const msg = e instanceof Error ? e.message : String(e)
+      log(`[setup] ERRO ao baixar o cloudflared: ${msg}`)
+      task('cloudflared', 'error', 'falhou - será baixado ao criar a primeira sala')
+    }
+  }
+
   // Claude Code: o "cérebro" do Chat IA. Instala pelo instalador oficial se ainda não existir.
   if (findClaude()) {
     task('claude', 'done', 'já estava instalado')
@@ -778,6 +812,9 @@ async function runMonitoringCheck(): Promise<MonitoringReport> {
 
 ipcMain.handle('claude:monitoring', () => runMonitoringCheck())
 
+// Chamada: sinalização, túnel e lista de telas/janelas (ver call.ts)
+registerCallIpc(getDataDir)
+
 // ---------- Imagens do Chat IA: copiar e baixar ----------
 const IMAGE_EXT: Record<string, string> = {
   'image/jpeg': 'jpg',
@@ -819,10 +856,10 @@ ipcMain.handle('media:fetch-image', async (_e, urls: string[]) => {
 })
 
 /** Coloca a imagem (PNG) na área de transferência: dá para colar no WhatsApp, e-mail, editores... */
-ipcMain.handle('media:copy-png', (_e, pngBase64: string) => {
-  const image = nativeImage.createFromBuffer(Buffer.from(pngBase64, 'base64'))
-  if (image.isEmpty()) return { ok: false }
-  clipboard.writeImage(image)
+ipcMain.handle('media:copy-png', async (_e, pngBase64: string) => {
+  const png = Buffer.from(pngBase64, 'base64')
+  if (nativeImage.createFromBuffer(png).isEmpty()) return { ok: false }
+  await clipboard.write([new ClipboardItem({ 'image/png': new Blob([png], { type: 'image/png' }) })])
   return { ok: true }
 })
 
@@ -848,9 +885,18 @@ ipcMain.handle('media:save-image', async (_e, opts: { urls: string[]; name?: str
 
 // Atalho "mostrar/esconder": o backend avisa a tela, que pede isto aqui (ver windowToggle.ts)
 // Alt+V no chat: imagem que está na área de transferência (ex.: um print da tela)
-ipcMain.handle('clipboard:read-image', () => {
-  const img = clipboard.readImage()
-  return img.isEmpty() ? null : { dataUrl: img.toDataURL() }
+ipcMain.handle('clipboard:read-image', async () => {
+  // Electron 45: a área de transferência é assíncrona (modelo do navegador), com itens por tipo MIME
+  for (const item of await clipboard.read()) {
+    const type = item.types.find((t) => t.startsWith('image/'))
+    if (!type) continue
+    const blob = await item.getType(type)
+    if (!(blob instanceof Blob)) continue
+    const data = Buffer.from(await blob.arrayBuffer())
+    const img = nativeImage.createFromBuffer(data)
+    if (!img.isEmpty()) return { dataUrl: img.toDataURL() }
+  }
+  return null
 })
 
 ipcMain.handle('window:toggle', () => {
