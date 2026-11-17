@@ -28,7 +28,11 @@ const useGpu = ref(true)
 function makeTasks(): Task[] {
   const t = (id: string, label: string): Task => ({ id, label, status: 'pending', detail: '', items: [] })
   if (isUpdate) {
-    return [t('deps', 'Componentes novos desta versão'), t('claude', 'Claude Code (assistente do Chat IA)')]
+    return [
+      t('deps', 'Componentes novos desta versão'),
+      t('cloudflared', 'Chamadas e compartilhamento de tela'),
+      t('claude', 'Claude Code (assistente do Chat IA)')
+    ]
   }
   return [
     t('python', 'Python'),
@@ -36,6 +40,7 @@ function makeTasks(): Task[] {
     t('translate', 'Motor de tradução (inclui o PyTorch, ~170 MB)'),
     t('cuda', 'Aceleração da placa NVIDIA (CUDA)'),
     t('model', 'Modelo de transcrição Whisper tiny'),
+    t('cloudflared', 'Chamadas e compartilhamento de tela'),
     t('claude', 'Claude Code (assistente do Chat IA)')
   ]
 }

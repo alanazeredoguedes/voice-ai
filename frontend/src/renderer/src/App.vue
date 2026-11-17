@@ -7,12 +7,13 @@ import TranscribeView from './views/TranscribeView.vue'
 import LogsView from './views/LogsView.vue'
 import TranslateView from './views/TranslateView.vue'
 import ChatView from './views/ChatView.vue'
+import CallView from './views/CallView.vue'
 import SetupView from './views/SetupView.vue'
 import AppTooltip from './components/AppTooltip.vue'
 import BenchmarkView from './views/BenchmarkView.vue'
 import ImageToast from './components/ImageToast.vue'
 
-type View = 'status' | 'settings' | 'transcribe' | 'logs' | 'translate' | 'chat'
+type View = 'status' | 'settings' | 'transcribe' | 'logs' | 'translate' | 'chat' | 'call'
 // páginas que não aparecem na barra lateral (abertas por um botão de outra tela)
 type Page = View | 'benchmark'
 
@@ -59,6 +60,7 @@ function onSetupDone() {
       <LogsView v-else-if="currentView === 'logs'" />
       <TranslateView v-else-if="currentView === 'translate'" />
       <ChatView v-else-if="currentView === 'chat'" />
+      <CallView v-else-if="currentView === 'call'" />
       <BenchmarkView v-else-if="currentView === 'benchmark'" @back="currentView = 'settings'" />
     </main>
   </div>
