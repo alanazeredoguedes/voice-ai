@@ -68,12 +68,14 @@ if (-not (Test-Path $hashFile) -or (Get-Content $hashFile -Raw).Trim() -ne $reqH
 
 # electron-builder: o pacote winCodeSign contém symlinks de macOS que o Windows não cria sem
 # modo desenvolvedor/admin. Pré-extrai no cache ignorando a pasta darwin (não usada no Windows).
+# Só é possível com o 7za do pacote 7zip-bin; sem ele (electron-builder mais novo), o próprio electron-builder resolve.
 $wcsDir = Join-Path $env:LOCALAPPDATA 'electron-builder\Cache\winCodeSign\winCodeSign-2.6.0'
-if (-not (Test-Path (Join-Path $wcsDir 'rcedit-x64.exe'))) {
+$sevenZip = Join-Path $Root 'frontend\node_modules\7zip-bin\win\x64\7za.exe'
+if ((Test-Path $sevenZip) -and -not (Test-Path (Join-Path $wcsDir 'rcedit-x64.exe'))) {
     Write-Host "[build] preparando cache do winCodeSign..."
     $wcs7z = Join-Path $env:TEMP 'winCodeSign-2.6.0.7z'
     Invoke-WebRequest -Uri 'https://github.com/electron-userland/electron-builder-binaries/releases/download/winCodeSign-2.6.0/winCodeSign-2.6.0.7z' -OutFile $wcs7z -UseBasicParsing
-    & (Join-Path $Root 'frontend\node_modules\7zip-bin\win\x64\7za.exe') x -bd -y $wcs7z "-o$wcsDir" '-xr!darwin' | Out-Null
+    & $sevenZip x -bd -y $wcs7z "-o$wcsDir" '-xr!darwin' | Out-Null
     Remove-Item $wcs7z
 }
 

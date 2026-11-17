@@ -192,7 +192,7 @@ class Orchestrator:
         return {
             "batched": self.settings.get("whisper_batched", True),
             "vad": self.settings.get("whisper_vad", False),
-            "stream": self.settings.get("whisper_stream", False),
+            "stream": self.settings.get("whisper_stream", True),
         }
 
     def emit_speaking(self, ref: str, playing: bool, chat_id: int | None = None) -> None:

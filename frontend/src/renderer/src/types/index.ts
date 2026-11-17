@@ -6,6 +6,7 @@ export interface Settings {
   /** mostrar/esconder o Voice AI por cima de qualquer janela */
   window_key?: string
   window_keys_extra?: string[]
+  window_keep_on_top?: boolean
   model: 'tiny' | 'base' | 'small' | 'medium' | 'large-v3-turbo' | 'large-v3'
   device: 'auto' | 'cuda' | 'cpu'
   compute_type: string
@@ -195,6 +196,21 @@ export interface Chat {
   audio_bytes?: number
 }
 
+export interface TranslationPackageUsage {
+  from_code: string
+  to_code: string
+  from_name: string
+  to_name: string
+  name: string
+  bytes: number
+}
+
+export interface LibraryUsage {
+  name: string
+  bytes: number
+  description: string
+}
+
 export interface StorageInfo {
   data_dir: string
   speech_cache: {
@@ -203,7 +219,7 @@ export interface StorageInfo {
     chats: { chat_id: number; name: string; bytes: number; messages: number }[]
   }
   models: { id: string; name: string; bytes: number; active: boolean }[]
-  translation: { bytes: number; count: number }
+  translation: { bytes: number; count: number; packages: TranslationPackageUsage[] }
   database: { bytes: number }
   libraries: { bytes: number }
 }

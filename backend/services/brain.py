@@ -18,7 +18,7 @@ PROMPT_VERSION = "5"
 
 # Modelos que dá para escolher no app (apelidos do Claude Code: sempre a versão mais nova de cada um)
 CLAUDE_MODELS = ("haiku", "sonnet", "opus")
-DEFAULT_CLAUDE_MODEL = "haiku"
+DEFAULT_CLAUDE_MODEL = "sonnet"
 # modelo que respondeu de verdade, por escolha - a tela mostra o nome/versão
 resolved_models: dict[str, str] = {}
 

@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { clearAllSpeechCache, clearChatSpeechCache, deleteWhisperModel, getStorage } from '../api'
+import { clearAllSpeechCache, clearChatSpeechCache, deleteWhisperModel, getStorage, getStorageLibraries, removeTranslatePackage } from '../api'
 import { useSettingsStore } from '../stores/settings'
 import { useChatStore } from '../stores/chat'
-import type { StorageInfo } from '../types'
+import type { LibraryUsage, StorageInfo } from '../types'
 import ConfirmModal from './ConfirmModal.vue'
 import CustomSelect from './CustomSelect.vue'
 
-/** Quanto o app ocupa no disco e o que dá para apagar. */
+/** Quanto o app ocupa no disco e o que dá para apagar (o detalhe aparece só com `detailed`). */
+defineProps<{ detailed?: boolean }>()
 const settings = useSettingsStore()
 const chatStore = useChatStore()
 const info = ref<StorageInfo | null>(null)
@@ -51,13 +52,50 @@ const parts = computed(() => {
 })
 const total = computed(() => parts.value.reduce((a, p) => a + p.bytes, 0))
 
+// nomes dos idiomas em português ("pb" é o código do tradutor para português do Brasil)
+const langNames = new Intl.DisplayNames(['pt-BR'], { type: 'language' })
+function lang(code: string, fallback: string): string {
+  try {
+    const name = langNames.of(code === 'pb' ? 'pt-BR' : code === 'zt' ? 'zh-Hant' : code)
+    return name && name !== code ? name.charAt(0).toUpperCase() + name.slice(1) : fallback || code
+  } catch {
+    return fallback || code
+  }
+}
+const translationPackages = computed(() =>
+  (info.value?.translation.packages ?? []).map((p) => ({
+    ...p,
+    label: `${lang(p.from_code, p.from_name)} → ${lang(p.to_code, p.to_name)}`
+  }))
+)
+
+// ---------- bibliotecas: o que ocupa o espaço ----------
+const libsOpen = ref(false)
+const libs = ref<LibraryUsage[] | null>(null)
+const libsError = ref('')
+async function openLibraries(): Promise<void> {
+  libsOpen.value = true
+  if (libs.value) return
+  libsError.value = ''
+  try {
+    libs.value = await getStorageLibraries()
+  } catch {
+    libsError.value = 'Não foi possível ler as bibliotecas. Feche e abra o app de novo e tente outra vez.'
+  }
+}
+const libsMax = computed(() => libs.value?.[0]?.bytes || 1)
+
 async function setLimit(v: string): Promise<void> {
   await settings.update({ speech_cache_limit_mb: Number(v) })
   if (info.value) info.value.speech_cache.limit_mb = Number(v)
 }
 
 // ---------- apagar (sempre com confirmação) ----------
-type Pending = { kind: 'audio-all' } | { kind: 'audio-chat'; id: number; name: string } | { kind: 'model'; id: string; name: string; bytes: number }
+type Pending =
+  | { kind: 'audio-all' }
+  | { kind: 'audio-chat'; id: number; name: string }
+  | { kind: 'model'; id: string; name: string; bytes: number }
+  | { kind: 'translation'; from: string; to: string; name: string; bytes: number }
 const pending = ref<Pending | null>(null)
 
 const confirmTitle = computed(() => {
@@ -65,6 +103,7 @@ const confirmTitle = computed(() => {
   if (!p) return ''
   if (p.kind === 'audio-all') return 'Apagar todos os áudios salvos?'
   if (p.kind === 'audio-chat') return `Apagar os áudios salvos de "${p.name}"?`
+  if (p.kind === 'translation') return `Apagar o pacote ${p.name}?`
   return `Apagar o modelo ${p.name}?`
 })
 
@@ -80,6 +119,7 @@ async function confirm(): Promise<void> {
       await clearChatSpeechCache(p.id)
       chatStore.resetAudioPct(p.id)
     }
+    else if (p.kind === 'translation') await removeTranslatePackage(p.from, p.to)
     else await deleteWhisperModel(p.id)
     await load()
   } finally {
@@ -120,15 +160,14 @@ async function confirm(): Promise<void> {
       </div>
     </div>
 
-    <div v-if="info" class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+    <div v-if="info && detailed" class="grid grid-cols-1 lg:grid-cols-2 gap-4">
       <!-- áudios salvos -->
       <div class="rounded-xl border border-slate-700/50 bg-slate-900/40 p-4 flex flex-col gap-3">
         <div class="flex items-start justify-between gap-3">
           <div>
             <p class="text-sm text-slate-100 font-medium">Áudios salvos do Chat IA</p>
             <p class="text-xs text-slate-500 mt-0.5">
-              As respostas faladas ficam guardadas para o "ouvir de novo" ser instantâneo. Passando do limite, as mais
-              antigas saem para dar lugar às novas.
+              Guardados para o "ouvir de novo" ser instantâneo. Passando do limite, os mais antigos saem.
             </p>
           </div>
           <span class="text-sm font-semibold text-slate-100 tabular-nums whitespace-nowrap">{{ fmt(info.speech_cache.bytes) }}</span>
@@ -143,7 +182,7 @@ async function confirm(): Promise<void> {
             @update:model-value="setLimit"
           />
         </div>
-        <div v-if="info.speech_cache.chats.length" class="flex flex-col gap-1">
+        <div v-if="info.speech_cache.chats.length" class="flex flex-col gap-1 max-h-48 overflow-y-auto">
           <div
             v-for="c in info.speech_cache.chats"
             :key="c.chat_id"
@@ -162,7 +201,7 @@ async function confirm(): Promise<void> {
         <p v-else class="text-xs text-slate-600">Nenhum áudio salvo ainda.</p>
         <button
           :disabled="!info.speech_cache.bytes"
-          class="self-start px-3 py-1.5 rounded-lg text-xs border border-slate-700 hover:border-red-700/60 hover:text-red-300 text-slate-300 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          class="self-center mt-auto px-4 py-1.5 rounded-lg text-xs border border-slate-700 hover:border-red-700/60 hover:text-red-300 text-slate-300 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           @click="pending = { kind: 'audio-all' }"
         >Apagar todos os áudios</button>
       </div>
@@ -172,9 +211,7 @@ async function confirm(): Promise<void> {
         <div class="flex items-start justify-between gap-3">
           <div>
             <p class="text-sm text-slate-100 font-medium">Modelos de reconhecimento de voz</p>
-            <p class="text-xs text-slate-500 mt-0.5">
-              Modelos baixados do Whisper. Apague os que não usa (ex.: os baixados só para testar); dá para baixar de novo depois.
-            </p>
+            <p class="text-xs text-slate-500 mt-0.5">Apague os que não usa; dá para baixar de novo depois.</p>
           </div>
           <span class="text-sm font-semibold text-slate-100 tabular-nums whitespace-nowrap">{{ fmt(modelsBytes) }}</span>
         </div>
@@ -196,36 +233,112 @@ async function confirm(): Promise<void> {
         </div>
       </div>
 
-      <!-- outros -->
-      <div class="lg:col-span-2 rounded-xl border border-slate-700/50 bg-slate-900/40 p-4 grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div>
-          <p class="text-xs text-slate-400">Pacotes de tradução</p>
-          <p class="text-sm font-semibold text-slate-100 tabular-nums">{{ fmt(info.translation.bytes) }}</p>
-          <p class="text-[11px] text-slate-500 mt-0.5">{{ info.translation.count }} pacote{{ info.translation.count === 1 ? '' : 's' }} instalado{{ info.translation.count === 1 ? '' : 's' }} · gerencie na aba Tradutor</p>
+      <!-- pacotes de tradução -->
+      <div class="rounded-xl border border-slate-700/50 bg-slate-900/40 p-4 flex flex-col gap-3">
+        <div class="flex items-start justify-between gap-3">
+          <div>
+            <p class="text-sm text-slate-100 font-medium">Pacotes de tradução</p>
+            <p class="text-xs text-slate-500 mt-0.5">Cada pacote traduz de um idioma para outro. Instale de novo na aba Tradutor.</p>
+          </div>
+          <span class="text-sm font-semibold text-slate-100 tabular-nums whitespace-nowrap">{{ fmt(info.translation.bytes) }}</span>
         </div>
-        <div>
-          <p class="text-xs text-slate-400">Conversas e logs</p>
-          <p class="text-sm font-semibold text-slate-100 tabular-nums">{{ fmt(info.database.bytes) }}</p>
-          <p class="text-[11px] text-slate-500 mt-0.5">Mensagens dos chats, histórico de transcrições e configurações</p>
+        <div class="flex flex-col gap-1">
+          <div v-for="p in translationPackages" :key="p.name" class="flex items-center gap-3 text-xs px-2 py-1.5 rounded-lg hover:bg-slate-800/50">
+            <span class="flex-1 truncate text-slate-300">{{ p.label }}</span>
+            <span class="text-slate-300 tabular-nums w-16 text-right">{{ fmt(p.bytes) }}</span>
+            <button
+              title="Apagar este pacote do computador"
+              class="text-slate-500 hover:text-red-400 transition-colors"
+              @click="pending = { kind: 'translation', from: p.from_code, to: p.to_code, name: p.label, bytes: p.bytes }"
+            >Apagar</button>
+          </div>
+          <p v-if="!translationPackages.length" class="text-xs text-slate-600">Nenhum pacote instalado.</p>
         </div>
-        <div>
-          <p class="text-xs text-slate-400">Bibliotecas do app</p>
-          <p class="text-sm font-semibold text-slate-100 tabular-nums">{{ fmt(info.libraries.bytes) }}</p>
-          <p class="text-[11px] text-slate-500 mt-0.5">Python e componentes (incluindo os de placa de vídeo). Necessárias para o app funcionar</p>
+      </div>
+
+      <!-- bibliotecas e conversas -->
+      <div class="rounded-xl border border-slate-700/50 bg-slate-900/40 p-4 flex flex-col gap-4">
+        <div class="flex items-start justify-between gap-3">
+          <div>
+            <p class="text-sm text-slate-100 font-medium">Bibliotecas do app</p>
+            <p class="text-xs text-slate-500 mt-0.5">
+              Python e os componentes do Whisper, do tradutor e da placa de vídeo. Necessárias para o app funcionar.
+            </p>
+          </div>
+          <span class="text-sm font-semibold text-slate-100 tabular-nums whitespace-nowrap">{{ fmt(info.libraries.bytes) }}</span>
+        </div>
+        <button
+          class="self-start px-3 py-1.5 rounded-lg text-xs border border-slate-700 hover:border-indigo-500/60 text-slate-300 hover:text-white transition-colors"
+          @click="openLibraries"
+        >Ver o que ocupa esse espaço</button>
+        <div class="flex items-start justify-between gap-3 pt-3 border-t border-slate-700/40">
+          <div>
+            <p class="text-sm text-slate-100 font-medium">Conversas e logs</p>
+            <p class="text-xs text-slate-500 mt-0.5">Mensagens dos chats, histórico de transcrições e configurações</p>
+          </div>
+          <span class="text-sm font-semibold text-slate-100 tabular-nums whitespace-nowrap">{{ fmt(info.database.bytes) }}</span>
         </div>
       </div>
     </div>
 
+    <!-- o que ocupa as bibliotecas -->
+    <Teleport to="body">
+      <div
+        v-if="libsOpen"
+        class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-6"
+        @click.self="libsOpen = false"
+      >
+        <div class="w-full max-w-2xl max-h-full bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl flex flex-col">
+          <div class="flex items-start justify-between gap-4 p-5 pb-3">
+            <div>
+              <h3 class="text-base font-semibold text-slate-100">Bibliotecas do app</h3>
+              <p class="text-xs text-slate-500 mt-1">
+                Da maior para a menor. A maior parte é da NVIDIA e do PyTorch: é o que faz o Whisper e o tradutor rodarem
+                rápido na placa de vídeo.
+              </p>
+            </div>
+            <button class="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors" title="Fechar" @click="libsOpen = false">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+          <div class="flex-1 min-h-0 overflow-y-auto px-5 pb-5">
+            <p v-if="libsError" class="text-sm text-red-400 py-6 text-center">{{ libsError }}</p>
+            <div v-else-if="!libs" class="flex items-center justify-center gap-2.5 py-8 text-sm text-slate-400">
+              <span class="w-4 h-4 rounded-full border-2 border-slate-600 border-t-indigo-400 animate-spin" />
+              Lendo as bibliotecas…
+            </div>
+            <div v-else class="flex flex-col">
+              <div v-for="l in libs" :key="l.name" class="flex items-center gap-4 py-2 border-b border-slate-800 last:border-0">
+                <div class="flex-1 min-w-0">
+                  <p class="text-sm text-slate-200 font-mono truncate">{{ l.name }}</p>
+                  <p v-if="l.description" class="text-xs text-slate-500 truncate">{{ l.description }}</p>
+                </div>
+                <div class="w-24 h-1.5 rounded-full bg-slate-800 overflow-hidden flex-shrink-0">
+                  <div class="h-full bg-indigo-500/80 rounded-full" :style="{ width: `${Math.max(2, (l.bytes / libsMax) * 100)}%` }" />
+                </div>
+                <span class="w-20 text-right text-xs text-slate-300 tabular-nums flex-shrink-0">{{ fmt(l.bytes) }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
     <ConfirmModal
       :open="pending !== null"
       :title="confirmTitle"
-      :confirm-label="pending?.kind === 'model' ? 'Apagar modelo' : 'Apagar áudios'"
-      :tone="pending?.kind === 'model' ? 'danger' : 'warning'"
+      :confirm-label="pending?.kind === 'model' ? 'Apagar modelo' : pending?.kind === 'translation' ? 'Apagar pacote' : 'Apagar áudios'"
+      :tone="pending?.kind === 'model' || pending?.kind === 'translation' ? 'danger' : 'warning'"
       :loading="busy"
       @confirm="confirm"
       @cancel="pending = null"
     >
-      <template v-if="pending?.kind === 'model'">
+      <template v-if="pending?.kind === 'translation'">
+        <p>Libera {{ fmt(pending.bytes) }} no disco. O Tradutor deixa de traduzir nessa direção até você instalar o pacote de novo.</p>
+      </template>
+      <template v-else-if="pending?.kind === 'model'">
         <p>Libera {{ fmt(pending.bytes) }} no disco. Se quiser usar este modelo de novo, é só baixar outra vez em Reconhecimento de voz.</p>
       </template>
       <template v-else>

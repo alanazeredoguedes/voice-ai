@@ -11,7 +11,7 @@ import { createHash } from 'crypto'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { spawn, ChildProcess, SpawnOptions } from 'child_process'
 import { checkClaudeMonitoring, type MonitoringLevel, type MonitoringReport } from './claudeMonitoring'
-import { toggleWindowOnTop } from './windowToggle'
+import { setKeepOnTop, toggleWindowOnTop } from './windowToggle'
 import { downloadCloudflared, findCloudflared, registerCallIpc } from './call'
 
 const BACKEND_PORT = 18450
@@ -985,9 +985,13 @@ ipcMain.handle('clipboard:read-image', async () => {
   return null
 })
 
-ipcMain.handle('window:toggle', () => {
+ipcMain.handle('window:toggle', (_e, opts?: { keepOnTop?: boolean }) => {
   if (!mainWindow || mainWindow.isDestroyed()) return null
-  return toggleWindowOnTop(mainWindow)
+  return toggleWindowOnTop(mainWindow, !!opts?.keepOnTop)
+})
+
+ipcMain.handle('window:keep-on-top', (_e, keepOnTop: boolean) => {
+  if (mainWindow && !mainWindow.isDestroyed()) setKeepOnTop(mainWindow, !!keepOnTop)
 })
 
 ipcMain.handle('shell:show-item', (_e, path: string) => {

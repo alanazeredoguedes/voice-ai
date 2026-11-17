@@ -7,6 +7,7 @@ import { onWsMessage } from '../api/ws'
 import type { EdgeVoice, WhisperModel } from '../types'
 import HotkeyList from '../components/HotkeyList.vue'
 import SettingToggle from '../components/SettingToggle.vue'
+import SettingsCard from '../components/SettingsCard.vue'
 import StorageSettings from '../components/StorageSettings.vue'
 import ElevenLabsConfig from '../components/ElevenLabsConfig.vue'
 import MediaProviderSettings from '../components/MediaProviderSettings.vue'
@@ -141,6 +142,11 @@ async function set(patch: Record<string, unknown>): Promise<void> {
   await store.update(patch)
 }
 
+async function setKeepOnTop(v: boolean): Promise<void> {
+  await set({ window_keep_on_top: v })
+  void window.electron?.ipcRenderer?.invoke('window:keep-on-top', v)
+}
+
 // Conta Claude (login pelo fluxo oficial da Anthropic; ver main/index.ts → claude:login)
 const claudeAccount = ref<{
   installed: boolean
@@ -212,55 +218,73 @@ onUnmounted(() => {
       <p class="text-sm text-slate-500 mt-1">Personalize o comportamento do assistente</p>
     </div>
 
-    <!-- Grid responsivo: 1 coluna em janelas estreitas, 2 a partir de 768px (cabe no tamanho padrão da janela) -->
+    <!-- Grid responsivo: 1 coluna em janelas estreitas, 2 a partir de 768px. Cada card mostra o essencial; o resto fica em "Mais opções". -->
     <div class="grid grid-cols-1 md:grid-cols-2 gap-5 pb-6">
 
-      <!-- Atalhos - largura total -->
-      <section class="col-span-full bg-slate-800/60 rounded-2xl p-5 border border-slate-700/40 flex flex-col gap-4">
-        <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest">Atalhos</h2>
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <!-- Atalhos -->
+      <SettingsCard id="hotkeys" title="Atalhos" class="col-span-full">
+        <div class="flex flex-col divide-y divide-slate-700/40">
           <HotkeyList
-            label="Transcrição (push-to-talk)"
+            label="Transcrição"
+            hint="Segure para ditar. Dois cliques rápidos cancelam."
             :primary="store.settings.transcription_key"
             :extra="store.settings.transcription_keys_extra ?? []"
             @update:primary="(v) => set({ transcription_key: v })"
             @update:extra="(v) => set({ transcription_keys_extra: v })"
           />
           <HotkeyList
-            label="IA (push-to-talk)"
+            label="Perguntar à IA"
+            hint="Segure para perguntar. Dois cliques rápidos cancelam a resposta ou param a fala."
             :primary="store.settings.ai_key"
             :extra="store.settings.ai_keys_extra ?? []"
             @update:primary="(v) => set({ ai_key: v })"
             @update:extra="(v) => set({ ai_keys_extra: v })"
           />
           <HotkeyList
-            label="Mostrar/esconder o Voice AI (por cima do jogo)"
+            label="Mostrar/esconder o Voice AI"
+            hint="Traz o app para a frente, até de jogos em tela cheia. De novo, ele volta para trás."
             :primary="store.settings.window_key ?? '<ctrl>+<alt>+<f12>'"
             :extra="store.settings.window_keys_extra ?? []"
             @update:primary="(v) => set({ window_key: v })"
             @update:extra="(v) => set({ window_keys_extra: v })"
-          />
+          >
+            <template #aside>
+              <button
+                type="button"
+                role="switch"
+                :aria-checked="!!store.settings.window_keep_on_top"
+                class="flex items-center gap-2.5 group"
+                title="Ligado: fica por cima de tudo até você esconder pelo atalho. Desligado: vem para a frente, mas outra janela clicada passa por cima."
+                @click="setKeepOnTop(!store.settings.window_keep_on_top)"
+              >
+                <span class="text-xs text-slate-400 group-hover:text-slate-200 transition-colors">Manter sempre na frente</span>
+                <span
+                  :class="[
+                    'relative inline-flex items-center w-9 h-5 rounded-full transition-colors flex-shrink-0',
+                    store.settings.window_keep_on_top ? 'bg-indigo-600' : 'bg-slate-700'
+                  ]"
+                >
+                  <span
+                    :class="[
+                      'inline-block w-4 h-4 rounded-full bg-white shadow-sm transition-transform',
+                      store.settings.window_keep_on_top ? 'translate-x-[18px]' : 'translate-x-0.5'
+                    ]"
+                  />
+                </span>
+              </button>
+            </template>
+          </HotkeyList>
         </div>
-        <p class="text-xs text-slate-500 leading-relaxed">
-          <span class="text-slate-400 font-medium">Dica:</span>
-          cada função aceita vários atalhos ao mesmo tempo (ex.: um no teclado/mouse e outro no controle).
-          Dois cliques rápidos no botão de transcrição cancelam a transcrição em andamento.
-          Dois cliques rápidos no botão de IA cancelam a resposta em andamento (ou param a fala, se ela já terminou de responder).
-          O atalho de mostrar/esconder traz o Voice AI para a frente de qualquer janela, inclusive de jogos em tela cheia
-          sem bordas; apertando de novo, ele volta para trás.
-        </p>
-      </section>
+      </SettingsCard>
 
-      <!-- Reconhecimento de voz (Whisper): modelo + dispositivo num card só -->
-      <section class="col-span-full bg-slate-800/60 rounded-2xl p-5 border border-slate-700/40 flex flex-col gap-4">
-        <div class="flex items-start justify-between gap-4">
-          <div>
-            <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest">Reconhecimento de voz (Whisper)</h2>
-            <p class="text-xs text-slate-500 mt-1">
-              Modelos maiores são mais precisos, porém mais lentos e pesados. A troca é aplicada na hora.
-            </p>
-          </div>
-          <!-- estado da engine -->
+      <!-- Reconhecimento de voz (Whisper) -->
+      <SettingsCard
+        id="whisper"
+        title="Reconhecimento de voz"
+        subtitle="Modelos maiores são mais precisos, porém mais lentos. A troca vale na hora."
+        class="col-span-full"
+      >
+        <template #aside>
           <div class="flex items-center gap-1.5 text-xs flex-shrink-0 mt-0.5">
             <template v-if="engineLoading || (engine && !engine.ready)">
               <span class="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
@@ -275,7 +299,7 @@ onUnmounted(() => {
               </span>
             </template>
           </div>
-        </div>
+        </template>
 
         <div class="grid grid-cols-1 md:grid-cols-[1fr_280px] gap-3 items-stretch">
           <div class="flex flex-col gap-1.5">
@@ -302,53 +326,47 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <!-- Opções da gravação pelo atalho (a transcrição de arquivos não muda) -->
-        <div class="flex flex-col gap-2 pt-3 border-t border-slate-700/40">
+        <template #advanced>
           <p class="text-xs text-slate-500">
-            Gravação pelo atalho <span class="text-slate-600">· valem na próxima gravação, sem reiniciar</span>
+            Gravação pelo atalho <span class="text-slate-600">· vale na próxima gravação</span>
           </p>
           <div class="grid grid-cols-1 md:grid-cols-3 gap-x-6 gap-y-3">
             <SettingToggle
               :model-value="store.settings.whisper_batched ?? true"
               label="Modo em lote"
-              description="Áudios com mais de 30 s são cortados nas pausas e os pedaços vão juntos para a placa de vídeo. Cerca de 2x mais rápido em falas longas; abaixo de 30 s não muda nada."
+              description="Áudios com mais de 30 s são cortados nas pausas e processados juntos. Cerca de 2x mais rápido em falas longas."
               @update:model-value="(v) => set({ whisper_batched: v })"
             />
             <SettingToggle
               :model-value="store.settings.whisper_vad ?? false"
               label="Pular silêncios"
-              description="Ignora os trechos sem fala antes de transcrever. Ajuda se você faz muitas pausas longas; em casos raros pode cortar o comecinho de uma frase falada bem baixo."
+              description="Ignora os trechos sem fala. Em casos raros pode cortar o começo de uma frase falada bem baixo."
               @update:model-value="(v) => set({ whisper_vad: v })"
             />
             <SettingToggle
               :model-value="store.settings.whisper_stream ?? true"
               label="Transcrever enquanto fala"
-              description="Desligado (padrão): grava enquanto você segura a tecla e só transcreve quando solta. Ligado: vai transcrevendo durante a fala, e ao soltar o texto sai quase na hora. Cancelar continua igual."
+              description="Vai transcrevendo durante a fala, e ao soltar a tecla o texto sai quase na hora."
               @update:model-value="(v) => set({ whisper_stream: v })"
             />
           </div>
-        </div>
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <p class="text-xs text-slate-500">Na dúvida sobre qual modelo usar? Compare todos no seu computador.</p>
+            <button
+              class="flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-medium border border-indigo-600/50 bg-indigo-600/15 text-indigo-200 hover:bg-indigo-600/30 hover:text-white transition-colors"
+              @click="navigate?.('benchmark')"
+            >
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
+              </svg>
+              Testar desempenho
+            </button>
+          </div>
+        </template>
+      </SettingsCard>
 
-        <!-- Testar desempenho: compara modelos e opções no computador do usuário -->
-        <div class="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-700/40">
-          <p class="text-xs text-slate-500">
-            Na dúvida sobre qual modelo ou opção usar? Compare todos no seu computador, com áudios de teste que já têm o texto correto.
-          </p>
-          <button
-            class="flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-medium border border-indigo-600/50 bg-indigo-600/15 text-indigo-200 hover:bg-indigo-600/30 hover:text-white transition-colors"
-            @click="navigate?.('benchmark')"
-          >
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
-            </svg>
-            Testar desempenho
-          </button>
-        </div>
-      </section>
-
-      <!-- TTS - meia largura -->
-      <section class="bg-slate-800/60 rounded-2xl p-5 border border-slate-700/40 flex flex-col gap-4">
-        <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest">Síntese de Voz</h2>
+      <!-- Voz da IA -->
+      <SettingsCard id="tts" title="Voz da IA">
         <div class="flex gap-5">
           <label v-for="b in ['edge','elevenlabs']" :key="b" class="flex items-center gap-2 cursor-pointer">
             <input
@@ -358,151 +376,141 @@ onUnmounted(() => {
               class="accent-indigo-500"
               @change="set({ tts_backend: b })"
             />
-            <span class="text-sm text-slate-300">{{ b === 'edge' ? 'Edge TTS' : 'ElevenLabs' }}</span>
+            <span class="text-sm text-slate-300">{{ b === 'edge' ? 'Edge TTS (grátis)' : 'ElevenLabs' }}</span>
           </label>
         </div>
-        <div v-if="store.settings.tts_backend === 'edge'">
-          <label class="text-xs text-slate-500 block mb-1.5">Voz</label>
-          <CustomSelect
-            :model-value="store.settings.edge_voice"
-            :options="edgeVoiceOptions"
-            @update:model-value="(v) => set({ edge_voice: v })"
-          />
-        </div>
+        <CustomSelect
+          v-if="store.settings.tts_backend === 'edge'"
+          :model-value="store.settings.edge_voice"
+          :options="edgeVoiceOptions"
+          @update:model-value="(v) => set({ edge_voice: v })"
+        />
         <ElevenLabsConfig v-if="store.settings.tts_backend === 'elevenlabs'" />
-      </section>
+      </SettingsCard>
 
-      <!-- Sons - meia largura, ao lado da Síntese de voz -->
-      <section class="bg-slate-800/60 rounded-2xl p-5 border border-slate-700/40 flex flex-col gap-4">
-        <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest">Sons</h2>
+      <!-- Sons -->
+      <SettingsCard id="sounds" title="Sons">
         <SettingToggle
           :model-value="store.settings.sound_recording"
-          label="Som ao iniciar gravação"
+          label="Ao começar a gravar"
           @update:model-value="(v) => set({ sound_recording: v })"
         />
         <SettingToggle
           :model-value="store.settings.sound_processing"
-          label="Som ao processar"
+          label="Ao processar"
           @update:model-value="(v) => set({ sound_processing: v })"
         />
         <SettingToggle
           :model-value="store.settings.sound_copied"
-          label="Som ao copiar"
+          label="Ao copiar o texto"
           @update:model-value="(v) => set({ sound_copied: v })"
         />
-      </section>
+      </SettingsCard>
 
-      <!-- Claude - largura total -->
-      <section class="col-span-full bg-slate-800/60 rounded-2xl p-5 border border-slate-700/40 flex flex-col gap-4">
-        <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest">Claude</h2>
-        <div v-if="claudeAccount" class="flex items-center justify-between gap-4">
-          <div>
-            <p class="text-sm text-slate-200">Conta Claude</p>
-            <div v-if="claudeAccount.loggedIn" class="flex items-center gap-1.5 mt-0.5 text-xs flex-wrap">
-              <span class="text-emerald-400">Conectada</span>
-              <template v-if="claudeAccountText">
-                <span class="text-slate-600">·</span>
-                <HoldToReveal :text="claudeAccountText" label="Segure o clique para ver em qual conta" />
-              </template>
+      <!-- Claude -->
+      <SettingsCard id="claude" title="Claude (Chat IA)" class="col-span-full">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-5 items-start">
+          <!-- conta e modelo -->
+          <div class="flex flex-col gap-4">
+            <div v-if="claudeAccount" class="flex flex-col gap-2">
+              <div>
+                <p class="text-sm text-slate-200">Conta Claude</p>
+                <div v-if="claudeAccount.loggedIn" class="flex items-center gap-1.5 mt-0.5 text-xs flex-wrap">
+                  <span class="text-emerald-400">Conectada</span>
+                  <template v-if="claudeAccountText">
+                    <span class="text-slate-600">·</span>
+                    <HoldToReveal :text="claudeAccountText" label="Segure o clique para ver em qual conta" />
+                  </template>
+                </div>
+                <p v-else-if="!claudeAccount.installed" class="text-xs text-red-400 mt-0.5">Claude Code não instalado - reinstale o app</p>
+                <p v-else-if="claudeWaiting" class="text-xs text-slate-400 mt-0.5">Termine o login na janela do terminal/navegador que abriu…</p>
+                <p v-else class="text-xs text-slate-500 mt-0.5">Necessária para o Chat IA (assinatura Pro ou Max)</p>
+              </div>
+              <div v-if="claudeAccount.installed" class="flex items-center gap-2">
+                <button
+                  v-if="!claudeAccount.loggedIn"
+                  :disabled="claudeWaiting"
+                  title="Abre uma janela de terminal com o login oficial da Anthropic"
+                  class="px-3 py-1.5 bg-orange-600 hover:bg-orange-500 disabled:opacity-60 text-white text-xs font-medium rounded-lg transition-colors"
+                  @click="loginClaude(false)"
+                >
+                  {{ claudeWaiting ? 'Aguardando login…' : 'Entrar na conta' }}
+                </button>
+                <button
+                  v-else
+                  :disabled="claudeWaiting"
+                  title="Sai da conta atual e abre o login de novo"
+                  class="px-3 py-1.5 border border-slate-700 hover:border-slate-500 text-slate-300 text-xs rounded-lg transition-colors"
+                  @click="confirmSwitch = true"
+                >
+                  {{ claudeWaiting ? 'Aguardando login…' : 'Trocar conta' }}
+                </button>
+                <button
+                  title="Verificar a conexão de novo"
+                  class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-700 hover:border-slate-500 text-xs text-slate-400 hover:text-slate-200 transition-colors"
+                  @click="refreshClaude"
+                >
+                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
+                  </svg>
+                  Verificar
+                </button>
+              </div>
             </div>
-            <p v-else-if="!claudeAccount.installed" class="text-xs text-red-400 mt-0.5">Claude Code não instalado - reinstale o app</p>
-            <p v-else-if="claudeWaiting" class="text-xs text-slate-400 mt-0.5">Termine o login na janela do terminal/navegador que abriu…</p>
-            <p v-else class="text-xs text-slate-500 mt-0.5">Necessária para o Chat IA (assinatura Pro ou Max)</p>
+            <div class="flex flex-col gap-1.5">
+              <p class="text-xs text-slate-500">Modelo usado no Chat IA</p>
+              <CustomSelect
+                :model-value="store.settings.claude_model || DEFAULT_CLAUDE_MODEL"
+                :options="CLAUDE_MODEL_OPTIONS"
+                @update:model-value="(v) => set({ claude_model: v })"
+              />
+            </div>
           </div>
-          <div v-if="claudeAccount.installed" class="flex items-center gap-2 flex-shrink-0">
-            <button
-              title="Verificar a conexão de novo"
-              class="p-1.5 rounded-lg border border-slate-700 hover:border-slate-500 text-slate-400 hover:text-slate-200 transition-colors"
-              @click="refreshClaude"
-            >
-              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
-              </svg>
-            </button>
-            <button
-              v-if="!claudeAccount.loggedIn"
-              :disabled="claudeWaiting"
-              title="Abre uma janela de terminal com o login oficial da Anthropic"
-              class="px-3 py-1.5 bg-orange-600 hover:bg-orange-500 disabled:opacity-60 text-white text-xs font-medium rounded-lg transition-colors"
-              @click="loginClaude(false)"
-            >
-              {{ claudeWaiting ? 'Aguardando login…' : 'Entrar na conta' }}
-            </button>
-            <button
-              v-else
-              :disabled="claudeWaiting"
-              title="Sai da conta atual e abre o login de novo"
-              class="px-3 py-1.5 border border-slate-700 hover:border-slate-500 text-slate-300 text-xs rounded-lg transition-colors"
-              @click="confirmSwitch = true"
-            >
-              {{ claudeWaiting ? 'Aguardando login…' : 'Trocar conta' }}
-            </button>
-          </div>
-        </div>
-        <!-- Coleta de dados do Claude Code pela empresa (telemetria): verificado ao abrir o app e a cada 30 min -->
-        <ClaudeMonitoringStatus v-if="claudeAccount?.installed" class="-mt-1 pb-3 border-b border-slate-700/40" />
-        <div class="flex flex-col gap-1.5">
-          <p class="text-sm text-slate-200">Modelo do Claude</p>
-          <p class="text-xs text-slate-500 leading-relaxed">
-            Usado em todos os chats do Chat IA (também dá para trocar na caixa de mensagem). Vale só neste app:
-            o Claude Code usado fora daqui continua com o modelo dele.
-          </p>
-          <CustomSelect
-            :model-value="store.settings.claude_model || DEFAULT_CLAUDE_MODEL"
-            :options="CLAUDE_MODEL_OPTIONS"
-            @update:model-value="(v) => set({ claude_model: v })"
-          />
-        </div>
-        <div class="flex flex-col gap-2 rounded-xl border border-slate-700/50 bg-slate-900/40 p-3.5">
-          <div>
+          <!-- uso do plano -->
+          <div class="flex flex-col gap-2 md:pl-8 md:border-l md:border-slate-700/40">
             <p class="text-sm text-slate-200">Uso do plano</p>
-            <p class="text-xs text-slate-500 leading-relaxed mt-0.5">
-              Os mesmos números de claude.ai, em Configurações e Uso. Atualizam depois de cada uso da IA: respostas do chat,
-              busca e conferência de imagens, system prompt (também aparecem ao lado do botão de enviar, no Chat IA).
-            </p>
+            <ClaudeUsageCard />
           </div>
-          <ClaudeUsageCard />
         </div>
-        <SettingToggle
-          :model-value="store.settings.web_search ?? true"
-          label="Pesquisar na internet"
-          description="A IA pode buscar notícias e informações recentes (preços, resultados, lançamentos) quando a pergunta pedir. As respostas com pesquisa demoram alguns segundos a mais."
-          @update:model-value="(v) => set({ web_search: v })"
-        />
-        <div class="flex flex-col gap-1.5">
-          <p class="text-sm text-slate-200">Tamanho máximo dos anexos do chat</p>
-          <p class="text-xs text-slate-500 leading-relaxed">
-            Vale para cada imagem ou arquivo de texto anexado no Chat IA. Imagens grandes são reduzidas antes de enviar.
-            Arquivo de texto muito grande gasta mais do seu plano: a IA lê no máximo uns 200 mil caracteres de cada um.
-            Fica a seu critério, de acordo com o uso da sua conta.
-          </p>
-          <CustomSelect
-            :model-value="String(store.settings.upload_limit_mb ?? 2)"
-            :options="UPLOAD_LIMITS"
-            @update:model-value="(v) => set({ upload_limit_mb: Number(v) })"
-          />
-        </div>
-        <p class="text-xs text-slate-500 leading-relaxed">
-          O system prompt e o contexto da conversa agora são de cada chat: no Chat IA, use o seletor no topo
-          para trocar de chat, o <span class="text-slate-400">+</span> para criar um novo e a engrenagem para
-          renomear ou mudar o prompt. As perguntas por voz vão para o chat que estiver selecionado.
-        </p>
-      </section>
 
-      <!-- Mídia no chat - largura total -->
-      <section class="col-span-full bg-slate-800/60 rounded-2xl p-5 border border-slate-700/40 flex flex-col gap-4">
-        <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest">Imagens e vídeos no chat</h2>
+        <template #advanced>
+          <SettingToggle
+            :model-value="store.settings.web_search ?? true"
+            label="Pesquisar na internet"
+            description="A IA pode buscar informações recentes quando a pergunta pedir. Essas respostas demoram alguns segundos a mais."
+            @update:model-value="(v) => set({ web_search: v })"
+          />
+          <div class="flex items-center justify-between gap-4">
+            <div>
+              <p class="text-sm text-slate-200">Tamanho máximo dos anexos</p>
+              <p class="text-xs text-slate-500 mt-0.5">Por imagem ou arquivo. Arquivos grandes gastam mais do seu plano.</p>
+            </div>
+            <CustomSelect
+              class="w-48 flex-shrink-0"
+              size="sm"
+              align="right"
+              :model-value="String(store.settings.upload_limit_mb ?? 2)"
+              :options="UPLOAD_LIMITS"
+              @update:model-value="(v) => set({ upload_limit_mb: Number(v) })"
+            />
+          </div>
+          <ClaudeMonitoringStatus v-if="claudeAccount?.installed" />
+        </template>
+      </SettingsCard>
+
+      <!-- Mídia no chat -->
+      <SettingsCard id="media" title="Imagens e vídeos no chat" class="col-span-full" :advanced="store.settings.media_enabled ?? true">
         <SettingToggle
           :model-value="store.settings.media_enabled ?? true"
           label="Buscar imagens e vídeos"
-          description="Ao pedir para ver ou achar uma imagem/vídeo, a IA busca na internet e mostra as miniaturas no Chat IA"
+          description="Ao pedir para ver uma imagem ou vídeo, a IA busca na internet e mostra no chat"
           @update:model-value="(v) => set({ media_enabled: v })"
         />
-        <template v-if="store.settings.media_enabled ?? true">
+        <template v-if="store.settings.media_enabled ?? true" #advanced>
           <SettingToggle
             :model-value="store.settings.media_proactive ?? true"
             label="A IA pode mandar imagens e vídeos por conta própria"
-            description="Quando ajudar a explicar (ex.: como é um item, onde fica um lugar, um vídeo da luta de um chefe), a IA já complementa a resposta sem você precisar pedir"
+            description="Quando ajudar a explicar, a IA complementa a resposta sem você pedir"
             @update:model-value="(v) => set({ media_proactive: v })"
           />
           <div class="flex items-center justify-between gap-4">
@@ -525,13 +533,14 @@ onUnmounted(() => {
             @save="(patch) => set(patch)"
           />
         </template>
-      </section>
+      </SettingsCard>
 
-      <!-- Armazenamento: quanto o app ocupa e o que dá para apagar - largura total -->
-      <section class="col-span-full bg-slate-800/60 rounded-2xl p-5 border border-slate-700/40 flex flex-col gap-4">
-        <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest">Armazenamento</h2>
-        <StorageSettings />
-      </section>
+      <!-- Armazenamento -->
+      <SettingsCard id="storage" title="Armazenamento" class="col-span-full" advanced>
+        <template #default="{ expanded }">
+          <StorageSettings :detailed="expanded" />
+        </template>
+      </SettingsCard>
 
       <!-- Confirmação: trocar a conta Claude -->
       <Teleport to="body">

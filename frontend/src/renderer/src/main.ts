@@ -5,6 +5,7 @@ import './style.css'
 import { connect } from './api/ws'
 import { useChatStore } from './stores/chat'
 import { useStatusStore } from './stores/status'
+import { useSettingsStore } from './stores/settings'
 import { onWsMessage } from './api/ws'
 
 const pinia = createPinia()
@@ -19,7 +20,10 @@ onWsMessage((e) => {
   // últimas transcrições do microfone: acompanhadas em qualquer tela (a lista da aba do microfone não fica parada)
   if (e.type === 'transcription_ready' && e.text) statusStore.setLastTranscription(e.text)
   // atalho "mostrar/esconder o Voice AI" (teclado, mouse ou controle): o Electron traz a janela para a frente
-  if (e.type === 'toggle_window') void window.electron?.ipcRenderer?.invoke('window:toggle')
+  if (e.type === 'toggle_window') {
+    const keepOnTop = !!useSettingsStore(pinia).settings?.window_keep_on_top
+    void window.electron?.ipcRenderer?.invoke('window:toggle', { keepOnTop })
+  }
 })
 void statusStore.syncEngineLoading()
 void statusStore.loadRecentTranscriptions()

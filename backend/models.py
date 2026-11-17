@@ -52,6 +52,7 @@ class SettingsPatch(BaseModel):
     ai_keys_extra: Optional[list[str]] = None
     window_key: Optional[str] = None
     window_keys_extra: Optional[list[str]] = None
+    window_keep_on_top: Optional[bool] = None
     model: Optional[str] = None
     device: Optional[str] = None
     tts_backend: Optional[str] = None

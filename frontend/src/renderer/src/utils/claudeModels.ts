@@ -2,7 +2,7 @@
 export type ClaudeModelChoice = 'haiku' | 'sonnet' | 'opus'
 
 /** o app vem com o Haiku (mais rápido e econômico) */
-export const DEFAULT_CLAUDE_MODEL: ClaudeModelChoice = 'haiku'
+export const DEFAULT_CLAUDE_MODEL: ClaudeModelChoice = 'sonnet'
 
 export const CLAUDE_MODEL_OPTIONS: { value: ClaudeModelChoice; label: string; description: string }[] = [
   { value: 'haiku', label: 'Haiku', description: 'Mais rápido e econômico: bom para perguntas simples' },

@@ -194,6 +194,11 @@ export async function getStorage(): Promise<import('../types').StorageInfo> {
   return data
 }
 
+export async function getStorageLibraries(): Promise<import('../types').LibraryUsage[]> {
+  const { data } = await http.get('/storage/libraries')
+  return data
+}
+
 export async function clearAllSpeechCache(): Promise<void> {
   await http.delete('/storage/speech-cache')
 }

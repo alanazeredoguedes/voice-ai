@@ -20,6 +20,9 @@ DEFAULT_SETTINGS: dict = {
     # Mostrar/esconder o Voice AI por cima de qualquer janela (até jogos em tela cheia sem bordas)
     "window_key": "<ctrl>+<alt>+<f12>",
     "window_keys_extra": [],
+    # Mostrar/esconder: desligado = a janela vem para a frente, mas outra janela clicada passa por cima;
+    # ligado = fica sempre por cima até esconder pelo atalho
+    "window_keep_on_top": False,
     "model": "tiny",
     "device": "auto",
     # Gravação pelo atalho: modo em lote (áudios > 30 s) e transcrever enquanto fala (os dois ligados por
@@ -47,7 +50,7 @@ DEFAULT_SETTINGS: dict = {
     "effort": "low",
     # Modelo do Claude no Chat IA (vale para todos os chats; só para o app, não muda o Claude Code da máquina):
     # "haiku" | "sonnet" | "opus"
-    "claude_model": "haiku",
+    "claude_model": "sonnet",
     # Imagens/vídeos no Chat IA
     "media_enabled": True,
     "media_max_images": 8,
