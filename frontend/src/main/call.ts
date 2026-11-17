@@ -22,7 +22,7 @@ import {
   writeFileSync
 } from 'fs'
 import { promises as dns } from 'dns'
-import { delimiter, join } from 'path'
+import { join } from 'path'
 import { WebSocketServer, WebSocket } from 'ws'
 import { startLinuxShareAudio, stopLinuxShareAudio } from './linuxShareAudio'
 
@@ -46,13 +46,10 @@ function downloadedCloudflared(dataDir: string): string {
 }
 
 /** O baixado pelo app ou, na falta dele, um já instalado no sistema (PATH). */
+/** Sempre o cloudflared do próprio app (baixado na instalação), nunca um do sistema: cada instalação isolada. */
 export function findCloudflared(dataDir: string): string | null {
   const own = downloadedCloudflared(dataDir)
-  if (existsSync(own)) return own
-  for (const dir of (process.env['PATH'] || '').split(delimiter)) {
-    if (dir && existsSync(join(dir, CLOUDFLARED_EXE))) return join(dir, CLOUDFLARED_EXE)
-  }
-  return null
+  return existsSync(own) ? own : null
 }
 
 let downloading: Promise<string> | null = null

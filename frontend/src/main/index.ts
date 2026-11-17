@@ -47,6 +47,19 @@ function modelDirsEnv(): Record<string, string> {
   }
 }
 
+/**
+ * Pasta temporária da instalação DENTRO da pasta de dados: o pip monta uns 6 GB antes de copiar, e o /tmp
+ * costuma ficar no disco do sistema (menor), enquanto a pasta de dados fica na home.
+ */
+function setupTmpDir(): string {
+  return join(getDataDir(), 'tmp')
+}
+
+function setupTmpEnv(): Record<string, string> {
+  mkdirSync(setupTmpDir(), { recursive: true })
+  return { TMPDIR: setupTmpDir(), TEMP: setupTmpDir(), TMP: setupTmpDir() }
+}
+
 function getPackagesDir(): string {
   return join(getDataDir(), 'packages')
 }
@@ -195,7 +208,7 @@ function runCmd(
   return new Promise((resolve, reject) => {
     onLine(`$ ${bin} ${args.join(' ')}`)
     const errorLines: string[] = []
-    const env = { ...(opts.env ?? process.env), ...modelDirsEnv(), PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' }
+    const env = { ...(opts.env ?? process.env), ...modelDirsEnv(), ...setupTmpEnv(), PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' }
     const proc = spawn(bin, args, { ...opts, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
     const attach = (stream: NodeJS.ReadableStream | null, isErr: boolean): void => {
       let pending = ''
@@ -510,6 +523,15 @@ interface SetupOptions {
 }
 
 async function runSetup(onProgress: ProgressFn, mode: SetupMode, opts: SetupOptions): Promise<void> {
+  try {
+    await runSetupSteps(onProgress, mode, opts)
+  } finally {
+    // sobras do pip (instalação interrompida, por exemplo) não ficam ocupando espaço
+    rmSync(setupTmpDir(), { recursive: true, force: true })
+  }
+}
+
+async function runSetupSteps(onProgress: ProgressFn, mode: SetupMode, opts: SetupOptions): Promise<void> {
   const bundledPython = getBundledPython()
   const packagesDir = getPackagesDir()
   const requirementsPath = getRequirementsPath()
