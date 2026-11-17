@@ -1,0 +1,80 @@
+# Gera os instaladores e publica a release quando uma tag vX.Y.Z é enviada (npm run release).
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  linux:
+    name: AppImage (Linux)
+    # Ubuntu mais antigo disponível: o AppImage roda em distros com glibc igual ou mais nova
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Dependências
+        working-directory: frontend
+        run: npm ci
+      - name: Build
+        run: bash ./build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: frontend/dist/*.AppImage
+          if-no-files-found: error
+          retention-days: 3
+
+  windows:
+    name: Instalador (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Dependências
+        working-directory: frontend
+        run: npm ci
+      - name: Build
+        shell: pwsh
+        run: ./build.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: frontend/dist/*.exe
+          if-no-files-found: error
+          retention-days: 3
+
+  release:
+    name: Publicar release
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: files
+          merge-multiple: true
+      - name: Criar release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          ls -lh files
+          gh release create "$TAG" files/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Voice AI ${TAG#v}" \
+            --generate-notes

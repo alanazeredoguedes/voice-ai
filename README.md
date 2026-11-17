@@ -263,6 +263,18 @@ voice-ai/
 
 ---
 
+## Publicar uma versão
+
+Com tudo commitado e enviado para a `main`, dentro de `frontend`:
+
+```bash
+npm run release              # 1.1.0 -> 1.1.1 (correção)
+npm run release -- minor     # 1.1.0 -> 1.2.0 (novidade)
+npm run release -- 1.4.0     # versão exata
+```
+
+O script confere o código, sobe a versão e envia a tag `vX.Y.Z`. A GitHub então gera o `.AppImage` (Linux) e o `.exe` (Windows) e publica os dois em **Releases** (uns 10 minutos; acompanhe na aba **Actions**).
+
 ## Solução de problemas
 
 - **O Chat IA não responde:** o Claude Code precisa estar instalado e com login feito. A tela de configuração inicial instala; o login é feito uma vez.
