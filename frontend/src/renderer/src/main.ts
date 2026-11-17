@@ -21,7 +21,11 @@ function startBackendFeatures(): void {
   onWsMessage((e) => {
     if (e.type === 'engine_loading') statusStore.onEngineLoading(e)
     // últimas transcrições do microfone: acompanhadas em qualquer tela (a lista da aba do microfone não fica parada)
-    if (e.type === 'transcription_ready' && e.text) statusStore.setLastTranscription(e.text)
+    if (e.type === 'transcription_ready' && e.text) {
+      statusStore.setLastTranscription(e.text)
+      // a cópia é feita aqui (Electron), e não só pelo backend: funciona em qualquer Linux, sem xclip
+      void window.electron?.ipcRenderer?.invoke('clipboard:write-text', e.text)
+    }
     // atalho "mostrar/esconder o Voice AI" (teclado, mouse ou controle): o Electron traz a janela para a frente
     if (e.type === 'toggle_window') {
       const keepOnTop = !!useSettingsStore(pinia).settings?.window_keep_on_top

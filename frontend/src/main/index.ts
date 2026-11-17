@@ -1050,6 +1050,12 @@ ipcMain.handle('media:save-image', async (_e, opts: { urls: string[]; name?: str
 
 // Atalho "mostrar/esconder": o backend avisa a tela, que pede isto aqui (ver windowToggle.ts)
 // Alt+V no chat: imagem que está na área de transferência (ex.: um print da tela)
+// Transcrição → área de transferência pelo próprio Electron: no Linux o pyperclip do backend depende do xclip/xsel,
+// que nem toda máquina tem (sem eles a cópia falhava em silêncio)
+ipcMain.handle('clipboard:write-text', (_e, text: string) => {
+  if (typeof text === 'string' && text) clipboard.writeText(text)
+})
+
 ipcMain.handle('clipboard:read-image', async () => {
   // Electron 45: a área de transferência é assíncrona (modelo do navegador), com itens por tipo MIME
   for (const item of await clipboard.read()) {
