@@ -1,8 +1,9 @@
 import type { StateEvent } from '../types'
+import { BACKEND_PORT } from './port'
 
 type Handler = (event: StateEvent) => void
 
-const WS_URL = 'ws://127.0.0.1:18450/ws'
+const WS_URL = `ws://127.0.0.1:${BACKEND_PORT}/ws`
 const PING_INTERVAL_MS = 30_000
 const MAX_BACKOFF_MS = 16_000
 

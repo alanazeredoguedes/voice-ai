@@ -14,13 +14,15 @@ $env:PYTHONUTF8 = '1'
 $env:PYTHONIOENCODING = 'utf-8'
 
 Write-Host "[dev] iniciando backend..."
+# porta própria do dev (o app instalado usa a 18450)
+$env:VOICE_AI_PORT = '18451'
 $backend = Start-Process -FilePath $Python -ArgumentList '-m', 'backend.main' `
     -WorkingDirectory $Root -NoNewWindow -PassThru
 
-Write-Host "[dev] aguardando backend em :18450..."
+Write-Host "[dev] aguardando backend em :18451..."
 for ($i = 0; $i -lt 60; $i++) {
     try {
-        Invoke-WebRequest -Uri 'http://127.0.0.1:18450/health' -UseBasicParsing -TimeoutSec 1 | Out-Null
+        Invoke-WebRequest -Uri 'http://127.0.0.1:18451/health' -UseBasicParsing -TimeoutSec 1 | Out-Null
         Write-Host "[dev] backend pronto"
         break
     } catch { Start-Sleep -Milliseconds 500 }

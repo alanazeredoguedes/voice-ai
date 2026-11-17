@@ -6,7 +6,7 @@ if (process.platform === 'linux') app.commandLine.appendSwitch('no-sandbox')
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
 import { join, delimiter } from 'path'
 import { homedir } from 'os'
-import { existsSync, writeFileSync, mkdirSync, readFileSync, readdirSync } from 'fs'
+import { existsSync, writeFileSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'fs'
 import { createHash } from 'crypto'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { spawn, ChildProcess, SpawnOptions } from 'child_process'
@@ -14,7 +14,8 @@ import { checkClaudeMonitoring, type MonitoringLevel, type MonitoringReport } fr
 import { setKeepOnTop, toggleWindowOnTop } from './windowToggle'
 import { downloadCloudflared, findCloudflared, registerCallIpc } from './call'
 
-const BACKEND_PORT = 18450
+// app instalado: 18450; dev: 18451 (os dois podem rodar juntos sem um usar o backend do outro)
+const BACKEND_PORT = app.isPackaged ? 18450 : 18451
 const BACKEND_URL = `http://127.0.0.1:${BACKEND_PORT}`
 
 let mainWindow: BrowserWindow | null = null
@@ -715,37 +716,66 @@ async function runSetup(onProgress: ProgressFn, mode: SetupMode, opts: SetupOpti
 }
 
 // ---------------------------------------------------------------------------
-// Windows: iniciar com o sistema
+// Iniciar com o sistema (Windows e Linux)
 // ---------------------------------------------------------------------------
 
 const IS_WIN = process.platform === 'win32'
 const HIDDEN_ARG = '--hidden'
 const startedHidden = process.argv.includes(HIDDEN_ARG)
+// Linux: o AppImage informa o próprio caminho em $APPIMAGE (é ele que precisa abrir no login)
+const LINUX_AUTOSTART_FILE = join(homedir(), '.config', 'autostart', 'voice-ai.desktop')
 
 function canUseAutostart(): boolean {
-  // VOICE_AI_NO_AUTOSTART: só para testar o app empacotado sem registrar a inicialização com o Windows
-  return IS_WIN && app.isPackaged && !process.env['VOICE_AI_NO_AUTOSTART']
+  // VOICE_AI_NO_AUTOSTART: só para testar o app empacotado sem registrar a inicialização com o sistema
+  if (!app.isPackaged || process.env['VOICE_AI_NO_AUTOSTART']) return false
+  if (IS_WIN) return true
+  return process.platform === 'linux' && !!process.env['APPIMAGE']
 }
 
 function isAutostartEnabled(): boolean {
   if (!canUseAutostart()) return false
-  return app.getLoginItemSettings({ args: [HIDDEN_ARG] }).openAtLogin
+  if (IS_WIN) return app.getLoginItemSettings({ args: [HIDDEN_ARG] }).openAtLogin
+  return existsSync(LINUX_AUTOSTART_FILE)
 }
 
 function setAutostart(enabled: boolean): void {
   if (!canUseAutostart()) return
-  app.setLoginItemSettings({ openAtLogin: enabled, args: [HIDDEN_ARG] })
+  if (IS_WIN) {
+    app.setLoginItemSettings({ openAtLogin: enabled, args: [HIDDEN_ARG] })
+    return
+  }
+  if (!enabled) {
+    rmSync(LINUX_AUTOSTART_FILE, { force: true })
+    return
+  }
+  mkdirSync(join(homedir(), '.config', 'autostart'), { recursive: true })
+  const exec = `"${process.env['APPIMAGE']}" ${HIDDEN_ARG}`
+  writeFileSync(
+    LINUX_AUTOSTART_FILE,
+    ['[Desktop Entry]', 'Type=Application', 'Name=Voice AI', `Exec=${exec}`, 'X-GNOME-Autostart-enabled=true', 'Terminal=false', ''].join('\n')
+  )
+}
+
+/** Linux: o AppImage pode ter sido movido/atualizado; mantém o atalho de login apontando para o arquivo atual. */
+function refreshLinuxAutostart(): void {
+  if (!IS_WIN && canUseAutostart() && existsSync(LINUX_AUTOSTART_FILE)) setAutostart(true)
 }
 
 /** Na primeira execução do app instalado no Windows, liga o autostart por padrão. */
 function initAutostartDefault(): void {
-  if (!canUseAutostart()) return
+  if (!IS_WIN || !canUseAutostart()) return
   const flag = join(getDataDir(), '.autostart-initialized')
   if (existsSync(flag)) return
   setAutostart(true)
   mkdirSync(getDataDir(), { recursive: true })
   writeFileSync(flag, new Date().toISOString())
 }
+
+ipcMain.handle('app:autostart', () => ({ available: canUseAutostart(), enabled: isAutostartEnabled() }))
+ipcMain.handle('app:autostart-set', (_e, enabled: boolean) => {
+  setAutostart(!!enabled)
+  return { available: canUseAutostart(), enabled: isAutostartEnabled() }
+})
 
 // ---------------------------------------------------------------------------
 // Backend
@@ -782,6 +812,19 @@ function spawnBackend(): void {
     backendProcess = null
   })
 }
+
+/** Backend subindo na abertura do app (null durante o setup, que sobe o backend no fim). */
+let backendReady: Promise<void> | null = null
+
+ipcMain.handle('backend:wait', async () => {
+  if (!backendReady) return { ok: true }
+  try {
+    await backendReady
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) }
+  }
+})
 
 async function isBackendUp(): Promise<boolean> {
   try {
@@ -1067,8 +1110,8 @@ function createMainWindow(): BrowserWindow {
   })
 
   win.on('ready-to-show', () => {
-    // Windows: ao iniciar com o sistema (--hidden) fica só na bandeja, a menos que o setup seja necessário
-    if (IS_WIN && startedHidden && isSetupComplete()) return
+    // ao iniciar com o sistema (--hidden) fica só na bandeja, a menos que o setup seja necessário
+    if (startedHidden && isSetupComplete()) return
     win.show()
   })
   win.on('close', (e) => {
@@ -1148,7 +1191,7 @@ function createTray(): void {
       ...(canUseAutostart()
         ? [
             {
-              label: 'Iniciar com o Windows',
+              label: 'Iniciar com o sistema',
               type: 'checkbox' as const,
               checked: isAutostartEnabled(),
               click: (item: Electron.MenuItem) => setAutostart(item.checked)
@@ -1167,11 +1210,12 @@ function createTray(): void {
 // App lifecycle
 // ---------------------------------------------------------------------------
 
-// Windows: evita duas instâncias (ex.: autostart + abrir pelo atalho) - a segunda só mostra a janela
-if (IS_WIN && !app.requestSingleInstanceLock()) {
+// Evita duas instâncias (ex.: autostart + abrir pelo atalho, ou dois cliques enquanto abre): a segunda só mostra a janela
+if (!app.requestSingleInstanceLock()) {
   app.quit()
-} else if (IS_WIN) {
+} else {
   app.on('second-instance', () => {
+    if (mainWindow?.isMinimized()) mainWindow.restore()
     mainWindow?.show()
     mainWindow?.focus()
   })
@@ -1202,16 +1246,21 @@ app.whenReady().then(async () => {
   setInterval(() => runMonitoringCheck().catch(() => {}), 30 * 60_000)
   app.on('browser-window-created', (_, window) => optimizer.watchWindowShortcuts(window))
 
+  refreshLinuxAutostart()
   const setupNeeded = !isSetupComplete()
 
-  if (!setupNeeded) {
-    if (!(await isBackendUp())) spawnBackend()
-    await waitForBackend()
-    overlayWindow = createOverlayWindow()
-    createTray()
-  }
-
+  // a janela abre na hora (com "Iniciando…"); o backend sobe em paralelo e a tela espera por ele (backend:wait)
   mainWindow = createMainWindow()
+
+  if (!setupNeeded) {
+    backendReady = (async () => {
+      if (!(await isBackendUp())) spawnBackend()
+      await waitForBackend(60_000)
+      overlayWindow = createOverlayWindow()
+      createTray()
+    })()
+    backendReady.catch((e) => console.error('[backend] não iniciou:', e))
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) mainWindow = createMainWindow()

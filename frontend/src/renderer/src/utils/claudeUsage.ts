@@ -2,6 +2,7 @@
  * Uso do plano do Claude (sessão de 5 horas e limite semanal), o mesmo de claude.ai > Configurações > Uso.
  * Chega do backend a cada resposta da IA (evento claude_usage) e pode ser atualizado na hora.
  */
+import { BACKEND_URL } from '../api/port'
 import { ref } from 'vue'
 import axios from 'axios'
 import { onWsMessage } from '../api/ws'
@@ -17,7 +18,7 @@ export interface ClaudeUsage {
   updated_at: number
 }
 
-const BASE = 'http://127.0.0.1:18450'
+const BASE = BACKEND_URL
 export const usage = ref<ClaudeUsage | null>(null)
 export const refreshing = ref(false)
 let started = false

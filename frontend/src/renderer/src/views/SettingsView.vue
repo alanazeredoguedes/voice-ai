@@ -147,6 +147,15 @@ async function setKeepOnTop(v: boolean): Promise<void> {
   void window.electron?.ipcRenderer?.invoke('window:keep-on-top', v)
 }
 
+// Iniciar com o sistema (só no app instalado: Windows e AppImage do Linux)
+const autostart = ref<{ available: boolean; enabled: boolean } | null>(null)
+onMounted(async () => {
+  autostart.value = (await window.electron?.ipcRenderer?.invoke('app:autostart').catch(() => null)) ?? null
+})
+async function setAutostart(v: boolean): Promise<void> {
+  autostart.value = await window.electron.ipcRenderer.invoke('app:autostart-set', v)
+}
+
 // Conta Claude (login pelo fluxo oficial da Anthropic; ver main/index.ts → claude:login)
 const claudeAccount = ref<{
   installed: boolean
@@ -220,6 +229,21 @@ onUnmounted(() => {
 
     <!-- Grid responsivo: 1 coluna em janelas estreitas, 2 a partir de 768px. Cada card mostra o essencial; o resto fica em "Mais opções". -->
     <div class="grid grid-cols-1 md:grid-cols-2 gap-5 pb-6">
+
+      <!-- Geral -->
+      <SettingsCard id="general" title="Geral" class="col-span-full">
+        <SettingToggle
+          :model-value="!!autostart?.enabled"
+          label="Iniciar com o sistema"
+          :description="
+            autostart?.available
+              ? 'O Voice AI abre sozinho quando você liga o computador, já na bandeja, pronto para os atalhos.'
+              : 'Disponível no app instalado (no modo de desenvolvimento não se aplica).'
+          "
+          :class="!autostart?.available && 'opacity-50 pointer-events-none'"
+          @update:model-value="setAutostart"
+        />
+      </SettingsCard>
 
       <!-- Atalhos -->
       <SettingsCard id="hotkeys" title="Atalhos" class="col-span-full">

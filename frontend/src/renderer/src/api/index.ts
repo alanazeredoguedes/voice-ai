@@ -1,7 +1,8 @@
 import axios from 'axios'
 import type { Settings, LogsPage, EdgeVoice, ElevenLabsVoice } from '../types'
+import { BACKEND_URL } from './port'
 
-const BASE_URL = 'http://127.0.0.1:18450'
+const BASE_URL = BACKEND_URL
 
 const http = axios.create({ baseURL: BASE_URL, timeout: 15000 })
 

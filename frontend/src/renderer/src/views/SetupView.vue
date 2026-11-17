@@ -153,8 +153,6 @@ onMounted(async () => {
     // sem info de GPU: segue com o padrão
   }
 
-  // Atualização de versão: começa sozinho, sem pedir clique
-  if (isUpdate) install()
 })
 
 onUnmounted(() => {
@@ -216,7 +214,11 @@ const cudaSize = computed(() => (systemCuda.value ? 'já instalado no computador
         <!-- Descricao inicial (antes de comecar) -->
         <div v-if="!hasStarted" class="flex flex-col gap-3">
           <p class="text-slate-300 text-sm leading-relaxed">
-            Vamos preparar o app para você. Isso baixa o que falta e leva só alguns minutos.
+            {{
+              isUpdate
+                ? 'Esta versão precisa de alguns componentes novos. Vamos baixar só o que falta.'
+                : 'Vamos preparar o app para você. Isso baixa o que falta e leva só alguns minutos.'
+            }}
           </p>
           <p class="text-slate-500 text-xs">Precisa de internet.</p>
 
@@ -387,7 +389,7 @@ const cudaSize = computed(() => (systemCuda.value ? 'já instalado no computador
             class="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium rounded-xl transition-colors"
             @click="install"
           >
-            Instalar e configurar
+            {{ isUpdate ? 'Atualizar componentes' : 'Instalar e configurar' }}
           </button>
 
           <button
