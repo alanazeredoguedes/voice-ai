@@ -18,8 +18,8 @@ jobs:
     # Ubuntu mais antigo disponível: o AppImage roda em distros com glibc igual ou mais nova
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -28,8 +28,15 @@ jobs:
         working-directory: frontend
         run: npm ci
       - name: Build
-        run: bash ./build.sh
-      - uses: actions/upload-artifact@v4
+        run: bash ./build.sh 2>&1 | tee build.log; exit ${PIPESTATUS[0]}
+      - name: Mostrar o erro
+        if: failure()
+        shell: bash
+        run: |
+          # o final do log vira uma anotação de erro, visível no resumo da execução
+          msg=$(tail -n 60 build.log | sed 's/\x1b\[[0-9;]*m//g; s/%/%25/g; s/\r//g' | awk '{printf "%s%%0A", $0}')
+          echo "::error title=Build falhou::$msg"
+      - uses: actions/upload-artifact@v5
         with:
           name: linux
           path: frontend/dist/*.AppImage
@@ -40,8 +47,8 @@ jobs:
     name: Instalador (Windows)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -51,8 +58,17 @@ jobs:
         run: npm ci
       - name: Build
         shell: pwsh
-        run: ./build.ps1
-      - uses: actions/upload-artifact@v4
+        run: |
+          & ./build.ps1 *>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Mostrar o erro
+        if: failure()
+        shell: bash
+        run: |
+          # o final do log vira uma anotação de erro, visível no resumo da execução
+          msg=$(tail -n 60 build.log | sed 's/\x1b\[[0-9;]*m//g; s/%/%25/g; s/\r//g' | awk '{printf "%s%%0A", $0}')
+          echo "::error title=Build falhou::$msg"
+      - uses: actions/upload-artifact@v5
         with:
           name: windows
           path: frontend/dist/*.exe
@@ -64,7 +80,7 @@ jobs:
     needs: [linux, windows]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           path: files
           merge-multiple: true
