@@ -39,6 +39,14 @@ function getDataDir(): string {
   return join(homedir(), '.local', 'share', 'voice-ai')
 }
 
+/** Pastas de modelos (Whisper e tradução) desta instalação: dev e app instalado não compartilham downloads. */
+function modelDirsEnv(): Record<string, string> {
+  return {
+    HF_HOME: join(getDataDir(), 'huggingface'),
+    ARGOS_PACKAGES_DIR: join(getDataDir(), 'argos-translate', 'packages')
+  }
+}
+
 function getPackagesDir(): string {
   return join(getDataDir(), 'packages')
 }
@@ -187,7 +195,7 @@ function runCmd(
   return new Promise((resolve, reject) => {
     onLine(`$ ${bin} ${args.join(' ')}`)
     const errorLines: string[] = []
-    const env = { ...(opts.env ?? process.env), PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' }
+    const env = { ...(opts.env ?? process.env), ...modelDirsEnv(), PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' }
     const proc = spawn(bin, args, { ...opts, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
     const attach = (stream: NodeJS.ReadableStream | null, isErr: boolean): void => {
       let pending = ''
@@ -797,6 +805,7 @@ function spawnBackend(): void {
     ...process.env,
     VOICE_AI_PORT: String(BACKEND_PORT),
     VOICE_AI_DATA_DIR: getDataDir(),
+    ...modelDirsEnv(),
     HF_HUB_DISABLE_SYMLINKS_WARNING: '1',
     PYTHONPATH: pythonPath,
     // Windows: força UTF-8 no stdout/stderr do Python (logs com acentos/emoji)

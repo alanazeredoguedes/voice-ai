@@ -2,7 +2,10 @@ import shutil
 import threading
 from pathlib import Path
 
+
 from fastapi import APIRouter, HTTPException, Request
+
+from ..config import HF_HOME
 
 router = APIRouter(prefix="/models", tags=["models"])
 
@@ -24,7 +27,7 @@ _REPOS = {"large-v3-turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo"}
 def _repo_id(model_id: str) -> str:
     return _REPOS.get(model_id, f"Systran/faster-whisper-{model_id}")
 
-_HF_CACHE = Path.home() / ".cache" / "huggingface" / "hub"
+_HF_CACHE = HF_HOME / "hub"
 _VALID_IDS = {m["id"] for m in WHISPER_MODELS}
 _downloading: set[str] = set()
 

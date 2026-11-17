@@ -11,6 +11,13 @@ def get_data_dir() -> Path:
 
 
 DATA_DIR = get_data_dir()
+
+# Modelos baixados ficam DENTRO da pasta de dados de cada instalação: o dev e o app instalado não compartilham
+# nada (modelos do Whisper, pacotes de tradução). Precisa vir antes de importar huggingface_hub/argostranslate.
+HF_HOME = DATA_DIR / "huggingface"
+ARGOS_PACKAGES_DIR = DATA_DIR / "argos-translate" / "packages"
+os.environ["HF_HOME"] = str(HF_HOME)
+os.environ["ARGOS_PACKAGES_DIR"] = str(ARGOS_PACKAGES_DIR)
 DB_PATH = DATA_DIR / "voice-ai.db"
 PORT = int(os.environ.get("VOICE_AI_PORT", "18450"))
 

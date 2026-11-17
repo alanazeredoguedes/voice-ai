@@ -8,7 +8,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Request
 
-from ..config import DATA_DIR, DB_PATH
+from ..config import ARGOS_PACKAGES_DIR, DATA_DIR, DB_PATH
 from ..services import chats as chat_db
 from ..services import speech_cache
 from .models import WHISPER_MODELS, _blobs_size_mb, _is_downloaded
@@ -45,7 +45,7 @@ def _translation() -> dict:
 
         d = Path(s.package_data_dir)
     except Exception:
-        d = Path.home() / ".local" / "share" / "argos-translate" / "packages"
+        d = ARGOS_PACKAGES_DIR
     if not d.is_dir():
         return {"bytes": 0, "count": 0, "packages": []}
     packages = []
