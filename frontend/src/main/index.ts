@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Tray, Menu, nativeImage, shell, ipcMain, session, screen, Notification, clipboard, ClipboardItem, net } from 'electron'
+import { app, BrowserWindow, Tray, Menu, nativeImage, shell, ipcMain, session, screen, Notification, clipboard, ClipboardItem, net, dialog } from 'electron'
 
 // Must be called before app is ready - fixes SUID sandbox error on Linux AppImage
 if (process.platform === 'linux') app.commandLine.appendSwitch('no-sandbox')
@@ -6,7 +6,7 @@ if (process.platform === 'linux') app.commandLine.appendSwitch('no-sandbox')
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
 import { join, delimiter } from 'path'
 import { homedir } from 'os'
-import { existsSync, writeFileSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'fs'
+import { existsSync, writeFileSync, mkdirSync, readFileSync, readdirSync, rmSync, copyFileSync } from 'fs'
 import { createHash } from 'crypto'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { spawn, ChildProcess, SpawnOptions } from 'child_process'
@@ -1081,6 +1081,16 @@ ipcMain.handle('window:keep-on-top', (_e, keepOnTop: boolean) => {
 
 ipcMain.handle('shell:show-item', (_e, path: string) => {
   if (path && existsSync(path)) shell.showItemInFolder(path)
+})
+
+// Tradução de arquivos: salva o arquivo traduzido onde o usuário escolher
+ipcMain.handle('file:save-copy', async (_e, opts: { path: string; name: string }) => {
+  if (!opts?.path || !existsSync(opts.path)) return { ok: false }
+  const win = BrowserWindow.getFocusedWindow() ?? mainWindow
+  const res = await dialog.showSaveDialog(win!, { defaultPath: join(app.getPath('downloads'), opts.name) })
+  if (res.canceled || !res.filePath) return { ok: false, canceled: true }
+  copyFileSync(opts.path, res.filePath)
+  return { ok: true, path: res.filePath }
 })
 
 ipcMain.handle('claude:status', async () => {

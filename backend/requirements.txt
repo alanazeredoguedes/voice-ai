@@ -1,3 +1,6 @@
 # Tudo (desenvolvimento e Linux): o núcleo + a tradução
 -r requirements-core.txt
 argostranslate
+# tradução de arquivos: PDF (ler, apagar e reescrever o texto mantendo o layout) e Word/PowerPoint/Excel (XML)
+pymupdf>=1.26
+lxml>=5

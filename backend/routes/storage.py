@@ -180,6 +180,10 @@ def _summary(orchestrator) -> dict:
             if _is_downloaded(m["id"])
         ],
         "translation": _translation(),
+        "translated_files": {
+            "bytes": _dir_bytes(DATA_DIR / "translated-files"),
+            "count": sum(1 for d in (DATA_DIR / "translated-files").glob("*/meta.json")),
+        },
         "database": {"bytes": db},
         "libraries": {"bytes": _libraries()["bytes"]},
     }

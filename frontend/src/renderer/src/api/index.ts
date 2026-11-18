@@ -74,6 +74,61 @@ export async function translateText(
   return data
 }
 
+export async function listFileTranslations(): Promise<import('../types').FileTranslation[]> {
+  const { data } = await http.get('/translate/files')
+  return data
+}
+
+export async function startFileTranslation(
+  file: File,
+  from_code: string,
+  to_code: string
+): Promise<import('../types').FileTranslation> {
+  const form = new FormData()
+  form.append('file', file, file.name)
+  form.append('from_code', from_code)
+  form.append('to_code', to_code)
+  const { data } = await http.post('/translate/files', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 300000
+  })
+  return data
+}
+
+export async function deleteAllFileTranslations(): Promise<void> {
+  await http.delete('/translate/files')
+}
+
+export async function deleteFileTranslation(id: string): Promise<void> {
+  await http.delete(`/translate/files/${id}`)
+}
+
+/** Imagem de uma página do PDF (original ou traduzido), para comparar lado a lado */
+export function fileTranslationPreviewUrl(
+  id: string,
+  page: number,
+  which: 'original' | 'translated',
+  scale = 1.4,
+  rotate = 0,
+  theme: PdfTheme = 'original'
+): string {
+  return `${BASE_URL}/translate/files/${id}/preview?page=${page}&which=${which}&scale=${scale}&rotate=${rotate}&theme=${theme}`
+}
+
+export type PdfTheme = 'original' | 'dark'
+
+/** Tamanho de cada página do PDF traduzido, em pontos ([largura, altura]) */
+export async function getFileTranslationPageSizes(id: string): Promise<number[][]> {
+  const { data } = await http.get(`/translate/files/${id}/pages`)
+  return data.sizes
+}
+
+/** Caminho do arquivo traduzido no tema escolhido (o escuro é gerado na primeira vez, só PDF) */
+export async function getFileTranslationPath(id: string, theme: PdfTheme): Promise<{ path: string; name: string }> {
+  const { data } = await http.get(`/translate/files/${id}/file`, { params: { theme }, timeout: 300000 })
+  return data
+}
+
 export async function listChats(): Promise<import('../types').ChatList> {
   const { data } = await http.get('/chat/chats')
   return data

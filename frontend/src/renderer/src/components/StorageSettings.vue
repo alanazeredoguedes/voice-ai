@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { clearAllSpeechCache, clearChatSpeechCache, deleteWhisperModel, getStorage, getStorageLibraries, removeTranslatePackage } from '../api'
+import { clearAllSpeechCache, clearChatSpeechCache, deleteWhisperModel, getStorage, getStorageLibraries, removeTranslatePackage, deleteAllFileTranslations } from '../api'
 import { useSettingsStore } from '../stores/settings'
 import { useChatStore } from '../stores/chat'
 import type { LibraryUsage, StorageInfo } from '../types'
@@ -46,6 +46,7 @@ const parts = computed(() => {
     { key: 'libs', label: 'Bibliotecas do app', bytes: i.libraries.bytes, color: 'bg-slate-500' },
     { key: 'models', label: 'Modelos de voz', bytes: modelsBytes.value, color: 'bg-indigo-500' },
     { key: 'translation', label: 'Pacotes de tradução', bytes: i.translation.bytes, color: 'bg-sky-500' },
+    { key: 'files', label: 'Arquivos traduzidos', bytes: i.translated_files?.bytes ?? 0, color: 'bg-cyan-300' },
     { key: 'audio', label: 'Áudios salvos', bytes: i.speech_cache.bytes, color: 'bg-purple-500' },
     { key: 'db', label: 'Conversas e logs', bytes: i.database.bytes, color: 'bg-emerald-500' }
   ]
@@ -96,6 +97,7 @@ type Pending =
   | { kind: 'audio-chat'; id: number; name: string }
   | { kind: 'model'; id: string; name: string; bytes: number }
   | { kind: 'translation'; from: string; to: string; name: string; bytes: number }
+  | { kind: 'translated-files'; bytes: number }
 const pending = ref<Pending | null>(null)
 
 const confirmTitle = computed(() => {
@@ -104,6 +106,7 @@ const confirmTitle = computed(() => {
   if (p.kind === 'audio-all') return 'Apagar todos os áudios salvos?'
   if (p.kind === 'audio-chat') return `Apagar os áudios salvos de "${p.name}"?`
   if (p.kind === 'translation') return `Apagar o pacote ${p.name}?`
+  if (p.kind === 'translated-files') return 'Apagar os arquivos traduzidos?'
   return `Apagar o modelo ${p.name}?`
 })
 
@@ -120,6 +123,7 @@ async function confirm(): Promise<void> {
       chatStore.resetAudioPct(p.id)
     }
     else if (p.kind === 'translation') await removeTranslatePackage(p.from, p.to)
+    else if (p.kind === 'translated-files') await deleteAllFileTranslations()
     else await deleteWhisperModel(p.id)
     await load()
   } finally {
@@ -254,6 +258,21 @@ async function confirm(): Promise<void> {
           </div>
           <p v-if="!translationPackages.length" class="text-xs text-slate-600">Nenhum pacote instalado.</p>
         </div>
+        <div
+          v-if="info.translated_files?.count"
+          class="flex items-center gap-3 text-xs px-2 pt-2.5 border-t border-slate-700/40"
+        >
+          <span class="flex-1 truncate text-slate-300">
+            Arquivos traduzidos
+            <span class="text-slate-500">· {{ info.translated_files.count }} {{ info.translated_files.count === 1 ? 'arquivo' : 'arquivos' }}</span>
+          </span>
+          <span class="text-slate-300 tabular-nums w-16 text-right">{{ fmt(info.translated_files.bytes) }}</span>
+          <button
+            title="Apagar as cópias traduzidas guardadas pelo app"
+            class="text-slate-500 hover:text-red-400 transition-colors"
+            @click="pending = { kind: 'translated-files', bytes: info.translated_files.bytes }"
+          >Apagar</button>
+        </div>
       </div>
 
       <!-- bibliotecas e conversas -->
@@ -329,13 +348,16 @@ async function confirm(): Promise<void> {
     <ConfirmModal
       :open="pending !== null"
       :title="confirmTitle"
-      :confirm-label="pending?.kind === 'model' ? 'Apagar modelo' : pending?.kind === 'translation' ? 'Apagar pacote' : 'Apagar áudios'"
+      :confirm-label="pending?.kind === 'model' ? 'Apagar modelo' : pending?.kind === 'translation' ? 'Apagar pacote' : pending?.kind === 'translated-files' ? 'Apagar arquivos' : 'Apagar áudios'"
       :tone="pending?.kind === 'model' || pending?.kind === 'translation' ? 'danger' : 'warning'"
       :loading="busy"
       @confirm="confirm"
       @cancel="pending = null"
     >
-      <template v-if="pending?.kind === 'translation'">
+      <template v-if="pending?.kind === 'translated-files'">
+        <p>Libera {{ fmt(pending.bytes) }} no disco. Apaga as cópias guardadas pelo app (original e traduzido); os arquivos que você salvou em outra pasta continuam lá.</p>
+      </template>
+      <template v-else-if="pending?.kind === 'translation'">
         <p>Libera {{ fmt(pending.bytes) }} no disco. O Tradutor deixa de traduzir nessa direção até você instalar o pacote de novo.</p>
       </template>
       <template v-else-if="pending?.kind === 'model'">

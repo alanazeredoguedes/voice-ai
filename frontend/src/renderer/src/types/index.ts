@@ -75,7 +75,7 @@ export interface WhisperModel {
 }
 
 export interface StateEvent {
-  type: 'state_changed' | 'audio_level' | 'log_added' | 'transcription_ready' | 'transcription_progress' | 'translate_download_progress' | 'chat_chunk' | 'chat_delta' | 'claude_usage' | 'ptt_partial' | 'toggle_window' | 'ai_rejected_short' | 'chat_error' | 'voice_user_message' | 'voice_chat_cancelled' | 'chat_media' | 'chat_media_preview' | 'tts_playing' | 'chats_changed' | 'ai_rejected_busy' | 'chat_activity' | 'tts_preparing' | 'tts_words' | 'speech_cache_progress' | 'engine_loading' | 'benchmark_started' | 'benchmark_progress' | 'benchmark_result' | 'benchmark_done' | 'model_download_progress' | 'model_download_complete' | 'model_download_error' | 'pong'
+  type: 'state_changed' | 'audio_level' | 'log_added' | 'transcription_ready' | 'transcription_progress' | 'translate_download_progress' | 'translate_file' | 'chat_chunk' | 'chat_delta' | 'claude_usage' | 'ptt_partial' | 'toggle_window' | 'ai_rejected_short' | 'chat_error' | 'voice_user_message' | 'voice_chat_cancelled' | 'chat_media' | 'chat_media_preview' | 'tts_playing' | 'chats_changed' | 'ai_rejected_busy' | 'chat_activity' | 'tts_preparing' | 'tts_words' | 'speech_cache_progress' | 'engine_loading' | 'benchmark_started' | 'benchmark_progress' | 'benchmark_result' | 'benchmark_done' | 'model_download_progress' | 'model_download_complete' | 'model_download_error' | 'pong'
   model?: string
   state?: AppState
   /** ptt_partial: de qual atalho é a gravação ("ai" = falar com a IA) */
@@ -86,6 +86,8 @@ export interface StateEvent {
   progress?: number
   from_code?: string
   to_code?: string
+  /** translate_file: andamento de uma tradução de arquivo */
+  file_job?: FileTranslation
   done?: boolean
   message_id?: number
   user_message_id?: number
@@ -220,6 +222,7 @@ export interface StorageInfo {
   }
   models: { id: string; name: string; bytes: number; active: boolean }[]
   translation: { bytes: number; count: number; packages: TranslationPackageUsage[] }
+  translated_files: { bytes: number; count: number }
   database: { bytes: number }
   libraries: { bytes: number }
 }
@@ -334,6 +337,24 @@ export interface ChatMessage {
   audio_bytes?: number
   /** o que a IA está fazendo agora, enquanto ainda não chegou texto */
   activity?: ChatTool | null
+}
+
+export interface FileTranslation {
+  id: string
+  name: string
+  ext: string
+  from_code: string
+  to_code: string
+  status: 'queued' | 'running' | 'done' | 'error'
+  progress: number
+  message: string
+  error: string | null
+  pages: number | null
+  output_name: string
+  output_path: string | null
+  size: number
+  created_at: number
+  finished_at: number | null
 }
 
 export interface TranslatePackage {

@@ -5,8 +5,38 @@ import { translateText, installTranslatePackage, removeTranslatePackage } from '
 import { onWsMessage } from '../api/ws'
 import CopyButton from '../components/CopyButton.vue'
 import CustomSelect from '../components/CustomSelect.vue'
+import FileTranslatePanel from '../components/FileTranslatePanel.vue'
 
 const store = useTranslationStore()
+
+// Texto | Arquivos (lembra a última aba usada)
+type Tab = 'text' | 'files'
+function loadTab(): Tab {
+  try {
+    return localStorage.getItem('translate.tab') === 'files' ? 'files' : 'text'
+  } catch {
+    return 'text'
+  }
+}
+const tab = ref<Tab>(loadTab())
+watch(tab, (t) => {
+  try {
+    localStorage.setItem('translate.tab', t)
+  } catch {
+    /* sem armazenamento: só não lembra a aba */
+  }
+})
+
+// nome do idioma pelo código ("en" → "Inglês"), a partir da lista de pacotes
+const langNames = computed(() => {
+  const m: Record<string, string> = {}
+  for (const p of store.packages) {
+    m[p.from_code] = p.from_name
+    m[p.to_code] = p.to_name
+  }
+  return m
+})
+const langName = (code: string): string => langNames.value[code] ?? code
 
 const translating = ref(false)
 // Gerenciar Modelos: ao entrar na tela, abre fechado se já existe algum modelo baixado (senão abre, para baixar)
@@ -49,17 +79,13 @@ const availableTo = computed(() =>
 )
 
 // Garantir que toCode seja válido quando fromCode muda
-watch(() => store.fromCode, () => {
-  const valid = availableTo.value.find(p => p.to_code === store.toCode)
-  if (!valid && availableTo.value.length > 0) {
-    store.toCode = availableTo.value[0].to_code
-  }
-})
+watch(() => store.fromCode, () => store.ensureSelection())
 
 function swap(): void {
   const tmp = store.fromCode
   store.fromCode = store.toCode
   store.toCode = tmp
+  if (tab.value === 'files') return
   const tmpText = store.lastInput
   store.lastInput = store.lastOutput
   store.lastOutput = tmpText
@@ -137,6 +163,19 @@ const filteredInstalled = computed(() => {
       <p class="text-sm text-slate-500 mt-1">Tradução offline usando modelos locais - sem internet em runtime</p>
     </div>
 
+    <!-- Texto | Arquivos -->
+    <div v-if="store.hasAnyInstalled" class="flex gap-1 p-1 bg-slate-800/60 border border-slate-700/40 rounded-xl self-start -mt-2">
+      <button
+        v-for="t in ([['text', 'Texto'], ['files', 'Arquivos']] as const)"
+        :key="t[0]"
+        class="px-4 py-1.5 rounded-lg text-sm transition-colors"
+        :class="tab === t[0] ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-slate-200'"
+        @click="tab = t[0]"
+      >
+        {{ t[1] }}
+      </button>
+    </div>
+
     <!-- Bloco de tradução (só aparece se há modelos instalados) -->
     <div v-if="store.hasAnyInstalled" class="flex flex-col gap-4">
       <!-- Seletores de idioma -->
@@ -167,6 +206,15 @@ const filteredInstalled = computed(() => {
         />
       </div>
 
+      <FileTranslatePanel
+        v-if="tab === 'files'"
+        :from-code="store.fromCode"
+        :to-code="store.toCode"
+        :can-translate="store.canTranslate"
+        :lang-name="langName"
+      />
+
+      <template v-else>
       <!-- Textareas -->
       <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
         <!-- Entrada -->
@@ -222,6 +270,7 @@ const filteredInstalled = computed(() => {
         </svg>
         <p class="text-red-400 text-sm">{{ error }}</p>
       </div>
+      </template>
     </div>
 
     <!-- Aviso quando não há modelos instalados -->
