@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { formatVolume, sliderToVolume, volumeToSlider } from '../utils/callVolume'
 
-/** Menu do botão direito: volume (0 a 200%) e mudo, só para quem está ouvindo. */
+/** Menu do botão direito: volume (0 a 400%, com mais precisão nos volumes baixos) e mudo, só para quem está ouvindo. */
 const props = defineProps<{ x: number; y: number; title: string; volume: number; muted: boolean; muteLabel: string }>()
 const emit = defineEmits<{ volume: [value: number]; mute: []; close: [] }>()
 
@@ -52,13 +53,13 @@ function onBlur(): void {
         <input
           type="range"
           min="0"
-          max="2"
-          step="0.05"
-          :value="volume"
+          max="1"
+          step="0.005"
+          :value="volumeToSlider(volume)"
           :class="['flex-1 h-1 accent-indigo-500 cursor-pointer', muted ? 'opacity-40' : '']"
-          @input="emit('volume', parseFloat(($event.target as HTMLInputElement).value))"
+          @input="emit('volume', sliderToVolume(parseFloat(($event.target as HTMLInputElement).value)))"
         />
-        <span class="text-xs text-slate-300 w-10 text-right">{{ Math.round(volume * 100) }}%</span>
+        <span class="text-xs text-slate-300 w-11 text-right">{{ formatVolume(volume) }}</span>
       </div>
       <button
         :class="[

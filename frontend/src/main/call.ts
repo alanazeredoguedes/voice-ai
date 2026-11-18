@@ -23,8 +23,35 @@ import {
 } from 'fs'
 import { promises as dns } from 'dns'
 import { join } from 'path'
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http'
+import { randomBytes } from 'crypto'
 import { WebSocketServer, WebSocket } from 'ws'
-import { startLinuxShareAudio, stopLinuxShareAudio } from './linuxShareAudio'
+import {
+  announce,
+  callsDirOf,
+  liveCopies,
+  liveOf,
+  lookup,
+  presenceKeyFor,
+  proofFor,
+  roomByTag,
+  tagFor,
+  type Announcement
+} from './callRendezvous'
+import { setShareAudioLogger, startLinuxShareAudio, stopLinuxShareAudio } from './linuxShareAudio'
+
+// ---------------------------------------------------------------------------
+// Log da sala: o que acontece aqui (túnel, sinalização, som do Linux) aparece no log da tela de Chamada
+// ---------------------------------------------------------------------------
+
+type LogLevel = 'info' | 'warn' | 'error'
+let logTarget: WebContents | null = null
+
+function mainLog(level: LogLevel, msg: string): void {
+  ;(level === 'info' ? console.log : console.warn)('[call]', msg)
+  if (logTarget && !logTarget.isDestroyed()) logTarget.send('call:log', { level, msg })
+}
+setShareAudioLogger((level, msg) => mainLog(level, `[som da transmissão] ${msg}`))
 
 // ---------------------------------------------------------------------------
 // cloudflared
@@ -102,9 +129,16 @@ export function downloadCloudflared(
 interface SignalPeer {
   ws: WebSocket
   name: string
+  /** já foi aceito na sala (quem está esperando só recebe "waiting") */
+  admitted: boolean
 }
 
 let wss: WebSocketServer | null = null
+let httpServer: Server | null = null
+let signalPort = 0
+/** só quem criou o servidor (este processo) sabe: identifica o anfitrião na hora de entrar */
+let hostToken = ''
+let hostPeerId = ''
 const peers = new Map<string, SignalPeer>()
 /** sala servida: quem entra recebe o id (para guardar o histórico no lugar certo) e o nome */
 let room = { id: '', name: '' }
@@ -113,44 +147,124 @@ function sendTo(ws: WebSocket, msg: unknown): void {
   if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg))
 }
 
+const admittedPeers = (): [string, SignalPeer][] => [...peers].filter(([, p]) => p.admitted)
+
+/** Avisa quem está dentro de quem está pedindo para entrar (a lista inteira, a cada mudança). */
+function broadcastKnocks(): void {
+  const knocks = [...peers].filter(([, p]) => !p.admitted).map(([id, p]) => ({ id, name: p.name }))
+  for (const [, p] of admittedPeers()) sendTo(p.ws, { type: 'knocks', knocks })
+}
+
+function admit(id: string): void {
+  const peer = peers.get(id)
+  if (!peer || peer.admitted) return
+  sendTo(peer.ws, {
+    type: 'peers',
+    room,
+    hostPeerId,
+    peers: admittedPeers().map(([pid, p]) => ({ id: pid, name: p.name }))
+  })
+  for (const [, p] of admittedPeers()) sendTo(p.ws, { type: 'peer-joined', peer: { id, name: peer.name } })
+  peer.admitted = true
+  mainLog('info', `[servidor da sala] "${peer.name}" entrou (${admittedPeers().length} conectados)`)
+  sendTo(peer.ws, { type: 'knocks', knocks: [...peers].filter(([, p]) => !p.admitted).map(([pid, p]) => ({ id: pid, name: p.name })) })
+}
+
+/** Resposta HTTP do servidor da sala: /presence (quem está dentro, para quem já esteve na sala) e 426 no resto. */
+function onHttp(req: IncomingMessage, res: ServerResponse): void {
+  const url = new URL(req.url ?? '/', 'http://x')
+  if (url.pathname === '/presence' && room.id && url.searchParams.get('k') === presenceKeyFor(room.id)) {
+    res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+    res.end(
+      JSON.stringify({ names: admittedPeers().map(([, p]) => p.name), waiting: peers.size - admittedPeers().length })
+    )
+    return
+  }
+  // um pedido HTTP comum responde 426 (é o que o teste de "túnel no ar" espera)
+  res.writeHead(426, { 'content-type': 'text/plain' })
+  res.end('Upgrade Required')
+}
+
 /** Sobe o servidor só em 127.0.0.1 (quem chega de fora vem pelo túnel) numa porta livre qualquer. */
 function startSignaling(roomInfo: { id: string; name: string }): Promise<number> {
   room = roomInfo
+  hostToken = randomBytes(16).toString('hex')
+  hostPeerId = ''
   return new Promise((resolve, reject) => {
-    const server = new WebSocketServer({ host: '127.0.0.1', port: 0, maxPayload: 256 * 1024 })
+    const server = createServer(onHttp)
+    const ws = new WebSocketServer({ server, maxPayload: 256 * 1024 })
     server.once('error', reject)
-    server.once('listening', () => {
-      wss = server
-      resolve((server.address() as { port: number }).port)
+    server.listen(0, '127.0.0.1', () => {
+      httpServer = server
+      wss = ws
+      signalPort = (server.address() as { port: number }).port
+      resolve(signalPort)
     })
-    server.on('connection', (ws) => {
+    ws.on('connection', (socket) => {
       let myId: string | null = null
-      ws.on('message', (data) => {
+      // primeiro a etiqueta da sala: quem já esteve nela responde com a prova e entra direto
+      sendTo(socket, { type: 'welcome', tag: room.id ? tagFor(room.id) : '' })
+      socket.on('message', (data) => {
         let msg: Record<string, unknown>
         try {
           msg = JSON.parse(data.toString())
         } catch {
           return
         }
-        if (msg.type === 'ping') return sendTo(ws, { type: 'pong' })
-        if (msg.type === 'join' && !myId && typeof msg.peerId === 'string') {
+        if (msg.type === 'ping') return sendTo(socket, { type: 'pong' })
+        if (msg.type === 'join' && !myId && typeof msg.peerId === 'string' && !peers.has(msg.peerId)) {
           myId = msg.peerId
           const name = String(msg.name ?? 'Convidado').slice(0, 40)
-          sendTo(ws, { type: 'peers', room, peers: [...peers].map(([id, p]) => ({ id, name: p.name })) })
-          for (const p of peers.values()) sendTo(p.ws, { type: 'peer-joined', peer: { id: myId, name } })
-          peers.set(myId, { ws, name })
+          const isHost = typeof msg.hostToken === 'string' && msg.hostToken === hostToken
+          const member = !!room.id && msg.proof === proofFor(room.id)
+          peers.set(myId, { ws: socket, name, admitted: false })
+          if (isHost) hostPeerId = myId
+          // ninguém dentro para aceitar (não deveria acontecer: o anfitrião entra primeiro): entra direto
+          if (isHost || member || !admittedPeers().length) {
+            mainLog('info', `[servidor da sala] "${name}" ${isHost ? 'é quem hospeda' : member ? 'já esteve na sala: entrada liberada' : 'entrou'}`)
+            admit(myId)
+          } else {
+            mainLog('info', `[servidor da sala] "${name}" pediu para entrar: aguardando alguém aceitar`)
+            sendTo(socket, { type: 'waiting' })
+          }
+          broadcastKnocks()
+          return
+        }
+        const me = myId ? peers.get(myId) : undefined
+        if (!myId || !me?.admitted) return
+        // alguém de dentro aceitou ou recusou um pedido de entrada
+        if (msg.type === 'admit' && typeof msg.peerId === 'string') {
+          const target = peers.get(msg.peerId)
+          if (!target || target.admitted) return
+          if (msg.accept) {
+            mainLog('info', `[servidor da sala] "${me.name}" aceitou "${target.name}"`)
+            admit(msg.peerId)
+          } else {
+            mainLog('info', `[servidor da sala] "${me.name}" recusou "${target.name}"`)
+            sendTo(target.ws, { type: 'denied', by: me.name })
+            peers.delete(msg.peerId)
+            setTimeout(() => target.ws.close(), 200)
+          }
+          broadcastKnocks()
           return
         }
         // handshake do WebRTC (sdp / ice): repassa ao destinatário, carimbando o remetente
-        if (myId && typeof msg.to === 'string') {
+        if (typeof msg.to === 'string') {
           const target = peers.get(msg.to)
-          if (target) sendTo(target.ws, { ...msg, from: myId })
+          if (target?.admitted) sendTo(target.ws, { ...msg, from: myId })
         }
       })
-      ws.on('close', () => {
-        if (!myId || peers.get(myId)?.ws !== ws) return
+      socket.on('close', () => {
+        const me = myId ? peers.get(myId) : undefined
+        if (!myId || me?.ws !== socket) return
         peers.delete(myId)
-        for (const p of peers.values()) sendTo(p.ws, { type: 'peer-left', peerId: myId })
+        if (me.admitted) {
+          mainLog('info', `[servidor da sala] "${me.name}" desconectou do servidor (${admittedPeers().length} conectados)`)
+          for (const [, p] of admittedPeers()) sendTo(p.ws, { type: 'peer-left', peerId: myId })
+        } else {
+          mainLog('info', `[servidor da sala] "${me.name}" desistiu de entrar`)
+        }
+        broadcastKnocks()
       })
     })
   })
@@ -161,6 +275,9 @@ function stopSignaling(): void {
   peers.clear()
   wss?.close()
   wss = null
+  httpServer?.close()
+  httpServer = null
+  signalPort = 0
 }
 
 // ---------------------------------------------------------------------------
@@ -202,6 +319,7 @@ function startTunnel(bin: string, port: number, onExit: () => void): Promise<str
       // caiu no meio da chamada: quem já está conectado continua (P2P), mas ninguém novo entra
       if (tunnel === proc) {
         tunnel = null
+        mainLog('error', '[túnel] o cloudflared encerrou: a chamada continua, mas ninguém novo consegue entrar')
         onExit()
       }
     })
@@ -225,6 +343,12 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
  * servidores de DNS autoritativos da Cloudflare, que não guardam nada, e só depois testa o endereço.
  */
 async function waitTunnelReachable(code: string): Promise<void> {
+  const started = Date.now()
+  await waitTunnelReachableInner(code)
+  mainLog('info', `[túnel] código liberado para quem está de fora após ${((Date.now() - started) / 1000).toFixed(1)} s`)
+}
+
+async function waitTunnelReachableInner(code: string): Promise<void> {
   const host = `${code}.trycloudflare.com`
   try {
     const servers: string[] = []
@@ -235,11 +359,15 @@ async function waitTunnelReachable(code: string): Promise<void> {
     for (;;) {
       if (!tunnel) return
       if (await authoritative.resolve4(host).then((a) => a.length > 0, () => false)) break
-      if (Date.now() > deadline) return
+      if (Date.now() > deadline) {
+        mainLog('warn', '[túnel] o nome ainda não aparece no DNS da Cloudflare após 20 s')
+        return
+      }
       await sleep(500)
     }
   } catch {
     // sem acesso aos servidores autoritativos: espera fixa, sem perguntar pelo nome
+    mainLog('warn', '[túnel] sem acesso ao DNS da Cloudflare: esperando 6 s')
     await sleep(6000)
     return
   }
@@ -391,6 +519,16 @@ export function registerCallIpc(getDataDir: () => string): void {
   void app.whenReady().then(registerDisplayMedia)
 
   // Linux: som da transmissão pelo PipeWire (ver linuxShareAudio.ts)
+  // a tela de Chamada se registra para receber o log; de volta, dados do ambiente para o começo do log
+  ipcMain.handle('call:log-target', (e) => {
+    logTarget = e.sender
+    return {
+      version: app.getVersion(),
+      platform: `${process.platform} ${process.arch}`,
+      session: process.env['XDG_SESSION_TYPE'] ?? '',
+      packaged: app.isPackaged ? (process.env['APPIMAGE'] ? 'AppImage' : 'instalado') : 'dev'
+    }
+  })
   ipcMain.handle('call:linux-audio-start', (_e, sourceId: string) =>
     process.platform === 'linux' ? startLinuxShareAudio(String(sourceId)) : { ok: false, error: 'só no Linux' }
   )
@@ -400,18 +538,27 @@ export function registerCallIpc(getDataDir: () => string): void {
     pendingCapture = pick
   })
 
-  ipcMain.handle('call:host-start', async (event, roomInfo: { id: string; name: string }): Promise<{ ok: true; port: number; code: string } | { ok: false; error: string }> => {
+  ipcMain.handle('call:host-start', async (event, roomInfo: { id: string; name: string }): Promise<{ ok: true; port: number; code: string; hostToken: string } | { ok: false; error: string }> => {
     const sender: WebContents = event.sender
+    logTarget = sender
     try {
       stopCallHost()
-      const bin = findCloudflared(getDataDir()) ?? (await downloadCloudflared(getDataDir()))
+      let bin = findCloudflared(getDataDir())
+      if (!bin) {
+        mainLog('warn', '[túnel] cloudflared não encontrado: baixando')
+        bin = await downloadCloudflared(getDataDir())
+      }
       const port = await startSignaling({ id: String(roomInfo?.id ?? ''), name: String(roomInfo?.name ?? '').slice(0, 80) })
+      mainLog('info', `[servidor da sala] ouvindo em 127.0.0.1:${port}`)
+      const started = Date.now()
       const code = await startTunnel(bin, port, () => {
         if (!sender.isDestroyed()) sender.send('call:tunnel-down')
       })
-      return { ok: true, port, code }
+      mainLog('info', `[túnel] aberto em ${((Date.now() - started) / 1000).toFixed(1)} s: ${code}`)
+      return { ok: true, port, code, hostToken }
     } catch (e) {
       stopCallHost()
+      mainLog('error', `[túnel] falha ao criar a sala: ${e instanceof Error ? e.message : e}`)
       return { ok: false, error: e instanceof Error ? e.message : String(e) }
     }
   })
@@ -420,6 +567,67 @@ export function registerCallIpc(getDataDir: () => string): void {
   ipcMain.handle('call:host-ready', (_e, code: string) => waitTunnelReachable(code))
 
   ipcMain.handle('call:host-stop', () => stopCallHost())
+
+  /** O túnel caiu e quem hospeda continua na sala: abre outro túnel para o mesmo servidor (código novo). */
+  ipcMain.handle('call:tunnel-restart', async (event): Promise<{ ok: true; code: string } | { ok: false; error: string }> => {
+    const sender: WebContents = event.sender
+    if (!wss || !signalPort) return { ok: false, error: 'a sala não está sendo hospedada aqui' }
+    try {
+      stopTunnel()
+      const bin = findCloudflared(getDataDir()) ?? (await downloadCloudflared(getDataDir()))
+      const code = await startTunnel(bin, signalPort, () => {
+        if (!sender.isDestroyed()) sender.send('call:tunnel-down')
+      })
+      mainLog('info', `[túnel] reaberto: ${code}`)
+      return { ok: true, code }
+    } catch (e) {
+      mainLog('error', `[túnel] não deu para reabrir: ${e instanceof Error ? e.message : e}`)
+      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  // ---- ponto de encontro (ntfy.sh): ver callRendezvous.ts
+  ipcMain.handle('call:rv-announce', async (_e, roomId: string, a: Announcement) => {
+    if (!SAFE_ID.test(roomId)) return false
+    try {
+      await announce(roomId, { code: String(a.code), hostName: String(a.hostName ?? '').slice(0, 40), ts: Date.now(), closed: !!a.closed })
+      mainLog('info', `[ponto de encontro] ${a.closed ? 'sala marcada como fechada' : `código ${a.code} publicado`}`)
+      return true
+    } catch (e) {
+      mainLog('warn', `[ponto de encontro] não deu para publicar: ${e instanceof Error ? e.message : e}`)
+      return false
+    }
+  })
+
+  /** Quais salas do histórico estão no ar agora, e quem está em cada uma. */
+  ipcMain.handle('call:rv-status', async (_e, roomIds: string[]) => {
+    const ids = roomIds.filter((id) => SAFE_ID.test(id)).slice(0, 20)
+    try {
+      const all = await lookup(ids)
+      const out: Record<string, unknown> = {}
+      await Promise.all(ids.map(async (id) => (out[id] = await liveOf(id, all.get(id) ?? []))))
+      return out
+    } catch {
+      return null
+    }
+  })
+
+  /** Cópias desta sala no ar agora (da mais antiga para a mais nova). */
+  ipcMain.handle('call:rv-copies', async (_e, roomId: string) => {
+    if (!SAFE_ID.test(roomId)) return []
+    try {
+      return await liveCopies(roomId, (await lookup([roomId])).get(roomId) ?? [])
+    } catch (e) {
+      mainLog('warn', `[ponto de encontro] consulta falhou: ${e instanceof Error ? e.message : e}`)
+      return []
+    }
+  })
+
+  /** Prova de que já estive na sala com esta etiqueta (null = nunca estive). */
+  ipcMain.handle('call:room-proof', (_e, tag: string) => {
+    const id = roomByTag(callsDirOf(getDataDir()), String(tag))
+    return id ? proofFor(id) : null
+  })
 
   ipcMain.handle('call:sources', async () => {
     const sources = await desktopCapturer.getSources({

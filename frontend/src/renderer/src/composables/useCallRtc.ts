@@ -24,6 +24,30 @@ export interface CallPeer {
 export interface CallRoomInfo {
   id: string
   name: string
+  /** quem hospeda o servidor da sala agora (vazio = servidor antigo, sem essa informação) */
+  hostPeerId: string
+}
+
+/** Alguém pedindo para entrar na sala (aguardando alguém de dentro aceitar). */
+export interface CallKnock {
+  id: string
+  name: string
+}
+
+/** Opções da conexão com o servidor da sala. */
+export interface SignalOptions {
+  /** só quem hospeda: prova para o servidor que é o anfitrião */
+  hostToken?: string
+  /** etiqueta da sala → prova de que já estive nela (entra sem precisar ser aceito) */
+  getProof: (tag: string) => Promise<string | null>
+}
+
+/** A entrada foi recusada por alguém de dentro da sala. */
+export class JoinDeniedError extends Error {
+  constructor(by: string) {
+    super(`${by || 'Alguém da sala'} recusou sua entrada.`)
+    this.name = 'JoinDeniedError'
+  }
 }
 
 export interface FileMeta {
@@ -40,6 +64,10 @@ export interface IncomingFile extends FileMeta {
   failed?: boolean
 }
 
+export type CallLogLevel = 'info' | 'warn' | 'error'
+/** Registra um evento no log da sala (tela de Chamada → Logs). */
+export type CallLogFn = (level: CallLogLevel, msg: string) => void
+
 /** Mensagens do canal "call" que a camada de cima (store) trata: chat, edição, histórico... */
 export type AppMessage = { kind: string; [key: string]: unknown }
 
@@ -53,6 +81,10 @@ interface Handlers {
   onFile: (peerId: string, file: IncomingFile) => void
   /** o WebSocket de sinalização caiu (ex.: quem criou a sala saiu) */
   onSignalingClosed: () => void
+  /** entrei na fila: alguém de dentro precisa aceitar */
+  onWaiting: () => void
+  /** pedidos de entrada pendentes (para quem está dentro aceitar ou recusar) */
+  onKnocks: (knocks: CallKnock[]) => void
 }
 
 interface Link {
@@ -75,6 +107,12 @@ interface Link {
   screenGain: GainNode
   analyser: AnalyserNode
   output: HTMLAudioElement
+  /** limitador final: deixa passar volumes acima de 100% sem estourar (distorcer) */
+  limiter: DynamicsCompressorNode
+  /** ids das faixas de áudio recebidas que são som da tela (as outras são microfone) */
+  screenAudioTracks: Set<string>
+  /** já registrou no log por onde a conexão passou */
+  routeLogged: boolean
   /** <audio> mudos: no Chromium o áudio WebRTC só chega ao Web Audio se também estiver num elemento de mídia */
   primers: HTMLAudioElement[]
   volume: number
@@ -90,10 +128,12 @@ const ICE_SERVERS: RTCIceServer[] = [
   { urls: 'stun:stun.cloudflare.com:3478' }
 ]
 const OUTPUT_KEY = 'call.audioOutput'
+/** som da tela é música/vídeo: o padrão do WebRTC (~32 kbps, pensado para voz) fica abafado */
+const SCREEN_AUDIO_BITRATE = 128_000
 
 type SinkAudio = HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }
 
-export function useCallRtc() {
+export function useCallRtc(log: CallLogFn = () => {}) {
   const localPeerId = crypto.randomUUID()
   // rótulos fixos dos fluxos enviados: quem recebe distingue "áudio da tela" de "microfone"
   // por estar (ou não) no mesmo fluxo do vídeo, mesmo que a tela seja trocada depois
@@ -118,66 +158,163 @@ export function useCallRtc() {
     if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg))
   }
 
-  function connect(wsUrl: string, name: string, h: Handlers): Promise<void> {
+  let myName = 'Convidado'
+  let signalOpts: SignalOptions = { getProof: async () => null }
+  /** a entrada atual (resolve quando o servidor me aceita na sala) */
+  let pendingJoin: { resolve: () => void; reject: (e: Error) => void } | null = null
+
+  /** Primeira conexão com o servidor da sala. Resolve quando eu estiver dentro (aceito). */
+  function connect(wsUrl: string, name: string, h: Handlers, opts: SignalOptions): Promise<void> {
     handlers = h
+    myName = name
+    signalOpts = opts
+    return openSignaling(wsUrl)
+  }
+
+  /**
+   * Troca de servidor da sala sem derrubar ninguém: quem hospedava saiu (ou o túnel caiu) e outra
+   * pessoa abriu um servidor novo. As conexões P2P continuam; o servidor só serve para negociar.
+   */
+  function reconnect(wsUrl: string, opts: Partial<SignalOptions> = {}): Promise<void> {
+    signalOpts = { ...signalOpts, ...opts }
+    return openSignaling(wsUrl)
+  }
+
+  function openSignaling(wsUrl: string): Promise<void> {
     return new Promise((resolve, reject) => {
+      const old = ws
+      ws = null
+      if (old) {
+        old.onclose = null
+        old.close()
+      }
+      if (keepAlive) clearInterval(keepAlive)
+      keepAlive = null
       const socket = new WebSocket(wsUrl)
       let opened = false
+      let joined = false
+      let settled = false
+      const finish = (err?: Error): void => {
+        if (settled) return
+        settled = true
+        pendingJoin = null
+        if (err) reject(err)
+        else resolve()
+      }
+      pendingJoin = { resolve: () => finish(), reject: (e) => finish(e) }
+      log('info', `conectando ao servidor da sala (${wsUrl.startsWith('ws://127.0.0.1') ? 'local, sou quem hospeda' : wsUrl})`)
+
+      const sendJoin = async (tag: string): Promise<void> => {
+        if (joined || socket.readyState !== WebSocket.OPEN) return
+        joined = true
+        const proof = tag ? await signalOpts.getProof(tag).catch(() => null) : null
+        if (proof) log('info', 'já estive nesta sala: entrando sem precisar ser aceito')
+        socket.send(JSON.stringify({ type: 'join', peerId: localPeerId, name: myName, proof, hostToken: signalOpts.hostToken }))
+      }
+
       socket.onopen = () => {
         opened = true
         ws = socket
+        log('info', 'conectado ao servidor da sala')
         // keepalive: o Cloudflare fecha WebSocket parado
         keepAlive = setInterval(() => signal({ type: 'ping' }), 25000)
-        signal({ type: 'join', peerId: localPeerId, name })
-        resolve()
+        // servidor de versão antiga não manda "welcome": entra assim mesmo
+        setTimeout(() => void sendJoin(''), 1500)
       }
       socket.onmessage = (e) => {
+        let msg: Record<string, any>
         try {
-          void onSignal(JSON.parse(e.data))
+          msg = JSON.parse(e.data)
         } catch {
-          // mensagem inválida: ignora
+          return
         }
+        if (msg.type === 'welcome') return void sendJoin(typeof msg.tag === 'string' ? msg.tag : '')
+        if (msg.type === 'waiting') {
+          log('info', 'aguardando alguém da sala aceitar a minha entrada')
+          handlers?.onWaiting()
+          return
+        }
+        if (msg.type === 'denied') {
+          log('warn', `entrada recusada por ${msg.by || 'alguém da sala'}`)
+          return finish(new JoinDeniedError(String(msg.by ?? '')))
+        }
+        void onSignal(msg).catch((err) => log('error', `mensagem do servidor da sala falhou: ${errText(err)}`))
+        if (msg.type === 'peers') finish()
       }
-      socket.onclose = () => {
-        if (keepAlive) clearInterval(keepAlive)
-        keepAlive = null
-        if (!opened) return reject(new Error('Não foi possível conectar à sala. Confira o código.'))
+      socket.onclose = (e) => {
+        if (ws === socket || !opened) {
+          if (keepAlive) clearInterval(keepAlive)
+          keepAlive = null
+        }
+        if (!settled) {
+          log('warn', `não entrou pelo servidor da sala (conexão fechada, código ${e.code})`)
+          return finish(new Error('Não foi possível conectar à sala. Confira o código.'))
+        }
         if (ws === socket) {
           ws = null
+          log('warn', `conexão com o servidor da sala caiu (código ${e.code}): quem já está na chamada continua`)
           handlers?.onSignalingClosed()
         }
       }
     })
   }
 
+  /** Aceita ou recusa o pedido de entrada de alguém. */
+  function answerKnock(peerId: string, accept: boolean): void {
+    signal({ type: 'admit', peerId, accept })
+  }
+
+  const signalingOpen = (): boolean => ws?.readyState === WebSocket.OPEN
+
   async function onSignal(msg: Record<string, any>): Promise<void> {
     switch (msg.type) {
       case 'peers':
         if (msg.room && typeof msg.room.id === 'string') {
-          handlers?.onRoom({ id: msg.room.id, name: String(msg.room.name ?? '') })
+          handlers?.onRoom({ id: msg.room.id, name: String(msg.room.name ?? ''), hostPeerId: String(msg.hostPeerId ?? '') })
         }
+        log('info', `no servidor da sala estavam: ${(msg.peers as { name: string }[]).map((p) => p.name).join(', ') || 'ninguém'}`)
         // quem entra é quem chama: abre uma conexão com cada um que já estava na sala
+        // (com quem eu já tenho conexão, ela continua: aconteceu só uma troca de servidor)
         for (const p of msg.peers as { id: string; name: string }[]) {
+          if (links.has(p.id)) continue
           addPeer(p.id, p.name)
           const link = createLink(p.id)
           attachDataChannel(p.id, link, link.pc.createDataChannel('call', { ordered: true }))
         }
         break
       case 'peer-joined':
+        log('info', `${msg.peer?.name} entrou na sala`)
         addPeer(msg.peer.id, msg.peer.name)
         break
-      case 'peer-left':
+      case 'peer-left': {
+        // saiu do servidor, mas a conexão direta ainda está de pé (ex.: o túnel caiu): continua na chamada
+        const link = links.get(msg.peerId)
+        if (link && link.pc.connectionState === 'connected' && link.dc?.readyState === 'open') {
+          log('info', `${nameOf(msg.peerId)} desconectou do servidor da sala, mas segue na chamada (conexão direta ativa)`)
+          break
+        }
+        log('info', `${nameOf(msg.peerId)} saiu da sala`)
         dropPeer(msg.peerId)
+        break
+      }
+      case 'knocks':
+        handlers?.onKnocks(Array.isArray(msg.knocks) ? msg.knocks.map((k: CallKnock) => ({ id: String(k.id), name: String(k.name).slice(0, 40) })) : [])
         break
       case 'sdp': {
         const link = links.get(msg.from) ?? createLink(msg.from)
         const desc = msg.sdp as RTCSessionDescriptionInit
         const readyForOffer = !link.makingOffer && (link.pc.signalingState === 'stable' || link.settingRemoteAnswer)
         link.ignoreOffer = !link.polite && desc.type === 'offer' && !readyForOffer
-        if (link.ignoreOffer) return
+        if (link.ignoreOffer) {
+          log('info', `negociação com ${nameOf(msg.from)}: oferta ignorada (colisão; a minha vale)`)
+          return
+        }
         link.settingRemoteAnswer = desc.type === 'answer'
         try {
           await link.pc.setRemoteDescription(desc)
+        } catch (e) {
+          log('error', `negociação com ${nameOf(msg.from)}: falha ao aplicar ${desc.type}: ${errText(e)}`)
+          throw e
         } finally {
           link.settingRemoteAnswer = false
         }
@@ -193,7 +330,7 @@ export function useCallRtc() {
         try {
           await link.pc.addIceCandidate(msg.candidate)
         } catch (e) {
-          if (!link.ignoreOffer) console.warn('[call] candidato ICE recusado:', e)
+          if (!link.ignoreOffer) log('warn', `candidato de rede de ${nameOf(msg.from)} recusado: ${errText(e)}`)
         }
         break
       }
@@ -201,6 +338,14 @@ export function useCallRtc() {
   }
 
   // ---------------------------------------------------------------- participantes
+
+  function nameOf(id: string): string {
+    return peers.find((p) => p.id === id)?.name ?? 'participante'
+  }
+
+  function errText(e: unknown): string {
+    return e instanceof Error ? e.message : String(e)
+  }
 
   function emitPeers(): void {
     handlers?.onPeers(peers.map((p) => ({ ...p })))
@@ -245,10 +390,17 @@ export function useCallRtc() {
     const analyser = ctx.createAnalyser()
     analyser.fftSize = 64
     analyser.smoothingTimeConstant = 0.7
+    const limiter = ctx.createDynamicsCompressor()
+    limiter.threshold.value = -3
+    limiter.knee.value = 0
+    limiter.ratio.value = 20
+    limiter.attack.value = 0.002
+    limiter.release.value = 0.2
     const destination = ctx.createMediaStreamDestination()
     analyser.connect(gain)
-    gain.connect(destination)
-    screenGain.connect(destination)
+    gain.connect(limiter)
+    screenGain.connect(limiter)
+    limiter.connect(destination)
     // sai por um <audio> para permitir escolher o dispositivo de saída (setSinkId)
     const output = hiddenAudio(destination.stream, false)
     if (outputDeviceId) void (output as SinkAudio).setSinkId?.(outputDeviceId).catch(() => {})
@@ -270,6 +422,9 @@ export function useCallRtc() {
       gain,
       screenGain,
       analyser,
+      limiter,
+      screenAudioTracks: new Set(),
+      routeLogged: false,
       output,
       primers: [],
       volume: 1,
@@ -286,7 +441,7 @@ export function useCallRtc() {
         await pc.setLocalDescription()
         signal({ type: 'sdp', to: peerId, sdp: pc.localDescription })
       } catch (e) {
-        console.warn('[call] falha ao negociar:', e)
+        log('error', `negociação com ${nameOf(peerId)}: falha ao criar oferta: ${errText(e)}`)
       } finally {
         link.makingOffer = false
       }
@@ -302,11 +457,24 @@ export function useCallRtc() {
       if (e.channel.label === 'file') receiveFile(peerId, e.channel)
       else attachDataChannel(peerId, link, e.channel)
     }
+    pc.oniceconnectionstatechange = () => {
+      log(pc.iceConnectionState === 'failed' ? 'error' : 'info', `rede com ${nameOf(peerId)}: ICE ${pc.iceConnectionState}`)
+    }
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === 'failed' || pc.connectionState === 'closed') dropPeer(peerId)
+      const state = pc.connectionState
+      log(state === 'failed' ? 'error' : state === 'disconnected' ? 'warn' : 'info', `conexão com ${nameOf(peerId)}: ${state}`)
+      if (state === 'failed') {
+        log('error', `não deu para ligar direto com ${nameOf(peerId)} (sem servidor TURN, algumas redes bloqueiam a conexão P2P)`)
+      }
+      if (state === 'connected' && !link.routeLogged) {
+        link.routeLogged = true
+        void logRoute(peerId, link)
+      }
+      if (state === 'failed' || state === 'closed') dropPeer(peerId)
     }
     pc.ontrack = (e) => {
       if (e.track.kind === 'video') {
+        log('info', `recebendo faixa de vídeo da tela de ${nameOf(peerId)}`)
         link.screenStream = new MediaStream([e.track])
         emitPeers()
         return
@@ -315,6 +483,8 @@ export function useCallRtc() {
       link.primers.push(hiddenAudio(single, true))
       // mesmo fluxo do vídeo = áudio da tela; senão é o microfone
       const isScreenAudio = (e.streams[0]?.getVideoTracks().length ?? 0) > 0
+      if (isScreenAudio) link.screenAudioTracks.add(e.track.id)
+      log('info', `recebendo faixa de áudio ${isScreenAudio ? 'da tela' : 'do microfone'} de ${nameOf(peerId)}`)
       ctx.createMediaStreamSource(single).connect(isScreenAudio ? screenGain : analyser)
     }
     return link
@@ -334,12 +504,16 @@ export function useCallRtc() {
   function attachDataChannel(peerId: string, link: Link, dc: RTCDataChannel): void {
     link.dc = dc
     dc.onopen = () => {
+      log('info', `canal de mensagens com ${nameOf(peerId)} aberto`)
       sendData(dc, { kind: 'state', ...localState })
       // estava assistindo esta pessoa antes de a conexão abrir (ex.: reconexão): avisa de novo
       if (watchingPeerId === peerId) sendData(dc, { kind: 'watch', on: true })
       handlers?.onPeerReady(peerId)
     }
-    dc.onclose = () => dropPeer(peerId)
+    dc.onclose = () => {
+      if (links.get(peerId) === link) log('warn', `canal de mensagens com ${nameOf(peerId)} fechou`)
+      dropPeer(peerId)
+    }
     dc.onmessage = (e) => {
       let msg: AppMessage
       try {
@@ -351,11 +525,14 @@ export function useCallRtc() {
       if (msg.kind === 'state') {
         const peer = peers.find((p) => p.id === peerId)
         if (!peer) return
+        if (peer.sharing !== !!msg.sharing) log('info', `${peer.name} ${msg.sharing ? 'começou' : 'parou'} a transmitir a tela`)
+        if (peer.muted !== !!msg.muted) log('info', `${peer.name} ${msg.muted ? 'mutou' : 'desmutou'} o microfone`)
         peer.sharing = !!msg.sharing
         peer.muted = !!msg.muted
         if (!peer.sharing && watchingPeerId === peerId) setWatching(null)
         emitPeers()
       } else if (msg.kind === 'watch') {
+        if (link.watchingMe !== !!msg.on) log('info', `${nameOf(peerId)} ${msg.on ? 'abriu' : 'fechou'} a minha transmissão`)
         link.watchingMe = !!msg.on
         void gateScreen(link)
       } else {
@@ -401,12 +578,16 @@ export function useCallRtc() {
       const params = sender.getParameters()
       if (!params.encodings?.length) continue // ainda não negociado: aplica quando ficar "stable"
       const active = link.watchingMe
-      if (params.encodings.every((enc) => enc.active === active)) continue
-      params.encodings.forEach((enc) => (enc.active = active))
+      const bitrate = sender === link.screenAudioSender ? SCREEN_AUDIO_BITRATE : undefined
+      if (params.encodings.every((enc) => enc.active === active && (!bitrate || enc.maxBitrate === bitrate))) continue
+      params.encodings.forEach((enc) => {
+        enc.active = active
+        if (bitrate) enc.maxBitrate = bitrate
+      })
       try {
         await sender.setParameters(params)
       } catch (e) {
-        console.warn('[call] falha ao ligar/desligar o envio da tela:', e)
+        log('error', `falha ao ${active ? 'ligar' : 'desligar'} o envio da tela: ${errText(e)}`)
       }
     }
   }
@@ -445,7 +626,12 @@ export function useCallRtc() {
       const dc = link.pc.createDataChannel('file', { ordered: true })
       dc.binaryType = 'arraybuffer'
       dc.bufferedAmountLowThreshold = 1024 * 1024
+      const to = [...links].find(([, l]) => l === link)?.[0] ?? ''
+      dc.onclose = () => {
+        if (dc.bufferedAmount > 0) log('warn', `envio de "${meta.name}" para ${nameOf(to)} interrompido`)
+      }
       dc.onopen = async () => {
+        log('info', `enviando "${meta.name}" (${fmtBytes(blob.size)}) para ${nameOf(to)}`)
         try {
           dc.send(JSON.stringify(meta))
           for (let offset = 0; offset < blob.size; offset += FILE_CHUNK) {
@@ -458,7 +644,8 @@ export function useCallRtc() {
             opts.onProgress?.(best)
           }
           // quem recebe fecha o canal ao terminar
-        } catch {
+        } catch (e) {
+          log('error', `falha ao enviar "${meta.name}" para ${nameOf(to)}: ${errText(e)}`)
           dc.close()
         }
       }
@@ -483,6 +670,7 @@ export function useCallRtc() {
         } catch {
           return dc.close()
         }
+        log('info', `recebendo "${meta.name}" (${fmtBytes(meta.size)}) de ${nameOf(peerId)}`)
         report()
         if (meta.size === 0) finish()
         return
@@ -498,14 +686,118 @@ export function useCallRtc() {
       }
     }
     dc.onclose = () => {
-      if (meta && done < meta.size) report({ failed: true })
+      if (meta && done < meta.size) {
+        log('error', `recebimento de "${meta.name}" de ${nameOf(peerId)} interrompido em ${fmtBytes(done)} de ${fmtBytes(meta.size)}`)
+        report({ failed: true })
+      }
     }
     function finish(): void {
       if (!meta) return
+      log('info', `"${meta.name}" recebido de ${nameOf(peerId)}`)
       report({ blob: new Blob(chunks, { type: meta.type || 'application/octet-stream' }) })
       chunks.length = 0
       dc.close()
     }
+  }
+
+  // ---------------------------------------------------------------- diagnóstico (log)
+
+  function fmtBytes(n: number): string {
+    return n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`
+  }
+
+  type Report = Record<string, any>
+
+  /** Por onde a conexão passou: direto na rede local, direto pela internet (STUN) ou por relay. */
+  async function logRoute(peerId: string, link: Link): Promise<void> {
+    try {
+      const stats = await link.pc.getStats()
+      const all = new Map<string, Report>()
+      stats.forEach((r: Report) => all.set(r.id, r))
+      let pair: Report | undefined
+      for (const r of all.values()) {
+        if (r.type === 'transport' && r.selectedCandidatePairId) pair = all.get(r.selectedCandidatePairId)
+      }
+      pair ??= [...all.values()].find((r) => r.type === 'candidate-pair' && r.nominated && r.state === 'succeeded')
+      if (!pair) return
+      const local = all.get(pair.localCandidateId)
+      const remote = all.get(pair.remoteCandidateId)
+      const kind = (c?: Report): string =>
+        ({ host: 'rede local', srflx: 'internet (STUN)', prflx: 'internet', relay: 'relay' })[c?.candidateType as string] ?? '?'
+      log(
+        'info',
+        `rota com ${nameOf(peerId)}: eu ${kind(local)} ↔ ${kind(remote)}, ${local?.protocol ?? '?'}` +
+          (pair.currentRoundTripTime ? `, latência ${Math.round(pair.currentRoundTripTime * 1000)} ms` : '')
+      )
+    } catch {
+      // sem estatísticas: segue sem esse detalhe
+    }
+  }
+
+  const lastBytes = new Map<string, { t: number; bytes: number }>()
+
+  function kbps(key: string, t: number, bytes: number): number | null {
+    const prev = lastBytes.get(key)
+    lastBytes.set(key, { t, bytes })
+    if (!prev || t <= prev.t) return null
+    return Math.round(((bytes - prev.bytes) * 8) / (t - prev.t)) // t em ms → kbit/s
+  }
+
+  const dbfs = (level?: number): string => (level && level > 0 ? `${Math.round(20 * Math.log10(level))} dBFS` : 'silêncio')
+
+  /**
+   * Resumo de cada conexão para o log: o que chega e o que sai (taxa, perda, nível do som). O nível
+   * mostra se um áudio chega baixo porque já saiu baixo de quem envia ou se é coisa de quem ouve.
+   */
+  async function statsSummary(): Promise<string[]> {
+    const lines: string[] = []
+    for (const [peerId, link] of links) {
+      try {
+        const stats = await link.pc.getStats()
+        const parts: string[] = []
+        let rtt: number | undefined
+        stats.forEach((r: Report) => {
+          if (r.type === 'candidate-pair' && r.nominated && r.currentRoundTripTime) rtt = r.currentRoundTripTime
+          if (r.type === 'inbound-rtp') {
+            const what =
+              r.kind === 'video' ? 'vídeo da tela' : link.screenAudioTracks.has(r.trackIdentifier) ? 'som da tela' : 'voz'
+            const rate = kbps(`${peerId}:in:${r.id}`, r.timestamp, r.bytesReceived ?? 0)
+            if (!rate && r.kind === 'video') return
+            let line = `recebe ${what}: ${rate ?? '?'} kbps`
+            if (r.packetsLost) line += `, ${r.packetsLost} pacotes perdidos`
+            if (r.kind === 'audio') line += `, nível ${dbfs(r.audioLevel)}`
+            if (r.kind === 'video' && r.frameWidth) line += `, ${r.frameWidth}x${r.frameHeight} ${Math.round(r.framesPerSecond ?? 0)} fps`
+            parts.push(line)
+          }
+          if (r.type === 'outbound-rtp') {
+            const rate = kbps(`${peerId}:out:${r.id}`, r.timestamp, r.bytesSent ?? 0)
+            if (!rate) return
+            const what =
+              r.kind === 'video'
+                ? 'vídeo da tela'
+                : link.screenAudioSender && r.mediaSourceId && isScreenSource(stats, r.mediaSourceId)
+                  ? 'som da tela'
+                  : 'voz'
+            parts.push(`envia ${what}: ${rate} kbps`)
+          }
+          if (r.type === 'media-source' && r.kind === 'audio' && r.audioLevel !== undefined) {
+            const screen = screenStream?.getAudioTracks()[0]?.id === r.trackIdentifier
+            parts.push(`${screen ? 'som da tela' : 'meu microfone'} na saída daqui: nível ${dbfs(r.audioLevel)}`)
+          }
+        })
+        lines.push(
+          `${nameOf(peerId)} (${link.pc.connectionState}${rtt ? `, latência ${Math.round(rtt * 1000)} ms` : ''}): ${parts.join(' | ') || 'sem mídia'}`
+        )
+      } catch (e) {
+        lines.push(`${nameOf(peerId)}: sem estatísticas (${errText(e)})`)
+      }
+    }
+    return lines
+  }
+
+  function isScreenSource(stats: RTCStatsReport, id: string): boolean {
+    const src = stats.get(id) as Report | undefined
+    return !!src && screenStream?.getAudioTracks()[0]?.id === src.trackIdentifier
   }
 
   // ---------------------------------------------------------------- áudio e vídeo recebidos
@@ -571,7 +863,9 @@ export function useCallRtc() {
     keepAlive = null
     const socket = ws
     ws = null
+    if (socket) socket.onclose = null
     socket?.close()
+    pendingJoin?.reject(new Error('cancelado'))
     for (const id of [...links.keys()]) dropPeer(id)
     peers = []
     micTrack = null
@@ -583,6 +877,10 @@ export function useCallRtc() {
   return {
     localPeerId,
     connect,
+    reconnect,
+    answerKnock,
+    signalingOpen,
+    connectedPeerIds: () => [...links].filter(([, l]) => l.pc.connectionState === 'connected').map(([id]) => id),
     disconnect,
     send,
     broadcast,
@@ -597,6 +895,7 @@ export function useCallRtc() {
     getPeerScreen,
     getPeerAnalyser,
     setOutputDevice,
-    getOutputDevice
+    getOutputDevice,
+    statsSummary
   }
 }

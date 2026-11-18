@@ -2,9 +2,9 @@
 
 [Português](README.md) | [English](README.en.md)
 
-A desktop voice assistant: it transcribes what you say, chats with an AI (by text or voice), shows images and videos in the answers and translates text, with most of it running on your own computer.
+A desktop voice assistant: it transcribes what you say, chats with an AI (by text or voice), shows images and videos in the answers, translates text and whole documents (PDF, Word, PowerPoint...) keeping their layout, and makes voice calls with screen sharing directly between participants. Most of it runs on your own computer.
 
-**Stack:** Electron + Vue 3 · FastAPI (Python) · Whisper (faster-whisper) · Claude · Edge TTS / ElevenLabs · Argos Translate
+**Stack:** Electron + Vue 3 · FastAPI (Python) · Whisper (faster-whisper) · Claude · Edge TTS / ElevenLabs · Argos Translate · PyMuPDF · WebRTC + Cloudflare Tunnel
 
 > The GIFs below were recorded with fictitious data. The app interface is in Portuguese (pt-BR).
 
@@ -17,7 +17,8 @@ A desktop voice assistant: it transcribes what you say, chats with an AI (by tex
 | Microphone Transcription | Hold the hotkey, speak, release: the text is transcribed by local Whisper and copied to the clipboard |
 | Transcribe File | Pick or drag an audio or video file and get the full transcription |
 | AI Chat | Chat with Claude by text or voice, with spoken answers, images, videos and attachments |
-| Translate | Offline translation between dozens of languages |
+| Translate | Offline translation of text and files (PDF, DOCX, PPTX, XLSX, TXT, MD, SRT), keeping the original layout |
+| Call | Voice rooms with screen sharing (with sound), chat and file transfer, all directly between participants (P2P) |
 | Logs | History of every transcription, with model, device and speed |
 | Settings | Hotkeys, Whisper models, voice, Claude, images and storage |
 
@@ -90,17 +91,113 @@ A desktop voice assistant: it transcribes what you say, chats with an AI (by tex
 
 ---
 
+## File translation
+
+In **Translate → Files**, drag one or more files (or click to pick). Each one is translated on your computer, offline, with the same language packages used for text translation. The queue shows progress (page by page for PDFs).
+
+| Format | How it is translated | Result |
+|--------|----------------------|--------|
+| **PDF** | the text is rewritten on top of the original page (details below) | very close to the original |
+| **Word (DOCX)** | only the text is replaced inside the file: paragraphs, tables, headers, footers, notes, text boxes and charts | practically identical |
+| **PowerPoint (PPTX)** | slides, notes, SmartArt and charts | practically identical |
+| **Excel (XLSX)** | text cells (formulas and numbers stay as they are) | identical |
+| **TXT, Markdown, SRT** | paragraph by paragraph; in Markdown, headings, lists and tables keep their markup and code blocks are not translated; in subtitles, numbers and timings are kept | identical |
+
+### How PDFs keep their layout
+
+A PDF does not store paragraphs, only pieces of text at fixed positions on the page. For each page, the app:
+
+1. **reads the text blocks** with position, font, size, color, bold and italic, and joins lines into paragraphs (respecting lists, numbering, columns and table cells);
+2. **translates each whole paragraph** (the model does much better with full sentences than with loose lines). Numbering ("1.", "a)") and list bullets stay out of the translation, and highlighted labels at the start of a paragraph ("**Note:**") are translated separately to keep their styling;
+3. **removes only the original text** from the page: images, lines, backgrounds and drawn tables stay;
+4. **writes the translation in the same box**, with the same size, color, alignment and line height. If the translated text is longer (English to Portuguese usually grows 15 to 30%), it uses the free space beside and below it and, if it still does not fit, the font shrinks a little.
+
+The font is picked in this order: **the font embedded in the PDF** (when it has every letter of the translation; PDFs usually carry only the letters used in the original, so an English document lacks "ç", "ã", "é"...); then **the same font installed on the computer** or a metric-compatible one (Arial ↔ Liberation Sans, Times ↔ Liberation Serif, Calibri ↔ Carlito...); finally a similar font (serif, sans-serif or monospace).
+
+### Preview, theme and save
+
+Each translated PDF has three actions:
+
+- **Light | Dark**: the file theme. Dark turns the background dark and the text light **while keeping the colors** (a blue heading stays blue, just lighter); photos and images stay as in the original and the text remains selectable. It is generated on demand, after the translation, and applies to preview and save.
+- **Preview**: opens the original and the translation side by side (or one at a time). It opens with the whole page on screen and has zoom (buttons, `Ctrl` + mouse wheel, `+`/`-`), rotate (`R`), drag to pan, theme toggle (`T`), arrows or a page list with search by number, and a **Save** button. Pages are rendered at your screen's resolution; a light version shows first and the sharp one right after, and the next page is prepared in the background.
+- **Save**: pick a folder and save the file in the chosen theme.
+
+Files stay in a temporary app folder until you save them; the item's **X** deletes that copy (what you saved stays). The space used shows in **Settings → Storage**.
+
+**Limitations:** scanned PDFs (photos of pages) and text inside images are not translated; within a paragraph the main style wins (a bold word in the middle of a sentence loses its bold); the dark theme is PDF only. Quality is that of Argos Translate: for Brazilian Portuguese, install the **English → Portuguese (Brazil)** pair.
+
+---
+
+## Call
+
+Voice rooms to talk, watch someone's screen and exchange messages and files, **with no server of your own, no account and no router ports to open**.
+
+**What a room has:**
+
+- **Voice** with microphone and output device selection, a speaking indicator and, by right-clicking a person, individual volume (0 to 400%, with finer control at low volumes) and "mute for me".
+- **Screen sharing** (whole screen or one window) from 480p to 4K, with adjustable frame rate and **computer sound**. More than one person can share at once; viewers can enlarge, zoom, pan, go fullscreen or minimize it to a corner.
+- **Chat** with edit and delete for everyone, and **files up to 500 MB** (images and videos with preview; paste or drag them in).
+- **History kept on your computer**: newcomers receive the last 500 messages from whoever is already in the room, and an old file can be requested from anyone who has a copy.
+- **Live previous rooms**: the list shows which rooms are open right now and who is in them. **Reopen** joins the room that is already open (instead of everyone opening their own); if nobody has it open, you become the host.
+- **Admission control**: first-time visitors wait until someone inside clicks **Accept** (or **Decline**, and they see a notice). People who were in the room before get in directly.
+- **Room logs** (**Logs** button): everything that happens in the call (connections, network route, microphone, sharing, volumes, files, errors), yours and the other participants' together, with filters and a **Copy** button. Every 30 s a summary of the connections is added (bitrate, packet loss and sound level).
+
+### How the network works
+
+```
+  Room creator                                            Guests
+┌──────────────────────┐                              ┌───────────────┐
+│ Signaling server     │◄── Cloudflare tunnel ───────►│ join with the │
+│ (local)              │    (room code =              │ code          │
+└──────────────────────┘     tunnel address)          └───────────────┘
+          ▲   only the "handshake" (SDP / ICE) goes through here
+          ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│ WebRTC mesh: each participant connects DIRECTLY to each of the        │
+│ others. Voice, screen, chat and files go person to person,            │
+│ encrypted (DTLS-SRTP), without going through any server.              │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+1. **Creating a room:** the app starts a minimal signaling server (a WebSocket bound to `127.0.0.1` only) and opens a **Cloudflare quick tunnel** (`cloudflared`, downloaded during setup) that gives it a temporary public address. The tunnel's random name (e.g. `calm-river-paper-moon`) is the **room code**. The code only shows up once the address already works from outside (the app waits for the name to exist on Cloudflare's DNS servers).
+2. **Joining:** the guest types the code and connects to the signaling server through the tunnel. Only WebRTC negotiation messages (SDP and ICE candidates) pass through it, **never audio, video, chat or files**.
+3. **Direct connection:** using public STUN servers (Google and Cloudflare), each participant discovers its public address and WebRTC opens a **peer-to-peer** connection to each of the others (a mesh). Each connection carries the microphone, the screen video and sound, and data channels for chat and files (in 64 KB chunks).
+4. **Saving bandwidth:** a screen is only sent to those watching it; the tracks are negotiated but paused until the person opens the stream. Renegotiation follows the *perfect negotiation* pattern (two participants can start sharing at the same time without deadlocking).
+5. **Rendezvous (ntfy.sh):** the code changes every time the room is opened, so the host publishes "the room is at code X" on an [ntfy.sh](https://ntfy.sh) topic. The topic name is a hash of the room id (known only to people who were in the room) and the content is **encrypted** (AES-256-GCM, key derived from the room id): ntfy.sh only sees bytes, and keeps only that (for 12 h). Who is in the room, seen from outside, comes from the room's own server.
+6. **Admission:** the room server sends a room tag; people who were in the room before answer with a proof (derived from the room id) and get in directly. Anyone without it waits until someone inside accepts.
+7. **If the host leaves** (or the tunnel drops), the call goes on (the connection is direct) and the room reopens by itself: if the host is still in the call, they open a new tunnel; otherwise whoever stayed with the lowest id starts a new server. The new code goes to the others over the direct channel and to the rendezvous.
+
+**Shared sound:** on Windows it is the whole computer's sound, except Voice AI itself (so nobody hears their own voice back). On Linux, the app creates a virtual microphone in PipeWire (`VoiceAI-Transmissao`, via `pw-cli`) and routes into it the sound of every program (whole screen) or only of the chosen window's program (X11). Before sending, an **automatic gain** raises the sound to a good level (never lowers it) with a limiter against distortion: even if the sharer listens quietly, it arrives full and viewers adjust the volume on their side. Shared sound goes up to 128 kbps.
+
+**Limits:** since it is a mesh, each person sends their voice (and their screen, to those watching) to each of the others, so it works best for small groups. There is no TURN relay server: on very restrictive networks (some corporate networks, or symmetric NAT on both sides) a direct connection may not be possible.
+
+---
+
 ## Installation
+
+Download the latest version from [Releases](https://github.com/alanazeredoguedes/voice-ai/releases): the `.exe` for Windows or the `.AppImage` for Linux.
 
 ### Windows (installer)
 
 1. Run `Voice AI Setup x.y.z.exe` (about 180 MB).
-2. On first launch, a setup screen downloads what is missing, with progress:
-   - translation engine (~170 MB);
+2. On first launch, a setup screen asks for confirmation and downloads what is missing, with progress:
+   - translation engine and file translation components (PyMuPDF, lxml);
    - Whisper tiny model (~75 MB);
+   - `cloudflared`, used to create rooms in the Call tab (~40 MB);
    - optional: CUDA libraries to use an NVIDIA GPU (~1.3 GB);
    - optional: Claude Code, required for the AI Chat.
 3. Done. Your data lives in `%APPDATA%\voice-ai`.
+
+### Linux (AppImage)
+
+```bash
+chmod +x Voice.AI-x.y.z.AppImage
+./Voice.AI-x.y.z.AppImage
+```
+
+On first launch, the same setup screen downloads the Python components (on Linux they are not inside the AppImage, so the download is bigger) and the rest of the list above. Your data lives in `~/.config/voice-ai`.
+
+**Settings → General** lets you **start with the system** (Windows and Linux). When a new app version needs new components, it asks to update on launch and downloads only what is missing.
 
 Larger Whisper models and translation languages are downloaded later, inside the app, whenever you want.
 
@@ -133,6 +230,8 @@ dev.bat         # Windows (or dev.ps1)
 
 Or manually, in two terminals: `python -m backend.main` (from the repo root, venv active) and `npm run dev` (inside `frontend`).
 
+Development mode is **isolated from the installed app**: it uses port `18451` (the installed app uses `18450`) and its own folders (`~/.config/voice-ai-dev` for Electron and `~/.local/share/voice-ai` for the backend, with separate Whisper models and translation packages). Both can run at the same time, and deleting one does not affect the other. The backend does not auto-reload: after changing Python code, run `dev.sh` again.
+
 ### Build the installer
 
 ```powershell
@@ -140,7 +239,7 @@ Or manually, in two terminals: `python -m backend.main` (from the repo root, ven
 ./build.sh      # Linux: AppImage
 ```
 
-The Windows installer ships Python and the core libraries inside it. The heavy parts (PyTorch/translation engine, Whisper model, CUDA) are downloaded on first run to keep the installer small.
+The Windows installer ships Python and the core libraries inside it. The heavy parts (PyTorch/translation engine, file translation, Whisper model, CUDA, cloudflared) are downloaded on first run to keep the installer small. The AppImage ships Python; the libraries are downloaded on first run.
 
 ---
 
@@ -151,6 +250,7 @@ The Windows installer ships Python and the core libraries inside it. The heavy p
 │                 Electron (frontend)              │
 │   Vue 3 + Pinia + Tailwind CSS                   │
 │   WebSocket (port 18450) ←→ HTTP REST            │
+│   Call: WebRTC (P2P) + signaling/tunnel          │
 └──────────────────┬──────────────────────────────┘
                    │
 ┌──────────────────▼──────────────────────────────┐
@@ -164,6 +264,9 @@ The Windows installer ships Python and the core libraries inside it. The heavy p
 │        │         MediaSearch + MediaJudge        │
 │        └──► TextToSpeech (Edge / ElevenLabs)     │
 │                                                  │
+│  Translation: Argos (text) + PyMuPDF / lxml      │
+│               (PDF, Word, PowerPoint, Excel)     │
+│                                                  │
 │            SQLite  (chats, logs)                 │
 └─────────────────────────────────────────────────┘
 ```
@@ -174,6 +277,10 @@ The Windows installer ships Python and the core libraries inside it. The heavy p
 
 **Images and videos:** when you ask for them, or when they help the explanation, the AI marks in its answer what it wants to show. The app searches (DuckDuckGo, no key, or Google Images through Serper, with a key), shows a preview, and a Haiku model checks each result and writes the caption.
 
+**File translation:** the file goes into a backend queue (one translation at a time, on the GPU if available); progress arrives over the WebSocket. See [File translation](#file-translation).
+
+**Call:** the networking lives in Electron (signaling server and tunnel in the main process, WebRTC in the UI); the backend is not involved. See [Call](#call).
+
 ---
 
 ## Hotkeys
@@ -182,7 +289,7 @@ The Windows installer ships Python and the core libraries inside it. The heavy p
 |--------|---------|----------|
 | Transcribe | `Ctrl + T` (hold) | Records while pressed, release to transcribe |
 | Talk to the AI | `Ctrl + I` (hold) | Same, but the question goes to the chat |
-| Show/hide Voice AI | `Ctrl + Alt + F12` | Brings the app to the front, even over borderless fullscreen games |
+| Show/hide Voice AI | `Ctrl + Alt + F12` | Brings the app to the front, even over borderless fullscreen games ("always on top" option next to the hotkey) |
 | Cancel | two quick presses of the hotkey | Cancels the recording or stops the AI answer |
 
 Hotkeys can be keys, mouse buttons or combinations, and each action accepts more than one. Set them in **Settings → Hotkeys → Capture**.
@@ -191,7 +298,7 @@ Hotkeys can be keys, mouse buttons or combinations, and each action accepts more
 
 ## Main settings
 
-Settings live in `settings.json` inside the data folder (`%APPDATA%\voice-ai` on Windows, `~/.local/share/voice-ai` in development on Linux). Almost everything is adjustable from the Settings screen.
+Settings live in `settings.json` inside the data folder (`%APPDATA%\voice-ai` on Windows, `~/.config/voice-ai` for the AppImage, `~/.local/share/voice-ai` in development). Almost everything is adjustable from the Settings screen.
 
 | Key | Default | Description |
 |-----|---------|-------------|
@@ -203,7 +310,8 @@ Settings live in `settings.json` inside the data folder (`%APPDATA%\voice-ai` on
 | `whisper_vad` | `false` | Skip silences |
 | `tts_backend` | `edge` | `edge` (free) or `elevenlabs` (paid) |
 | `edge_voice` | `pt-BR-AntonioNeural` | Edge TTS voice |
-| `claude_model` | `haiku` | Claude model in the chat: `haiku`, `sonnet` or `opus` |
+| `claude_model` | `sonnet` | Claude model in the chat: `haiku`, `sonnet` or `opus` |
+| `window_keep_on_top` | `false` | The show hotkey keeps the window always on top |
 | `media_enabled` | `true` | Show images and videos in the chat |
 | `media_max_images` | `8` | Images per search |
 | `media_proactive` | `true` | The AI may send images and videos on its own |
@@ -241,9 +349,10 @@ voice-ai/
 ├── backend/
 │   ├── main.py                # FastAPI + WebSocket
 │   ├── orchestrator.py        # Coordinates Whisper, Claude, TTS and hotkeys
-│   ├── routes/                # chat, media, transcribe, translate, models, settings, logs...
+│   ├── routes/                # chat, media, transcribe, translate, translate_files, models, storage...
 │   ├── services/
 │   │   ├── brain.py           # Claude (streaming)
+│   │   ├── file_translate.py  # PDF/Office/text translation keeping the layout, PDF dark theme
 │   │   ├── speech_engine.py   # faster-whisper + audio capture
 │   │   ├── tts.py             # Edge TTS / ElevenLabs
 │   │   ├── media_search.py    # image and video search
@@ -253,8 +362,14 @@ voice-ai/
 │   └── requirements*.txt
 ├── frontend/
 │   ├── src/main/              # Electron main process (setup, backend)
+│   │   ├── call.ts            # Call: signaling, tunnel (cloudflared), room history
+│   │   ├── callRendezvous.ts  # room rendezvous (ntfy.sh, encrypted)
+│   │   └── linuxShareAudio.ts # shared sound on Linux (PipeWire)
 │   ├── src/renderer/src/      # views, stores (Pinia), components, API
+│   │   └── composables/useCallRtc.ts  # WebRTC mesh (voice, screen, chat, files)
+│   ├── scripts/release.mjs    # npm run release
 │   └── electron-builder.yml
+├── .github/workflows/         # automated release (AppImage + .exe)
 ├── tools/                     # build helpers
 ├── build.ps1 / build.sh       # build the installer
 ├── dev.ps1 / dev.sh           # run in development
@@ -263,12 +378,30 @@ voice-ai/
 
 ---
 
+## Publishing a release
+
+With everything committed and pushed to `main`, inside `frontend`:
+
+```bash
+npm run release              # 1.1.0 -> 1.1.1 (fix)
+npm run release -- minor     # 1.1.0 -> 1.2.0 (feature)
+npm run release -- 1.4.0     # exact version
+```
+
+The script checks the code, bumps the version and pushes the `vX.Y.Z` tag. GitHub then builds the `.AppImage` (Linux) and the `.exe` (Windows) and publishes both under **Releases** (about 10 minutes; follow it in the **Actions** tab).
+
 ## Troubleshooting
 
 - **The AI Chat does not answer:** Claude Code must be installed and logged in. The first-run setup installs it; you log in once.
 - **Slow transcription:** use a smaller model or enable the NVIDIA GPU (CUDA) in **Settings → Run on**.
 - **Translate asks to install languages:** expected, each language pair is downloaded once.
-- **Port in use:** the app uses port `18450`; close any other Voice AI instance.
+- **Port in use:** the installed app uses port `18450` and development mode `18451`; close the other Voice AI instance.
+- **The room code takes a while to show:** expected (a few seconds); it only shows once it works for guests.
+- **Cannot connect to someone in a call:** without a TURN server, very restrictive networks (some corporate networks) can block the direct connection. Try another network.
+- **No shared sound on Linux:** sound sharing uses PipeWire (`pw-cli`, `pw-dump` and `pw-link`, from the `pipewire-bin` package); it does not work on PulseAudio-only systems. The reason shows up in **Logs**.
+- **Debugging a call:** open **Logs**, reproduce the problem and click **Copy**. Every participant's lines appear together.
+- **"No text found in the PDF":** the PDF is scanned (photos of pages). There is no text recognition (OCR) yet.
+- **File translation asks to update:** older installs get the new components (PyMuPDF, lxml) on the next launch.
 
 ---
 
@@ -276,5 +409,10 @@ voice-ai/
 
 - [x] Windows build with installer and first-run setup
 - [x] Whisper model download inside the app
+- [x] Linux AppImage and automated GitHub releases
+- [x] P2P calls with voice, screen, chat and files
+- [x] File translation (PDF, Word, PowerPoint, Excel) keeping the layout, with dark theme and preview
+- [ ] OCR to translate scanned PDFs
+- [ ] Optional TURN server for calls on restrictive networks
 - [ ] AMD GPU support (ROCm)
 - [ ] A proper app icon

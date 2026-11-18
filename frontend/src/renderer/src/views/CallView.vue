@@ -8,6 +8,8 @@ import CallAudioPopover from '../components/CallAudioPopover.vue'
 import CallComposer from '../components/CallComposer.vue'
 import CallMediaViewer from '../components/CallMediaViewer.vue'
 import CallVolumeMenu from '../components/CallVolumeMenu.vue'
+import CallLogPanel from '../components/CallLogPanel.vue'
+import { formatVolume, sliderToVolume, volumeToSlider } from '../utils/callVolume'
 
 const store = useCallStore()
 
@@ -17,6 +19,8 @@ const joinCode = ref('')
 const roomName = ref('')
 const busy = computed(() => store.status === 'connecting')
 const deletingRoom = ref<{ id: string; name: string } | null>(null)
+const showLogs = ref(false)
+const logProblems = computed(() => store.logs.filter((e) => e.level !== 'info').length)
 
 function submit(): void {
   if (mode.value === 'create') void store.create({ roomName: roomName.value })
@@ -42,11 +46,22 @@ function fmtDay(ts: number): string {
   return d.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' }) + `, ${time}`
 }
 
-onMounted(() => {
+// salas do histórico abertas agora (e quem está nelas), consultado de tempos em tempos fora da chamada
+let liveTimer: ReturnType<typeof setInterval> | null = null
+async function pollLive(): Promise<void> {
+  if (store.inCall || store.status === 'connecting' || document.hidden) return
+  await store.refreshLive()
+}
+onMounted(async () => {
   store.setViewOpen(true)
-  void store.refreshRooms()
+  await store.refreshRooms()
+  void pollLive()
+  liveTimer = setInterval(() => void pollLive(), 20000)
 })
-onUnmounted(() => store.setViewOpen(false))
+onUnmounted(() => {
+  store.setViewOpen(false)
+  if (liveTimer) clearInterval(liveTimer)
+})
 
 // ---------------------------------------------------------------- transmissões
 const showShare = ref(false)
@@ -206,7 +221,7 @@ onUnmounted(() => {
 
 // ---------------------------------------------------------------- volume (inclusive pelo botão direito)
 function onVolume(peerId: string, e: Event): void {
-  store.setVolume(peerId, parseFloat((e.target as HTMLInputElement).value))
+  store.setVolume(peerId, sliderToVolume(parseFloat((e.target as HTMLInputElement).value)))
 }
 
 /** menu do botão direito: 'screen' = som da transmissão aberta; senão, o id do participante */
@@ -353,7 +368,17 @@ function confirmLeave(): void {
             {{ busy ? (mode === 'create' ? 'Abrindo…' : 'Entrando…') : mode === 'create' ? 'Criar sala' : 'Entrar' }}
           </button>
           <p v-if="store.error && !busy" class="text-xs text-red-400 text-center">{{ store.error }}</p>
+          <div v-if="busy && store.waitingApproval" class="flex flex-col items-center gap-2 text-center">
+            <p class="text-xs text-amber-300">Aguardando alguém da sala aceitar a sua entrada…</p>
+            <button type="button" class="text-xs text-slate-400 hover:text-slate-200 underline underline-offset-2" @click="store.leave()">Cancelar</button>
+          </div>
         </form>
+        <button
+          v-if="store.logs.length"
+          class="-mt-3 text-xs text-slate-500 hover:text-slate-300 underline underline-offset-2"
+          title="O log da última chamada fica disponível até você entrar em outra"
+          @click="showLogs = true"
+        >Ver logs da última chamada ({{ store.logs.length }} linhas)</button>
 
         <button
           :disabled="busy"
@@ -368,7 +393,17 @@ function confirmLeave(): void {
         <div class="bg-slate-800/60 rounded-2xl border border-slate-700/40 divide-y divide-slate-700/40 max-h-72 overflow-y-auto">
           <div v-for="r in store.recentRooms" :key="r.id" class="group flex items-center gap-3 px-4 py-3">
             <div class="flex-1 min-w-0">
-              <p class="text-sm text-slate-100 truncate">{{ r.name }}</p>
+              <p class="text-sm text-slate-100 truncate flex items-center gap-2">
+                <span class="truncate">{{ r.name }}</span>
+                <span
+                  v-if="store.roomsLive[r.id]"
+                  class="flex-shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-500/15 text-[10px] font-medium text-emerald-300"
+                  title="A sala está aberta agora"
+                ><span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />ao vivo</span>
+              </p>
+              <p v-if="store.roomsLive[r.id]" class="text-xs text-emerald-300/90 truncate" :title="store.roomsLive[r.id]!.names.join(', ')">
+                Na sala agora: {{ store.roomsLive[r.id]!.names.join(', ') || 'ninguém' }}
+              </p>
               <p class="text-xs text-slate-500 truncate">
                 {{ fmtDay(r.updatedAt) }} · {{ r.messageCount }} {{ r.messageCount === 1 ? 'mensagem' : 'mensagens' }}
                 <template v-if="r.participants.length"> · {{ r.participants.join(', ') }}</template>
@@ -377,9 +412,9 @@ function confirmLeave(): void {
             <button
               :disabled="busy"
               class="px-3 py-1.5 rounded-lg text-xs font-medium text-slate-100 bg-slate-700 hover:bg-indigo-600 transition-colors disabled:opacity-50"
-              title="Abre a sala de novo com o mesmo chat (gera um código novo para os convidados)"
+              :title="store.roomsLive[r.id] ? 'Entra na sala que já está aberta (você já participou dela, então entra direto)' : 'Abre a sala de novo com o mesmo chat. Se alguém já estiver com ela aberta, você entra nela'"
               @click="reopen(r.id)"
-            >Reabrir</button>
+            >{{ store.roomsLive[r.id] ? 'Entrar' : 'Reabrir' }}</button>
             <button
               :disabled="busy"
               class="p-1.5 rounded-lg text-slate-500 hover:text-red-400 hover:bg-slate-700/60 transition-colors opacity-0 group-hover:opacity-100 disabled:opacity-0"
@@ -395,6 +430,7 @@ function confirmLeave(): void {
       </div>
     </div>
 
+    <CallLogPanel v-if="showLogs" @close="showLogs = false" />
     <ConfirmModal :open="!!deletingRoom" title="Excluir a sala?" confirm-label="Excluir" @confirm="confirmDeleteRoom" @cancel="deletingRoom = null">
       O histórico do chat e os arquivos de "{{ deletingRoom?.name }}" serão apagados deste computador. Quem participou continua com a cópia
       dele.
@@ -431,12 +467,33 @@ function confirmLeave(): void {
         </svg>
         {{ !store.hasMic ? 'Sem microfone' : store.muted ? 'Mudo' : 'Microfone' }}
       </button>
+<button
+        class="relative flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium border bg-slate-800 border-slate-700 text-slate-100 hover:bg-slate-700 transition-colors"
+        title="Logs da sala (seus e dos outros participantes), para copiar e depurar"
+        @click="showLogs = true"
+      >
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25H12" />
+        </svg>
+        Logs
+        <span v-if="logProblems" class="min-w-[1.1rem] px-1 rounded-full bg-amber-500 text-[10px] leading-4 text-slate-900 font-semibold">{{ logProblems }}</span>
+      </button>
       <CallAudioPopover />
       <button class="px-3.5 py-2 rounded-lg text-xs font-medium text-white bg-red-600 hover:bg-red-500 transition-colors" @click="showLeave = true">Sair</button>
     </div>
 
+    <div
+      v-for="k in store.knocks"
+      :key="k.id"
+      class="flex-shrink-0 flex items-center gap-3 text-sm text-slate-100 bg-indigo-500/10 border border-indigo-500/40 rounded-lg px-3 py-2"
+    >
+      <span class="w-2 h-2 rounded-full bg-indigo-400 animate-pulse flex-shrink-0" />
+      <span class="flex-1 min-w-0 truncate"><strong>{{ k.name }}</strong> quer entrar na sala</span>
+      <button class="px-3 py-1 rounded-lg text-xs text-slate-200 bg-slate-700 hover:bg-red-600 transition-colors" @click="store.answerKnock(k.id, false)">Recusar</button>
+      <button class="px-3 py-1 rounded-lg text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-500 transition-colors" @click="store.answerKnock(k.id, true)">Aceitar</button>
+    </div>
     <p v-if="store.closedToNewcomers" class="flex-shrink-0 text-xs text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2">
-      {{ store.isHost ? 'A conexão da sala caiu' : 'Quem criou a sala saiu' }}: a chamada continua entre quem já está aqui, mas ninguém novo consegue entrar.
+      O servidor da sala caiu (quem hospedava saiu ou a conexão caiu). A chamada continua entre quem já está aqui; reabrindo a sala automaticamente para quem for entrar…
     </p>
     <p v-if="store.error" class="flex-shrink-0 text-xs text-red-400">{{ store.error }}</p>
 
@@ -643,13 +700,13 @@ function confirmLeave(): void {
               <input
                 type="range"
                 min="0"
-                max="2"
-                step="0.05"
-                :value="store.screenVolume"
+                max="1"
+                step="0.005"
+                :value="volumeToSlider(store.screenVolume)"
                 :class="['w-28 h-1 accent-indigo-500 cursor-pointer', store.screenMuted ? 'opacity-40' : '']"
-                @input="store.setScreenVolume(parseFloat(($event.target as HTMLInputElement).value))"
+                @input="store.setScreenVolume(sliderToVolume(parseFloat(($event.target as HTMLInputElement).value)))"
               />
-              <span class="text-xs text-white w-9 text-right">{{ Math.round(store.screenVolume * 100) }}%</span>
+              <span class="text-xs text-white w-11 text-right">{{ formatVolume(store.screenVolume) }}</span>
             </div>
             <div class="flex-1" />
             <button
@@ -711,13 +768,13 @@ function confirmLeave(): void {
                 <input
                   type="range"
                   min="0"
-                  max="2"
-                  step="0.05"
-                  :value="store.peerVolumes[peer.id] ?? 1"
+                  max="1"
+                  step="0.005"
+                  :value="volumeToSlider(store.peerVolumes[peer.id] ?? 1)"
                   class="flex-1 h-1 accent-indigo-500 cursor-pointer"
                   @input="onVolume(peer.id, $event)"
                 />
-                <span class="text-xs text-slate-500 w-10 text-right">{{ Math.round((store.peerVolumes[peer.id] ?? 1) * 100) }}%</span>
+                <span class="text-xs text-slate-500 w-11 text-right">{{ formatVolume(store.peerVolumes[peer.id] ?? 1) }}</span>
               </div>
             </li>
           </ul>
@@ -777,6 +834,7 @@ function confirmLeave(): void {
       </aside>
     </div>
 
+ <CallLogPanel v-if="showLogs" @close="showLogs = false" />
     <CallShareModal v-if="showShare" @close="showShare = false" @start="onShareStart" />
     <CallVolumeMenu
       v-if="menu && (menu.target === 'screen' ? store.watching && store.watching !== SELF : menuPeer)"
@@ -801,7 +859,7 @@ function confirmLeave(): void {
     <ConfirmModal :open="showLeave" title="Sair da chamada?" confirm-label="Sair" @confirm="confirmLeave" @cancel="showLeave = false">
       {{
         store.isHost
-          ? 'Você criou esta sala: ao sair, ninguém novo consegue entrar com o código. O chat fica guardado em "Salas anteriores".'
+          ? 'Você está hospedando a sala: ao sair, quem ficar reabre o servidor automaticamente (com um código novo). O chat fica guardado em "Salas anteriores".'
           : 'Sua conexão com os outros participantes será encerrada. O chat fica guardado em "Salas anteriores".'
       }}
     </ConfirmModal>

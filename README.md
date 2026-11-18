@@ -2,9 +2,9 @@
 
 [Português](README.md) | [English](README.en.md)
 
-Assistente de voz para desktop: transcreve o que você fala, conversa com a IA (por texto ou por voz), mostra imagens e vídeos nas respostas e traduz textos, quase tudo rodando no seu próprio computador.
+Assistente de voz para desktop: transcreve o que você fala, conversa com a IA (por texto ou por voz), mostra imagens e vídeos nas respostas, traduz textos e documentos inteiros (PDF, Word, PowerPoint...) mantendo o layout, e faz chamadas de voz com compartilhamento de tela direto entre os participantes. Quase tudo roda no seu próprio computador.
 
-**Stack:** Electron + Vue 3 · FastAPI (Python) · Whisper (faster-whisper) · Claude · Edge TTS / ElevenLabs · Argos Translate
+**Stack:** Electron + Vue 3 · FastAPI (Python) · Whisper (faster-whisper) · Claude · Edge TTS / ElevenLabs · Argos Translate · PyMuPDF · WebRTC + Cloudflare Tunnel
 
 > Os GIFs abaixo foram gravados com dados fictícios.
 
@@ -17,7 +17,8 @@ Assistente de voz para desktop: transcreve o que você fala, conversa com a IA (
 | Transcrição de Microfone | Segure o atalho, fale, solte: o texto é transcrito pelo Whisper local e copiado para a área de transferência |
 | Transcrever Arquivo | Escolha ou arraste um áudio ou vídeo e receba a transcrição completa |
 | Chat IA | Conversa com o Claude por texto ou voz, com respostas faladas, imagens, vídeos e anexos |
-| Traduzir | Tradução offline entre dezenas de idiomas |
+| Traduzir | Tradução offline de textos e de arquivos (PDF, DOCX, PPTX, XLSX, TXT, MD, SRT), mantendo o layout do original |
+| Chamada | Salas de voz com compartilhamento de tela (com som), chat e envio de arquivos, tudo direto entre os participantes (P2P) |
 | Logs | Histórico de todas as transcrições, com modelo, dispositivo e velocidade |
 | Configurações | Atalhos, modelos do Whisper, voz, Claude, imagens e armazenamento |
 
@@ -90,17 +91,113 @@ Assistente de voz para desktop: transcreve o que você fala, conversa com a IA (
 
 ---
 
+## Tradução de arquivos
+
+Na aba **Traduzir → Arquivos**, arraste um ou mais arquivos (ou clique para escolher). Cada um é traduzido no seu computador, sem internet, com os mesmos pacotes de idioma da tradução de texto. A fila mostra o progresso (no PDF, página por página).
+
+| Formato | Como é traduzido | Resultado |
+|---------|------------------|-----------|
+| **PDF** | o texto é reescrito em cima da página original (detalhes abaixo) | muito parecido com o original |
+| **Word (DOCX)** | só o texto é trocado dentro do arquivo: parágrafos, tabelas, cabeçalhos, rodapés, notas, caixas de texto e gráficos | praticamente idêntico |
+| **PowerPoint (PPTX)** | slides, anotações, SmartArt e gráficos | praticamente idêntico |
+| **Excel (XLSX)** | células de texto (fórmulas e números ficam como estão) | idêntico |
+| **TXT, Markdown, SRT** | parágrafo a parágrafo; no Markdown, títulos, listas e tabelas mantêm a marcação e blocos de código não são traduzidos; na legenda, números e tempos ficam | idêntico |
+
+### Como o PDF mantém o layout
+
+O PDF não guarda parágrafos, só pedaços de texto em posições fixas na página. Para cada página, o app:
+
+1. **lê os blocos de texto** com posição, fonte, tamanho, cor, negrito e itálico, e junta as linhas em parágrafos (respeitando listas, numeração, colunas e células de tabela);
+2. **traduz cada parágrafo inteiro** (o modelo entende melhor a frase completa do que linhas soltas). Numeração ("1.", "a)") e marcadores de lista ficam fora da tradução, e rótulos em destaque no começo do parágrafo ("**Nota:**") são traduzidos à parte para manter o destaque;
+3. **apaga só o texto original** da página: imagens, linhas, fundos e tabelas desenhadas continuam lá;
+4. **escreve a tradução na mesma caixa**, com o mesmo tamanho, cor, alinhamento e altura da linha. Se o texto traduzido for maior (do inglês para o português costuma crescer 15 a 30%), ele usa o espaço livre ao lado e abaixo e, se ainda não couber, a fonte diminui um pouco.
+
+A fonte é escolhida nesta ordem: a **própria fonte embutida no PDF** (quando ela tem todas as letras da tradução; os PDFs costumam levar só as letras usadas no original, então em inglês faltam "ç", "ã", "é"...); depois a **mesma fonte instalada no computador** ou uma de mesmas medidas (Arial ↔ Liberation Sans, Times ↔ Liberation Serif, Calibri ↔ Carlito...); por último uma fonte parecida (serifada, sem serifa ou monoespaçada).
+
+### Pré-visualizar, tema e salvar
+
+Cada PDF traduzido tem três ações:
+
+- **Claro | Escuro**: o tema do arquivo. O escuro deixa o fundo escuro e o texto claro **mantendo as cores** (um título azul continua azul, só que claro); fotos e imagens ficam como no original e o texto continua selecionável. É gerado na hora, depois da tradução, e vale para pré-visualizar e salvar.
+- **Pré-visualizar**: abre o original e a tradução lado a lado (ou um de cada vez). Abre com a página inteira na tela e tem zoom (botões, `Ctrl` + roda do mouse, `+`/`-`), girar (`R`), arrastar para mover, troca de tema (`T`), setas ou lista de páginas com busca pelo número, e o botão **Salvar**. As páginas são desenhadas na resolução da sua tela; primeiro aparece uma versão leve e logo depois a nítida, e a próxima página já fica pronta em segundo plano.
+- **Salvar**: escolha a pasta e salve o arquivo no tema escolhido.
+
+Os arquivos ficam numa pasta temporária do app até você salvar; o **X** do item apaga essa cópia (o que você salvou continua). O espaço usado aparece em **Configurações → Armazenamento**.
+
+**Limitações:** PDFs digitalizados (fotos de páginas) e texto dentro de imagens não são traduzidos; dentro de um mesmo parágrafo prevalece o estilo principal (uma palavra em negrito no meio da frase perde o negrito); o tema escuro vale só para PDF. A qualidade é a do Argos Translate: para português brasileiro, instale o par **Inglês → Português (Brasil)**, que evita palavras de Portugal ("projecto", "equipa").
+
+---
+
+## Chamada
+
+Salas de voz para conversar, assistir à tela de alguém e trocar mensagens e arquivos, **sem servidor próprio, sem conta e sem abrir portas no roteador**.
+
+**O que tem na sala:**
+
+- **Voz** com escolha de microfone e saída de som, medidor de quem está falando e, pelo botão direito em cada pessoa, volume individual (0 a 400%, com mais precisão nos volumes baixos) e "silenciar para mim".
+- **Compartilhamento de tela** (tela inteira ou uma janela) de 480p a 4K, com taxa de quadros ajustável e **som do computador**. Mais de uma pessoa pode transmitir ao mesmo tempo; quem assiste pode ampliar, dar zoom, arrastar, colocar em tela cheia ou minimizar no canto.
+- **Chat** com edição e exclusão para todos, e **arquivos de até 500 MB** (imagens e vídeos com prévia; dá para colar ou arrastar).
+- **Histórico guardado no seu computador**: quem entra recebe as últimas 500 mensagens de quem já está na sala, e um arquivo antigo pode ser pedido a quem tem uma cópia.
+- **Salas anteriores ao vivo**: a lista mostra quais salas estão abertas agora e quem está nelas. **Reabrir** entra na sala que já está aberta (em vez de cada um abrir a sua); se ninguém estiver com ela aberta, você passa a hospedá-la.
+- **Controle de entrada**: quem chega pela primeira vez fica esperando até alguém de dentro clicar em **Aceitar** (ou **Recusar**, e a pessoa vê o aviso). Quem já participou da sala entra direto.
+- **Logs da sala** (botão **Logs**): tudo o que acontece na chamada (conexões, rota da rede, microfone, transmissão, volumes, arquivos, erros), os seus e os dos outros participantes juntos, com filtro e botão **Copiar**. A cada 30 s entra um resumo das conexões (taxa, perda de pacotes e nível do som).
+
+### Como funciona a rede
+
+```
+  Quem cria a sala                                        Convidados
+┌──────────────────────┐                              ┌───────────────┐
+│ Servidor de          │◄── túnel da Cloudflare ─────►│ entram com o  │
+│ sinalização (local)  │    (código da sala =         │ código        │
+└──────────────────────┘     endereço do túnel)       └───────────────┘
+          ▲   só o "aperto de mão" (SDP / ICE) passa por aqui
+          ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│ WebRTC em malha: cada participante conecta DIRETO com cada um dos      │
+│ outros. Voz, tela, chat e arquivos vão de pessoa para pessoa,          │
+│ criptografados (DTLS-SRTP), sem passar por nenhum servidor.            │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+1. **Criar a sala:** o app sobe um servidor de sinalização mínimo (um WebSocket só em `127.0.0.1`) e abre um **quick tunnel da Cloudflare** (`cloudflared`, baixado na instalação) que dá a ele um endereço público temporário. O nome aleatório do túnel (ex.: `calm-river-paper-moon`) é o **código da sala**. O código só aparece quando o endereço já funciona para quem está de fora (o app espera o nome existir nos servidores DNS da Cloudflare).
+2. **Entrar:** o convidado digita o código e se conecta à sinalização pelo túnel. Por ali passam só as mensagens de negociação do WebRTC (SDP e candidatos ICE), **nunca áudio, vídeo, chat ou arquivos**.
+3. **Conexão direta:** com servidores STUN públicos (Google e Cloudflare), cada participante descobre seu endereço público e o WebRTC abre uma conexão **ponto a ponto** com cada um dos outros (uma malha, ou *mesh*). Cada conexão leva o microfone, o vídeo e o som da tela e canais de dados para o chat e para os arquivos (em pedaços de 64 KB).
+4. **Economia de banda:** a tela só é enviada a quem está assistindo; as faixas ficam negociadas, mas desligadas até a pessoa abrir a transmissão. A renegociação segue o padrão *perfect negotiation* (dois participantes podem ligar a tela ao mesmo tempo sem travar).
+5. **Ponto de encontro (ntfy.sh):** o código muda toda vez que a sala é aberta, então quem hospeda publica "a sala está no código X" num tópico do [ntfy.sh](https://ntfy.sh). O nome do tópico é um hash do id da sala (que só quem já esteve nela conhece) e o conteúdo vai **criptografado** (AES-256-GCM, com chave derivada do id da sala): o ntfy.sh só vê bytes, e só guarda isso (por 12 h). Quem está na sala, visto de fora, vem do próprio servidor da sala.
+6. **Entrada:** o servidor da sala manda uma etiqueta da sala; quem já participou responde com uma prova (derivada do id da sala) e entra direto. Quem não tem a prova fica na fila até alguém de dentro aceitar.
+7. **Se quem hospeda sair** (ou o túnel cair), a chamada continua (a conexão é direta) e a sala se reabre sozinha: se quem hospedava ainda está na chamada, ele abre outro túnel; senão, quem ficou com o menor id abre um servidor novo. O código novo vai para os outros pelo canal direto e para o ponto de encontro.
+
+**Som da transmissão:** no Windows é o som do computador inteiro, menos o do próprio Voice AI (para ninguém ouvir a própria voz de volta). No Linux, o app cria um microfone virtual no PipeWire (`VoiceAI-Transmissao`, com `pw-cli`) e liga a ele o som de todos os programas (tela inteira) ou só o do programa da janela escolhida (X11). Antes de enviar, um **ganho automático** sobe o som até um nível bom (nunca abaixa) com um limitador contra distorção: mesmo que quem transmite esteja ouvindo baixo, o som chega cheio e quem assiste ajusta o volume do seu lado. O som da tela vai a até 128 kbps.
+
+**Limites:** como é uma malha, cada pessoa envia sua voz (e sua tela, para quem assiste) para cada um dos outros, então funciona melhor com grupos pequenos. Não há servidor TURN de retransmissão: em redes muito restritivas (algumas redes corporativas ou NAT simétrico dos dois lados), a conexão direta pode não ser possível.
+
+---
+
 ## Instalação
+
+Baixe a versão mais recente em [Releases](https://github.com/alanazeredoguedes/voice-ai/releases): o `.exe` para Windows ou o `.AppImage` para Linux.
 
 ### Windows (instalador)
 
 1. Execute `Voice AI Setup x.y.z.exe` (cerca de 180 MB).
-2. Na primeira abertura, uma tela de configuração baixa o que falta, mostrando o progresso:
-   - motor de tradução (~170 MB);
+2. Na primeira abertura, uma tela pede confirmação e baixa o que falta, mostrando o progresso:
+   - motor de tradução e componentes da tradução de arquivos (PyMuPDF, lxml);
    - modelo Whisper tiny (~75 MB);
+   - `cloudflared`, usado para criar salas na aba Chamada (~40 MB);
    - opcional: bibliotecas CUDA para usar a placa de vídeo NVIDIA (~1,3 GB);
    - opcional: Claude Code, necessário para o Chat IA.
 3. Pronto. Os dados ficam em `%APPDATA%\voice-ai`.
+
+### Linux (AppImage)
+
+```bash
+chmod +x Voice.AI-x.y.z.AppImage
+./Voice.AI-x.y.z.AppImage
+```
+
+Na primeira abertura, a mesma tela de configuração baixa os componentes em Python (no Linux eles não vão dentro do AppImage, então o download é maior) e o resto da lista acima. Os dados ficam em `~/.config/voice-ai`.
+
+Em **Configurações → Geral** dá para **iniciar com o sistema** (Windows e Linux). Quando uma versão nova do app precisa de componentes novos, ele pede para atualizar na abertura e baixa só o que falta.
 
 Os modelos maiores do Whisper e os idiomas de tradução são baixados depois, dentro do app, quando você quiser.
 
@@ -133,6 +230,8 @@ dev.bat         # Windows (ou dev.ps1)
 
 Ou manualmente, em dois terminais: `python -m backend.main` (na raiz, com o venv ativo) e `npm run dev` (em `frontend`).
 
+O modo de desenvolvimento é **isolado do app instalado**: usa a porta `18451` (o instalado usa `18450`) e pastas próprias (`~/.config/voice-ai-dev` para o Electron e `~/.local/share/voice-ai` para o backend, com modelos do Whisper e pacotes de tradução separados). Dá para rodar os dois ao mesmo tempo, e apagar um não afeta o outro. O backend não recarrega sozinho: depois de mudar código Python, rode o `dev.sh` de novo.
+
 ### Gerar o instalador
 
 ```powershell
@@ -140,7 +239,7 @@ Ou manualmente, em dois terminais: `python -m backend.main` (na raiz, com o venv
 ./build.sh      # Linux: AppImage
 ```
 
-O instalador do Windows leva o Python e as bibliotecas essenciais dentro dele. As partes pesadas (PyTorch/motor de tradução, modelo Whisper, CUDA) são baixadas na primeira execução para manter o instalador pequeno.
+O instalador do Windows leva o Python e as bibliotecas essenciais dentro dele. As partes pesadas (PyTorch/motor de tradução, tradução de arquivos, modelo Whisper, CUDA, cloudflared) são baixadas na primeira execução para manter o instalador pequeno. O AppImage leva o Python; as bibliotecas são baixadas na primeira execução.
 
 ---
 
@@ -151,6 +250,7 @@ O instalador do Windows leva o Python e as bibliotecas essenciais dentro dele. A
 │                 Electron (frontend)              │
 │   Vue 3 + Pinia + Tailwind CSS                   │
 │   WebSocket (porta 18450) ←→ HTTP REST           │
+│   Chamada: WebRTC (P2P) + sinalização/túnel      │
 └──────────────────┬──────────────────────────────┘
                    │
 ┌──────────────────▼──────────────────────────────┐
@@ -164,6 +264,9 @@ O instalador do Windows leva o Python e as bibliotecas essenciais dentro dele. A
 │        │         MediaSearch + MediaJudge        │
 │        └──► TextToSpeech (Edge / ElevenLabs)     │
 │                                                  │
+│  Tradução: Argos (texto) + PyMuPDF / lxml        │
+│            (PDF, Word, PowerPoint, Excel)        │
+│                                                  │
 │            SQLite  (chats, logs)                 │
 └─────────────────────────────────────────────────┘
 ```
@@ -174,6 +277,10 @@ O instalador do Windows leva o Python e as bibliotecas essenciais dentro dele. A
 
 **Imagens e vídeos:** quando a pergunta pede ou quando ajuda a explicar, a IA marca na resposta o que quer mostrar. O app busca (DuckDuckGo, sem chave, ou Google Imagens via Serper, com chave), mostra uma prévia, e um Haiku confere cada resultado e escreve a legenda em português.
 
+**Tradução de arquivos:** o arquivo vai para uma fila no backend (uma tradução por vez, na GPU se houver); o progresso chega pelo WebSocket. Veja [Tradução de arquivos](#tradução-de-arquivos).
+
+**Chamada:** a parte de rede fica no Electron (servidor de sinalização e túnel no processo principal, WebRTC na tela); o backend não participa. Veja [Chamada](#chamada).
+
 ---
 
 ## Atalhos
@@ -182,7 +289,7 @@ O instalador do Windows leva o Python e as bibliotecas essenciais dentro dele. A
 |------|--------|---------------|
 | Transcrever | `Ctrl + T` (segurar) | Grava enquanto pressionado, solta para transcrever |
 | Falar com a IA | `Ctrl + I` (segurar) | Igual, mas a pergunta vai para o chat |
-| Mostrar/esconder o Voice AI | `Ctrl + Alt + F12` | Traz o app para a frente, até de jogos em tela cheia sem bordas |
+| Mostrar/esconder o Voice AI | `Ctrl + Alt + F12` | Traz o app para a frente, até de jogos em tela cheia sem bordas (opção "manter sempre na frente" ao lado do atalho) |
 | Cancelar | dois cliques rápidos no atalho | Cancela a gravação ou para a resposta da IA |
 
 Os atalhos podem ser teclas, botões do mouse ou combinações, e cada ação aceita mais de um. Configure em **Configurações → Atalhos → Capturar**.
@@ -191,7 +298,7 @@ Os atalhos podem ser teclas, botões do mouse ou combinações, e cada ação ac
 
 ## Configurações principais
 
-As configurações ficam em `settings.json` dentro da pasta de dados (`%APPDATA%\voice-ai` no Windows, `~/.local/share/voice-ai` em desenvolvimento no Linux). Quase tudo é ajustável pela própria tela de Configurações.
+As configurações ficam em `settings.json` dentro da pasta de dados (`%APPDATA%\voice-ai` no Windows, `~/.config/voice-ai` no AppImage, `~/.local/share/voice-ai` em desenvolvimento). Quase tudo é ajustável pela própria tela de Configurações.
 
 | Chave | Padrão | Descrição |
 |-------|--------|-----------|
@@ -203,7 +310,8 @@ As configurações ficam em `settings.json` dentro da pasta de dados (`%APPDATA%
 | `whisper_vad` | `false` | Pular silêncios |
 | `tts_backend` | `edge` | `edge` (gratuito) ou `elevenlabs` (pago) |
 | `edge_voice` | `pt-BR-AntonioNeural` | Voz do Edge TTS |
-| `claude_model` | `haiku` | Modelo do Claude no chat: `haiku`, `sonnet` ou `opus` |
+| `claude_model` | `sonnet` | Modelo do Claude no chat: `haiku`, `sonnet` ou `opus` |
+| `window_keep_on_top` | `false` | O atalho de mostrar deixa a janela sempre na frente |
 | `media_enabled` | `true` | Mostrar imagens e vídeos no chat |
 | `media_max_images` | `8` | Imagens por busca |
 | `media_proactive` | `true` | A IA pode mandar imagens e vídeos por conta própria |
@@ -241,9 +349,10 @@ voice-ai/
 ├── backend/
 │   ├── main.py                # FastAPI + WebSocket
 │   ├── orchestrator.py        # Coordena Whisper, Claude, TTS e atalhos
-│   ├── routes/                # chat, media, transcribe, translate, models, settings, logs...
+│   ├── routes/                # chat, media, transcribe, translate, translate_files, models, storage...
 │   ├── services/
 │   │   ├── brain.py           # Claude (streaming)
+│   │   ├── file_translate.py  # tradução de PDF/Office/texto mantendo o layout, tema escuro do PDF
 │   │   ├── speech_engine.py   # faster-whisper + captura de áudio
 │   │   ├── tts.py             # Edge TTS / ElevenLabs
 │   │   ├── media_search.py    # busca de imagens e vídeos
@@ -253,8 +362,14 @@ voice-ai/
 │   └── requirements*.txt
 ├── frontend/
 │   ├── src/main/              # processo principal do Electron (instalação, backend)
+│   │   ├── call.ts            # Chamada: sinalização, túnel (cloudflared), histórico das salas
+│   │   ├── callRendezvous.ts  # ponto de encontro das salas (ntfy.sh, criptografado)
+│   │   └── linuxShareAudio.ts # som da transmissão no Linux (PipeWire)
 │   ├── src/renderer/src/      # views, stores (Pinia), componentes, API
+│   │   └── composables/useCallRtc.ts  # WebRTC em malha (voz, tela, chat, arquivos)
+│   ├── scripts/release.mjs    # npm run release
 │   └── electron-builder.yml
+├── .github/workflows/         # release automática (AppImage + .exe)
 ├── tools/                     # utilitários de build
 ├── build.ps1 / build.sh       # geram o instalador
 ├── dev.ps1 / dev.sh           # rodam em desenvolvimento
@@ -280,7 +395,13 @@ O script confere o código, sobe a versão e envia a tag `vX.Y.Z`. A GitHub ent�
 - **O Chat IA não responde:** o Claude Code precisa estar instalado e com login feito. A tela de configuração inicial instala; o login é feito uma vez.
 - **Transcrição lenta:** use um modelo menor ou ative a placa NVIDIA (CUDA) em **Configurações → Processar em**.
 - **Traduzir pede para instalar idiomas:** é esperado, cada par de idiomas é baixado uma vez.
-- **Porta ocupada:** o app usa a porta `18450`; feche outra instância do Voice AI.
+- **Porta ocupada:** o app instalado usa a porta `18450` e o modo de desenvolvimento a `18451`; feche a outra instância do Voice AI.
+- **O código da sala demora a aparecer:** é esperado (alguns segundos); ele só aparece quando já funciona para os convidados.
+- **Não consigo conectar com alguém na chamada:** sem servidor TURN, redes muito restritivas (algumas redes corporativas) podem bloquear a conexão direta. Teste em outra rede.
+- **Sem som da transmissão no Linux:** o compartilhamento de som usa o PipeWire (`pw-cli`, `pw-dump` e `pw-link`, do pacote `pipewire-bin`); em sistemas só com PulseAudio ele não funciona. O motivo aparece em **Logs**.
+- **Para depurar uma chamada:** abra **Logs**, reproduza o problema e clique em **Copiar**. As linhas de todos os participantes aparecem juntas.
+- **"Não encontrei texto no PDF":** o PDF é digitalizado (fotos das páginas). Ainda não há reconhecimento de texto (OCR).
+- **Tradução de arquivos pede para atualizar:** instalações antigas recebem os componentes novos (PyMuPDF, lxml) na próxima abertura.
 
 ---
 
@@ -288,5 +409,10 @@ O script confere o código, sobe a versão e envia a tag `vX.Y.Z`. A GitHub ent�
 
 - [x] Build para Windows com instalador e configuração inicial
 - [x] Download de modelos do Whisper dentro do app
+- [x] AppImage para Linux e releases automáticas pela GitHub
+- [x] Chamada P2P com voz, tela, chat e arquivos
+- [x] Tradução de arquivos (PDF, Word, PowerPoint, Excel) mantendo o layout, com tema escuro e pré-visualização
+- [ ] OCR para traduzir PDFs digitalizados
+- [ ] Servidor TURN opcional para chamadas em redes restritivas
 - [ ] Suporte a GPU AMD (ROCm)
 - [ ] Ícone próprio do aplicativo
