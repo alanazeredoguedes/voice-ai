@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref, shallowRef, watch as vueWatch } from 'vue'
 import {
+  DEFAULT_PEER_VOLUME,
   MAX_FILE_BYTES,
   useCallRtc,
   JoinDeniedError,
@@ -103,6 +104,26 @@ export interface RoomLive {
 }
 
 const NAME_KEY = 'call.name'
+const MIC_GAIN_KEY = 'call.micGain'
+const GATE_KEY = 'call.voiceGate'
+const GATE_DB_KEY = 'call.voiceGateDb'
+const AEC_KEY = 'call.echoCancel'
+
+function readSetting(key: string): string | null {
+  try {
+    return localStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
+function saveSetting(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value)
+  } catch {
+    // sem armazenamento: vale só nesta sessão
+  }
+}
 const INPUT_KEY = 'call.audioInput'
 const SCREEN_VOLUME_KEY = 'call.screenVolume'
 const USER_KEY = 'call.userId'
@@ -114,6 +135,10 @@ const SAFE_ID = /^[a-zA-Z0-9-]{8,64}$/
 const LOG_MAX = 5000
 /** a cada quanto tempo o log ganha o resumo das conexões (taxas, perdas, nível do som) */
 const STATS_EVERY_MS = 30_000
+
+export { DEFAULT_PEER_VOLUME }
+/** volume do som de uma transmissão ao abrir (a pessoa aumenta se quiser) */
+const SCREEN_START_VOLUME = 0.5
 
 /** transmissão aberta = a minha própria (prévia do que estou transmitindo) */
 export const SELF = 'self'
@@ -179,6 +204,17 @@ export const useCallStore = defineStore('call', () => {
   /** volume do áudio da transmissão aberta (0 a 2) */
   const screenVolume = ref(Number(localStorage.getItem(SCREEN_VOLUME_KEY) ?? 1) || 0)
   const screenMuted = ref(false)
+  /** volume (sensibilidade) do meu microfone, 0 a 2 */
+  const micGain = ref(Number(readSetting(MIC_GAIN_KEY)) || 1)
+  /** só envia o microfone quando eu falo (acima do limite) */
+  const gateOn = ref(readSetting(GATE_KEY) !== '0')
+  const gateDb = ref(Number(readSetting(GATE_DB_KEY)) || -45)
+  /** Linux: usar o microfone sem eco (tira o som da caixa de som do microfone) */
+  const echoCancel = ref(IS_LINUX && readSetting(AEC_KEY) !== '0')
+  const echoCancelActive = ref(false)
+  /** nível do microfone agora (dBFS, depois do volume): para ajustar o limite olhando */
+  const micLevelDb = ref(-100)
+  const gateOpen = ref(false)
   /** volume da voz de cada participante para mim (0 a 2; sem valor = 100%) */
   const peerVolumes = ref<Record<string, number>>({})
 
@@ -189,6 +225,8 @@ export const useCallStore = defineStore('call', () => {
   const recentRooms = ref<RoomSummary[]>([])
   /** salas do histórico abertas agora (id → quem está dentro); consultado com a tela de Chamada aberta */
   const roomsLive = ref<Record<string, RoomLive | null>>({})
+  /** salas do histórico que alguém está abrindo agora (id → nome de quem) */
+  const roomsOpening = ref<Record<string, string>>({})
   /** pedi para entrar e estou esperando alguém de dentro aceitar */
   const waitingApproval = ref(false)
   /** pedidos de entrada para eu (de dentro) aceitar ou recusar */
@@ -338,15 +376,16 @@ export const useCallStore = defineStore('call', () => {
    * encontro (ntfy.sh) se alguém já está com a sala aberta: se estiver, entra nela em vez de abrir outra.
    */
   async function create(opts: { roomName?: string; reopenId?: string } = {}): Promise<void> {
-    if (status.value !== 'idle') return
+    if (status.value !== 'idle' || reopening.value) return
+    let claim: string | undefined
     if (opts.reopenId) {
-      const live = (await ipc().invoke('call:rv-copies', opts.reopenId)) as RoomLive[]
-      if (live[0]) {
-        clearLogs()
-        log('info', `a sala já está aberta (código ${live[0].code}, com ${live[0].names.join(', ') || 'ninguém'}): entrando nela`)
-        return join(live[0].code, { keepLogs: true })
-      }
+      clearLogs()
+      const decision = await decideReopen(opts.reopenId)
+      if (decision.kind === 'cancel') return
+      if (decision.kind === 'join') return join(decision.code, { keepLogs: true })
+      claim = decision.claim
     }
+    myClaim = claim
     begin(!!opts.reopenId)
     log('info', opts.reopenId ? `reabrindo a sala ${opts.reopenId}: ninguém está com ela aberta, vou hospedar` : 'criando sala nova (vou hospedar)')
     try {
@@ -363,6 +402,7 @@ export const useCallStore = defineStore('call', () => {
       if (!res.ok) throw new Error(res.error)
       isHost.value = true
       code.value = res.code
+      watchRooms()
       log('info', `sala "${r.name}" no ar com o código ${res.code}`)
       void whenCodeReady(res.code)
       await enter(`ws://127.0.0.1:${res.port}`, 1, res.hostToken)
@@ -379,21 +419,89 @@ export const useCallStore = defineStore('call', () => {
     if (code.value !== c || !isHost.value) return
     codeReady.value = true
     await announceRoom()
-    // duas pessoas reabriram a mesma sala ao mesmo tempo: fica a mais antiga, a outra se junta a ela
+    // rede de segurança: se mesmo assim duas cópias ficaram no ar, fica a publicada primeiro e a outra se junta a ela
     setTimeout(() => void mergeDuplicate(c), 3000)
+    setTimeout(() => void mergeDuplicate(c), 15000)
   }
 
   async function announceRoom(closed = false): Promise<void> {
     const r = room.value
     if (!r || !code.value) return
-    await ipc().invoke('call:rv-announce', r.id, { code: code.value, hostName: name.value || 'Alguém', closed })
+    await ipc().invoke('call:rv-announce', r.id, { code: code.value, hostName: name.value || 'Alguém', closed, claim: myClaim })
+  }
+
+  // ------------------------------------------------------------------ reabrir sem duas pessoas abrirem cópias da mesma sala
+  //
+  // Quem vai abrir uma sala primeiro "reserva" no ponto de encontro. A ordem das reservas é a do
+  // ntfy.sh (igual para todo mundo): quem reservou primeiro abre; quem chegou depois espera o código
+  // dessa pessoa ficar no ar e entra nela. Uma reserva vale 45 s (se quem reservou travar, outro abre).
+
+  /** reserva com que abri a sala atual (vai junto na publicação do código) */
+  let myClaim: string | undefined
+  /** reabrindo: esperando a vez (ou o código de quem está abrindo) */
+  const reopening = ref<{ roomId: string; hint: string } | null>(null)
+
+  type RoomStateRes = { live: RoomLive | null; claims: { claim: string; hostName: string; age: number }[] }
+
+  async function stateOf(roomId: string): Promise<RoomStateRes> {
+    const res = (await ipc().invoke('call:rv-state', [roomId]).catch(() => null)) as Record<string, RoomStateRes> | null
+    return res?.[roomId] ?? { live: null, claims: [] }
+  }
+
+  async function decideReopen(roomId: string): Promise<{ kind: 'join'; code: string } | { kind: 'host'; claim: string } | { kind: 'cancel' }> {
+    reopening.value = { roomId, hint: 'Verificando se a sala já está aberta…' }
+    error.value = ''
+    void ipc().invoke('call:log-target')
+    let claim: string | null = null
+    const deadline = Date.now() + 90_000
+    try {
+      while (reopening.value?.roomId === roomId && Date.now() < deadline) {
+        const st = await stateOf(roomId)
+        if (reopening.value?.roomId !== roomId) break
+        if (st.live) {
+          log('info', `a sala já está aberta (código ${st.live.code}, com ${st.live.names.join(', ') || 'ninguém'}): entrando nela`)
+          return { kind: 'join', code: st.live.code }
+        }
+        const first = st.claims[0]
+        if (first && first.claim === claim) {
+          log('info', 'minha reserva é a primeira: vou abrir a sala')
+          return { kind: 'host', claim }
+        }
+        if (first) {
+          if (reopening.value.hint.indexOf(first.hostName) < 0) log('info', `${first.hostName} está abrindo a sala agora: aguardando para entrar junto`)
+          reopening.value = { roomId, hint: `Aguarde: ${first.hostName || 'outra pessoa'} está abrindo a sala. Você entra assim que ela estiver no ar…` }
+        } else if (!claim) {
+          claim = crypto.randomUUID()
+          log('info', 'ninguém está com a sala aberta: reservando a abertura')
+          reopening.value = { roomId, hint: 'Abrindo a sala…' }
+          await ipc().invoke('call:rv-announce', roomId, { code: '', hostName: name.value || 'Alguém', opening: true, claim })
+          // dá tempo de uma reserva de outra pessoa, feita no mesmo instante, aparecer
+          await new Promise((r) => setTimeout(r, 1500))
+          continue
+        } else {
+          // a minha reserva não apareceu (ntfy.sh fora do ar?): abre assim mesmo
+          log('warn', 'a reserva não apareceu no ponto de encontro: abrindo a sala assim mesmo')
+          return { kind: 'host', claim }
+        }
+        await new Promise((r) => setTimeout(r, 1200))
+      }
+      if (reopening.value?.roomId !== roomId) return { kind: 'cancel' }
+      log('warn', 'esperei demais: abrindo a sala eu mesmo')
+      return { kind: 'host', claim: claim ?? crypto.randomUUID() }
+    } finally {
+      reopening.value = null
+    }
+  }
+
+  function cancelReopen(): void {
+    if (reopening.value) log('info', 'cancelei a entrada na sala')
+    reopening.value = null
   }
 
   async function mergeDuplicate(myCode: string): Promise<void> {
     const r = room.value
     if (!r || !isHost.value || code.value !== myCode || peers.value.length) return
-    const copies = (await ipc().invoke('call:rv-copies', r.id)) as RoomLive[]
-    const winner = copies[0]
+    const winner = (await stateOf(r.id)).live
     if (!winner || winner.code === myCode || code.value !== myCode || peers.value.length) return
     log('info', `outra pessoa abriu esta mesma sala antes (código ${winner.code}): fechando a minha e entrando na dela`)
     await announceRoom(true)
@@ -454,6 +562,8 @@ export const useCallStore = defineStore('call', () => {
           name.value || 'Convidado',
           {
             onPeers: (list) => {
+              for (const p of list)
+                if (!peers.value.some((x) => x.id === p.id)) log('info', `voz de ${p.name} começa em ${Math.round(DEFAULT_PEER_VOLUME * 100)}% para mim`)
               peers.value = list
               for (const id of peerUsers.keys()) if (!list.some((p) => p.id === id)) peerUsers.delete(id)
               const keep: Record<string, string> = {}
@@ -560,8 +670,8 @@ export const useCallStore = defineStore('call', () => {
         if (tick === 3) log('info', `quem hospedava a sala saiu: ${peers.value.find((p) => p.id === elected)?.name ?? 'outra pessoa'} vai hospedar`)
         // fallback: o código novo não chegou pelo canal direto; procura no ponto de encontro
         if (r && tick % 10 === 9) {
-          const live = ((await ipc().invoke('call:rv-copies', r.id)) as RoomLive[]).filter((c) => c.code !== code.value)
-          if (live[0] && !rtc.signalingOpen()) await moveTo(live[0].code)
+          const live = (await stateOf(r.id)).live
+          if (live && live.code !== code.value && !rtc.signalingOpen()) await moveTo(live.code)
         }
       }
     } catch (e) {
@@ -575,6 +685,7 @@ export const useCallStore = defineStore('call', () => {
   async function rehost(): Promise<void> {
     const r = room.value
     if (!r) return
+    myClaim = undefined
     const res = (await ipc().invoke('call:host-start', { id: r.id, name: r.name })) as HostStart
     if (!res.ok) throw new Error(res.error)
     isHost.value = true
@@ -628,8 +739,8 @@ export const useCallStore = defineStore('call', () => {
     screenLeveler?.stop()
     screenLeveler = null
     if (IS_LINUX) void ipc().invoke('call:linux-audio-stop')
-    micStream.value?.getTracks().forEach((t) => t.stop())
-    micStream.value = null
+    stopMic()
+    void ipc().invoke('call:aec-stop')
     // nova identidade de conexão a cada sala
     rtc = useCallRtc(log)
     localPeerId.value = rtc.localPeerId
@@ -642,6 +753,7 @@ export const useCallStore = defineStore('call', () => {
     waitingApproval.value = false
     knocks.value = []
     hostPeerId.value = ''
+    myClaim = undefined
     peers.value = []
     clearMessages()
     room.value = null
@@ -672,17 +784,33 @@ export const useCallStore = defineStore('call', () => {
     try {
       const list = (await ipc().invoke('call:rooms-list')) as RoomSummary[]
       recentRooms.value = list.sort((a, b) => b.updatedAt - a.updatedAt)
+      watchRooms()
     } catch {
       recentRooms.value = []
     }
   }
 
-  /** Quais salas do histórico estão abertas agora e quem está nelas. */
+  /** Acompanha em tempo real (no ponto de encontro) as salas do histórico e a sala atual. */
+  function watchRooms(): void {
+    const ids = recentRooms.value.slice(0, 20).map((r) => r.id)
+    if (room.value) ids.push(room.value.id)
+    void ipc().invoke('call:rv-watch', ids)
+  }
+
+  /** Quais salas do histórico estão abertas agora (e quem está nelas) ou sendo abertas por alguém. */
   async function refreshLive(): Promise<void> {
     const ids = recentRooms.value.slice(0, 20).map((r) => r.id)
     if (!ids.length) return
-    const res = (await ipc().invoke('call:rv-status', ids).catch(() => null)) as Record<string, RoomLive | null> | null
-    if (res) roomsLive.value = res
+    const res = (await ipc().invoke('call:rv-state', ids).catch(() => null)) as Record<string, RoomStateRes> | null
+    if (!res) return
+    const live: Record<string, RoomLive | null> = {}
+    const opening: Record<string, string> = {}
+    for (const [id, st] of Object.entries(res)) {
+      live[id] = st.live
+      if (!st.live && st.claims[0]) opening[id] = st.claims[0].hostName || 'Alguém'
+    }
+    roomsLive.value = live
+    roomsOpening.value = opening
   }
 
   async function deleteRoom(id: string): Promise<void> {
@@ -706,6 +834,7 @@ export const useCallStore = defineStore('call', () => {
     hostPeerId.value = info.hostPeerId
     if (!SAFE_ID.test(info.id) || room.value?.id === info.id) return
     await loadRoom(info.id, info.name)
+    watchRooms()
     noteParticipants()
     scheduleSave()
   }
@@ -1034,30 +1163,158 @@ export const useCallStore = defineStore('call', () => {
 
   // ------------------------------------------------------------------ microfone
 
-  async function openMic(deviceId: string): Promise<void> {
+  // Microfone: o que sai do dispositivo passa por um volume (sensibilidade) e por um "portão" que só
+  // deixa passar quando a pessoa fala. No Linux, pode vir do microfone sem eco (ver linuxEchoCancel.ts).
+  // O que é enviado aos outros (e o que os medidores mostram) é o resultado disso.
+  let micRaw: MediaStream | null = null
+  let micChain: { ctx: AudioContext; gain: GainNode; timer: ReturnType<typeof setInterval> } | null = null
+
+  function stopMic(): void {
     micStream.value?.getTracks().forEach((t) => t.stop())
+    micStream.value = null
+    micRaw?.getTracks().forEach((t) => t.stop())
+    micRaw = null
+    if (micChain) {
+      clearInterval(micChain.timer)
+      void micChain.ctx.close()
+      micChain = null
+    }
+    micLevelDb.value = -100
+    gateOpen.value = false
+  }
+
+  /** Volume → (medidor) → portão de voz → enviado. Devolve a faixa já tratada. */
+  function buildMicChain(input: MediaStream): MediaStream {
+    const ctx = new AudioContext()
+    const source = ctx.createMediaStreamSource(input)
+    const gain = ctx.createGain()
+    gain.gain.value = micGain.value
+    const meter = ctx.createAnalyser()
+    meter.fftSize = 1024
+    const gate = ctx.createGain()
+    const out = ctx.createMediaStreamDestination()
+    source.connect(gain)
+    gain.connect(meter)
+    gain.connect(gate)
+    gate.connect(out)
+    void ctx.resume().catch(() => {})
+
+    const buf = new Float32Array(meter.fftSize)
+    let lastLoud = 0
+    let open = false
+    gate.gain.value = gateOn.value ? 0 : 1
+    const timer = setInterval(() => {
+      meter.getFloatTimeDomainData(buf)
+      let sum = 0
+      for (const v of buf) sum += v * v
+      const db = 10 * Math.log10(sum / buf.length + 1e-12)
+      micLevelDb.value = Math.round(db)
+      const now = performance.now()
+      // abre acima do limite; fecha só depois de 400 ms abaixo dele, para não cortar o fim das palavras
+      if (db > gateDb.value) lastLoud = now
+      const want = !gateOn.value || now - lastLoud < 400
+      if (want !== open) {
+        open = want
+        gateOpen.value = want
+        gate.gain.setTargetAtTime(want ? 1 : 0, ctx.currentTime, want ? 0.005 : 0.06)
+      }
+    }, 20)
+    micChain = { ctx, gain, timer }
+    return out.stream
+  }
+
+  async function openMic(deviceId: string): Promise<void> {
+    stopMic()
+    echoCancelActive.value = false
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
+      let raw: MediaStream | null = null
+      if (IS_LINUX && echoCancel.value) raw = await openEchoCancelledMic(deviceId)
+      raw ??= await navigator.mediaDevices.getUserMedia({
         audio: deviceId ? { deviceId: { exact: deviceId } } : true,
         video: false
       })
+      micRaw = raw
+      const stream = buildMicChain(raw)
       stream.getAudioTracks().forEach((t) => (t.enabled = !muted.value))
       micStream.value = stream
       hasMic.value = true
-      const track = stream.getAudioTracks()[0]
+      const track = raw.getAudioTracks()[0]
       const st = track?.getSettings() ?? {}
       log(
         'info',
-        `microfone aberto: "${track?.label}" (${st.sampleRate ?? '?'} Hz, eco ${st.echoCancellation ? 'sim' : 'não'}, ruído ${st.noiseSuppression ? 'sim' : 'não'}, ganho automático ${st.autoGainControl ? 'sim' : 'não'})`
+        `microfone aberto: "${track?.label}" (${st.sampleRate ?? '?'} Hz, eco do navegador ${st.echoCancellation ? 'sim' : 'não'}, ruído ${st.noiseSuppression ? 'sim' : 'não'}, ganho automático ${st.autoGainControl ? 'sim' : 'não'}; ` +
+          `cancelamento de eco do sistema ${echoCancelActive.value ? 'ligado' : 'desligado'}, volume ${Math.round(micGain.value * 100)}%, ` +
+          `${gateOn.value ? `só quando falo (limite ${gateDb.value} dBFS)` : 'sempre aberto'})`
       )
       await rtc.setMicTrack(stream.getAudioTracks()[0] ?? null)
     } catch (e) {
       // sem microfone ou permissão negada: entra só ouvindo
       log('warn', `sem microfone (entrando só para ouvir): ${e instanceof Error ? `${e.name}: ${e.message}` : e}`)
-      micStream.value = null
+      stopMic()
       hasMic.value = false
       await rtc.setMicTrack(null)
     }
+  }
+
+  /** Linux: microfone sem eco (o PipeWire tira dele o som que sai na caixa de som). null = não deu, usa o comum. */
+  async function openEchoCancelledMic(deviceId: string): Promise<MediaStream | null> {
+    const devices = await navigator.mediaDevices.enumerateDevices()
+    const label = deviceId ? (devices.find((d) => d.deviceId === deviceId)?.label ?? '') : ''
+    const res = (await ipc().invoke('call:aec-start', label)) as { ok: true; label: string } | { ok: false; error: string }
+    if (!res.ok) return null
+    for (let i = 0; i < 20; i++) {
+      const device = (await navigator.mediaDevices.enumerateDevices()).find((d) => d.kind === 'audioinput' && d.label.includes(res.label))
+      if (device) {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              deviceId: { exact: device.deviceId },
+              // o eco já sai daqui; o do navegador por cima só piora a voz
+              echoCancellation: false,
+              noiseSuppression: true,
+              autoGainControl: true
+            },
+            video: false
+          })
+          echoCancelActive.value = true
+          return stream
+        } catch (e) {
+          log('warn', `não deu para abrir o microfone sem eco: ${e instanceof Error ? e.message : e}`)
+          break
+        }
+      }
+      await new Promise((r) => setTimeout(r, 150))
+    }
+    log('warn', 'o microfone sem eco não apareceu: usando o microfone comum')
+    void ipc().invoke('call:aec-stop')
+    return null
+  }
+
+  function setMicGain(value: number): void {
+    micGain.value = Math.min(Math.max(value, 0), 2)
+    if (micChain) micChain.gain.gain.setTargetAtTime(micGain.value, micChain.ctx.currentTime, 0.02)
+    saveSetting(MIC_GAIN_KEY, String(micGain.value))
+    logVolume('mic', () => `volume do meu microfone: ${Math.round(micGain.value * 100)}%`)
+  }
+
+  function setGate(on: boolean): void {
+    gateOn.value = on
+    saveSetting(GATE_KEY, on ? '1' : '0')
+    log('info', on ? `"só transmitir quando eu falar" ligado (limite ${gateDb.value} dBFS)` : '"só transmitir quando eu falar" desligado')
+  }
+
+  function setGateDb(db: number): void {
+    gateDb.value = Math.round(Math.min(Math.max(db, -80), -10))
+    saveSetting(GATE_DB_KEY, String(gateDb.value))
+    logVolume('gate', () => `limite de "só quando eu falar": ${gateDb.value} dBFS`)
+  }
+
+  async function setEchoCancel(on: boolean): Promise<void> {
+    echoCancel.value = on
+    saveSetting(AEC_KEY, on ? '1' : '0')
+    log('info', on ? 'cancelamento de eco do sistema ligado' : 'cancelamento de eco do sistema desligado')
+    if (!on) void ipc().invoke('call:aec-stop')
+    if (status.value !== 'idle') await openMic(localStorage.getItem(INPUT_KEY) || '')
   }
 
   function applyMuted(value: boolean): void {
@@ -1089,6 +1346,13 @@ export const useCallStore = defineStore('call', () => {
   })
 
   // ------------------------------------------------------------------ compartilhamento de tela
+
+  /** Linux com Wayland: o seletor de tela é o do sistema (o app não consegue listar telas sem ele). */
+  const isWayland = ref(false)
+  void ipc()
+    .invoke('call:session-type')
+    .then((t: string) => (isWayland.value = t === 'wayland'))
+    .catch(() => {})
 
   async function listSources(): Promise<ShareSource[]> {
     return (await ipc().invoke('call:sources')) as ShareSource[]
@@ -1132,6 +1396,9 @@ export const useCallStore = defineStore('call', () => {
     // no Linux o som não vem da captura da tela (ver linuxShareAudio abaixo)
     const systemAudio = withAudio && !IS_LINUX
     try {
+      // Wayland: a tela já foi escolhida no seletor do sistema; a captura pela API de tela abriria o seletor
+      // de novo (e falha com "Invalid capture constraints"), então vai direto pela captura do Electron
+      if (isWayland.value) throw new Error('Wayland: usando a captura do Electron')
       stream = await captureDisplay(sourceId, quality, systemAudio)
     } catch (e) {
       log('warn', `captura pela API de tela falhou (${e instanceof Error ? e.message : e}); tentando a captura antiga`)
@@ -1164,7 +1431,8 @@ export const useCallStore = defineStore('call', () => {
       }
     }
     const track = stream.getVideoTracks()[0]
-    track.contentHint = 'detail' // prioriza nitidez do texto em vez de fluidez
+    // até 30 fps: prioriza nitidez (texto, código); 60/90 fps: prioriza fluidez (vídeo, jogo)
+    track.contentHint = quality.fps > 30 ? 'motion' : 'detail'
     track.onended = () => {
       log('info', 'a captura da tela terminou (fechada pelo sistema ou pela janela)')
       void stopShare()
@@ -1178,7 +1446,12 @@ export const useCallStore = defineStore('call', () => {
     localScreen?.getTracks().forEach((t) => t.stop())
     localScreen = stream
     sharing.value = true
-    await rtc.setScreenStream(stream)
+    // taxa máxima proporcional a pixels × quadros (1080p60 ≈ 8 Mbps, 1080p90 ≈ 11 Mbps; teto de 25 Mbps)
+    const vs0 = track.getSettings()
+    const px = (vs0.width ?? quality.width) * (vs0.height ?? quality.height)
+    const maxBitrate = Math.round(Math.min(25_000_000, Math.max(1_500_000, px * quality.fps * 0.065)))
+    log('info', `vídeo da tela limitado a ${(maxBitrate / 1e6).toFixed(1)} Mbps e ${quality.fps} fps (${track.contentHint === 'motion' ? 'prioriza fluidez' : 'prioriza nitidez'})`)
+    await rtc.setScreenStream(stream, { maxBitrate, maxFramerate: quality.fps })
     if (watching.value === SELF) watch(SELF) // trocou de tela com a prévia aberta
     void snapshot(stream)
   }
@@ -1326,6 +1599,12 @@ export const useCallStore = defineStore('call', () => {
   function watch(target: string | null): void {
     if (target !== watching.value) {
       viewMode.value = 'expanded'
+      // toda transmissão abre com o som em 50% (e sem mudo); a pessoa aumenta se quiser
+      if (target !== null && target !== SELF) {
+        screenVolume.value = SCREEN_START_VOLUME
+        screenMuted.value = false
+        rtc.setScreenVolume(SCREEN_START_VOLUME)
+      }
       const who = target === SELF ? 'a minha' : peers.value.find((p) => p.id === target)?.name
       log('info', target === null ? 'fechei a transmissão que estava vendo' : `abri a transmissão ${target === SELF ? 'minha (prévia)' : `de ${who}`}`)
     }
@@ -1405,7 +1684,7 @@ export const useCallStore = defineStore('call', () => {
     return {
       // o microfone virtual da transmissão (Linux) não é um microfone de verdade
       inputs: devices.filter(
-        (d) => d.kind === 'audioinput' && d.deviceId !== 'default' && d.deviceId !== 'communications' && !d.label.includes('VoiceAI-Transmissao')
+        (d) => d.kind === 'audioinput' && d.deviceId !== 'default' && d.deviceId !== 'communications' && !d.label.includes('VoiceAI-Transmissao') && !d.label.includes('VoiceAI-Microfone-Sem-Eco')
       ),
       outputs: devices.filter((d) => d.kind === 'audiooutput' && d.deviceId !== 'default' && d.deviceId !== 'communications')
     }
@@ -1431,6 +1710,16 @@ export const useCallStore = defineStore('call', () => {
   const getOutputDevice = (): string => rtc.getOutputDevice()
 
   // o túnel de quem criou a sala caiu: a chamada segue, mas ninguém novo entra
+  // publicação nova no ponto de encontro (alguém abriu, fechou ou está abrindo uma sala): atualiza a lista na hora
+  let rvTimer: ReturnType<typeof setTimeout> | null = null
+  ipc().on('call:rv-changed', () => {
+    if (rvTimer) clearTimeout(rvTimer)
+    rvTimer = setTimeout(() => {
+      rvTimer = null
+      if (status.value === 'idle') void refreshLive()
+    }, 300)
+  })
+
   ipc().on('call:tunnel-down', () => {
     if (!inCall.value) return
     closedToNewcomers.value = true
@@ -1498,8 +1787,24 @@ export const useCallStore = defineStore('call', () => {
     setOutputDevice,
     getInputDevice,
     getOutputDevice,
+    isWayland,
     roomsLive,
+    roomsOpening,
     refreshLive,
+    reopening,
+    cancelReopen,
+    micGain,
+    gateOn,
+    gateDb,
+    echoCancel,
+    echoCancelActive,
+    micLevelDb,
+    gateOpen,
+    setMicGain,
+    setGate,
+    setGateDb,
+    setEchoCancel,
+    isLinux: IS_LINUX,
     waitingApproval,
     knocks,
     answerKnock,

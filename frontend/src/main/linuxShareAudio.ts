@@ -22,6 +22,7 @@ let targetPid: number | null = null
 let syncing = false
 /** portas já ligadas nesta transmissão (para registrar no log só as novas) */
 const reported = new Set<string>()
+let lastSummary = ''
 
 type LogFn = (level: 'info' | 'warn' | 'error', msg: string) => void
 let log: LogFn = (level, msg) => (level === 'info' ? console.log : console.warn)('[share-audio]', msg)
@@ -30,7 +31,7 @@ export function setShareAudioLogger(fn: LogFn): void {
   log = fn
 }
 
-function run(bin: string, args: string[]): Promise<string> {
+export function run(bin: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(bin, args, { timeout: 5000, maxBuffer: 64 * 1024 * 1024 }, (err, stdout) => (err ? reject(err) : resolve(stdout)))
   })
@@ -95,7 +96,21 @@ async function windowPid(sourceId: string): Promise<number | null> {
 
 // ---------------------------------------------------------------- ligações no PipeWire
 
-interface PwObject {
+/**
+ * Lê a saída do pw-dump. Às vezes ela vem com algo a mais depois da lista (o PipeWire mudou no meio
+ * da leitura): fica só a primeira lista completa.
+ */
+export function parsePwDump(out: string): PwObject[] {
+  try {
+    return JSON.parse(out) as PwObject[]
+  } catch {
+    const end = out.indexOf('\n]')
+    if (end < 0) throw new Error('saída do pw-dump incompleta')
+    return JSON.parse(out.slice(0, end + 2)) as PwObject[]
+  }
+}
+
+export interface PwObject {
   id: number
   type: string
   info?: { props?: Record<string, unknown>; 'output-port-id'?: number; 'input-port-id'?: number }
@@ -108,7 +123,7 @@ async function syncLinks(): Promise<void> {
   if (syncing) return
   syncing = true
   try {
-    const objects = JSON.parse(await run('pw-dump', [])) as PwObject[]
+    const objects = parsePwDump(await run('pw-dump', []))
     const props = (o: PwObject | undefined): Record<string, unknown> => o?.info?.props ?? {}
     const virtual = objects.find((o) => o.type === 'PipeWire:Interface:Node' && props(o)['node.name'] === NODE_NAME)
     if (!virtual) {
@@ -123,14 +138,27 @@ async function syncLinks(): Promise<void> {
     )
     const clients = new Map(objects.filter((o) => o.type === 'PipeWire:Interface:Client').map((c) => [c.id, c]))
     const parents = processParents()
+    const seen: string[] = []
 
     for (const node of objects) {
       const p = props(node)
       if (node.type !== 'PipeWire:Interface:Node' || p['media.class'] !== 'Stream/Output/Audio') continue
       // alguns programas (ex.: os que usam ALSA) só informam o pid no "cliente" do PipeWire
       const pid = Number(p['application.process.id'] ?? props(clients.get(Number(p['client.id'])))['application.process.id'] ?? 0)
-      if (!pid || isOwn(pid, parents)) continue
-      if (targetPid && !isInTree(pid, targetPid, parents)) continue
+      const label = `${String(p['application.name'] ?? p['node.name'] ?? '?')} (pid ${pid || '?'})`
+      if (!pid) {
+        seen.push(`${label}: ignorado (sem pid)`)
+        continue
+      }
+      if (isOwn(pid, parents)) {
+        seen.push(`${label}: ignorado (é do Voice AI)`)
+        continue
+      }
+      if (targetPid && !isInTree(pid, targetPid, parents)) {
+        seen.push(`${label}: ignorado (não é da janela escolhida)`)
+        continue
+      }
+      seen.push(`${label}: ligado`)
       for (const out of ports) {
         const op = props(out)
         if (op['node.id'] !== node.id || op['port.direction'] !== 'out') continue
@@ -153,6 +181,12 @@ async function syncLinks(): Promise<void> {
         }
       }
     }
+    // o que está tocando mudou: registra o que entrou e o que ficou de fora (e por quê)
+    const summary = seen.sort().join('; ')
+    if (summary !== lastSummary) {
+      lastSummary = summary
+      log('info', `programas tocando som agora: ${summary || 'nenhum'}`)
+    }
   } catch (e) {
     log('warn', `falha ao ligar as saídas de áudio: ${e instanceof Error ? e.message : e}`)
   } finally {
@@ -164,7 +198,7 @@ async function syncLinks(): Promise<void> {
 
 /** Nós do microfone virtual que existem agora no PipeWire (pelo nome). */
 async function virtualNodes(): Promise<number[]> {
-  const objects = JSON.parse(await run('pw-dump', [])) as PwObject[]
+  const objects = parsePwDump(await run('pw-dump', []))
   return objects
     .filter((o) => o.type === 'PipeWire:Interface:Node' && o.info?.props?.['node.name'] === NODE_NAME)
     .map((o) => o.id)
@@ -239,6 +273,7 @@ export async function startLinuxShareAudio(sourceId: string): Promise<{ ok: true
     `microfone virtual criado (nó ${nodeId}); som de ${targetPid ? `só do programa da janela (pid ${targetPid})` : 'todos os programas, menos o Voice AI'}`
   )
   reported.clear()
+  lastSummary = ''
   await syncLinks()
   timer = setInterval(() => void syncLinks(), 1000)
   return { ok: true, label: SHARE_SOURCE_LABEL }

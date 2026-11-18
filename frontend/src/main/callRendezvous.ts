@@ -21,12 +21,21 @@ import { join } from 'path'
 const NTFY = 'https://ntfy.sh'
 
 export interface Announcement {
+  /** código da sala (vazio quando é só uma reserva: "estou abrindo") */
   code: string
   hostName: string
   /** quando foi publicado (relógio de quem publicou) */
   ts: number
   /** a sala foi fechada (quem estava hospedando saiu sozinho) */
   closed?: boolean
+  /** reserva: alguém está abrindo a sala agora (o código vem em alguns segundos) */
+  opening?: boolean
+  /** id da reserva (quem reservou primeiro abre; os outros esperam e entram) */
+  claim?: string
+  /** horário do ntfy.sh (segundos): a ordem vale para todos, sem depender do relógio de cada máquina */
+  sTime?: number
+  /** id da publicação no ntfy.sh (desempata publicações no mesmo segundo) */
+  mid?: string
 }
 
 export interface RoomLive {
@@ -35,6 +44,19 @@ export interface RoomLive {
   ts: number
   names: string[]
   waiting: number
+}
+
+export interface RoomOpening {
+  claim: string
+  hostName: string
+  /** há quantos segundos foi reservada */
+  age: number
+}
+
+export interface RoomState {
+  live: RoomLive | null
+  /** reservas recentes ainda sem sala no ar, da primeira para a última */
+  claims: RoomOpening[]
 }
 
 const sha = (s: string): Buffer => createHash('sha256').update(s).digest()
@@ -64,7 +86,8 @@ function decrypt(roomId: string, text: string): unknown {
 
 function validAnnouncement(a: unknown): a is Announcement {
   const x = a as Announcement
-  return !!x && typeof x.code === 'string' && /^[a-z0-9]+(-[a-z0-9]+)+$/.test(x.code) && typeof x.ts === 'number'
+  if (!x || typeof x.code !== 'string' || typeof x.ts !== 'number') return false
+  return x.opening ? typeof x.claim === 'string' && x.claim.length <= 64 : /^[a-z0-9]+(-[a-z0-9]+)+$/.test(x.code)
 }
 
 async function fetchWithTimeout(url: string, init: RequestInit = {}, ms = 6000): Promise<Response> {
@@ -77,64 +100,185 @@ async function fetchWithTimeout(url: string, init: RequestInit = {}, ms = 6000):
   }
 }
 
+/** diferença entre o relógio do ntfy.sh e o desta máquina (segundos) */
+let serverSkew = 0
+function noteServerDate(res: Response): void {
+  const date = Date.parse(res.headers.get('date') ?? '')
+  if (date) serverSkew = (date - Date.now()) / 1000
+}
+const serverNow = (): number => Date.now() / 1000 + serverSkew
+
 export async function announce(roomId: string, a: Announcement): Promise<void> {
   const res = await fetchWithTimeout(`${NTFY}/${topicFor(roomId)}`, { method: 'POST', body: encrypt(roomId, a) })
   if (!res.ok) throw new Error(`ntfy.sh respondeu HTTP ${res.status}`)
+  noteServerDate(res)
+  // a própria publicação entra no cache na hora (sem esperar a assinatura trazer)
+  try {
+    const ev = (await res.json()) as { id?: string; time?: number }
+    remember(roomId, { ...a, sTime: ev.time, mid: ev.id })
+  } catch {
+    // sem o corpo: a assinatura traz
+  }
 }
 
-/** Publicações das últimas 12 h de cada sala (mais recente primeiro). Uma consulta só para todas. */
-export async function lookup(roomIds: string[]): Promise<Map<string, Announcement[]>> {
-  const out = new Map<string, Announcement[]>(roomIds.map((id) => [id, []]))
-  if (!roomIds.length) return out
+// ------------------------------------------------------------------ cache + assinatura em tempo real
+
+/** publicações conhecidas de cada sala (id da publicação → publicação) */
+const cache = new Map<string, Map<string, Announcement>>()
+
+function remember(roomId: string, a: Announcement): boolean {
+  if (!a.mid) return false
+  let m = cache.get(roomId)
+  if (!m) cache.set(roomId, (m = new Map()))
+  if (m.has(a.mid)) return false
+  m.set(a.mid, a)
+  return true
+}
+
+/** ordem do ntfy.sh: horário do servidor e, no mesmo segundo, o id da publicação (igual para todo mundo) */
+const byServerOrder = (a: Announcement, b: Announcement): number =>
+  (a.sTime ?? 0) - (b.sTime ?? 0) || String(a.mid).localeCompare(String(b.mid))
+
+function parseEvent(byTopic: Map<string, string>, line: string): { roomId: string; a: Announcement } | null {
+  try {
+    const ev = JSON.parse(line)
+    const roomId = byTopic.get(ev.topic)
+    if (ev.event !== 'message' || !roomId || typeof ev.message !== 'string') return null
+    const a = decrypt(roomId, ev.message)
+    if (!validAnnouncement(a)) return null
+    return { roomId, a: { ...a, hostName: String(a.hostName ?? '').slice(0, 40), sTime: Number(ev.time) || 0, mid: String(ev.id) } }
+  } catch {
+    return null // linha vazia, evento "open"/"keepalive" ou publicação de outra sala
+  }
+}
+
+/** Uma consulta (sem ficar ouvindo) às publicações das últimas 12 h das salas. */
+async function poll(roomIds: string[]): Promise<void> {
+  if (!roomIds.length) return
   const byTopic = new Map(roomIds.map((id) => [topicFor(id), id]))
   const res = await fetchWithTimeout(`${NTFY}/${[...byTopic.keys()].join(',')}/json?poll=1&since=12h`)
   if (!res.ok) throw new Error(`ntfy.sh respondeu HTTP ${res.status}`)
+  noteServerDate(res)
   for (const line of (await res.text()).split('\n')) {
-    try {
-      const ev = JSON.parse(line)
-      const roomId = byTopic.get(ev.topic)
-      if (ev.event !== 'message' || !roomId || typeof ev.message !== 'string') continue
-      const a = decrypt(roomId, ev.message)
-      if (validAnnouncement(a)) out.get(roomId)!.push({ ...a, hostName: String(a.hostName ?? '').slice(0, 40) })
-    } catch {
-      // linha vazia ou publicação que não é desta sala
-    }
+    const ev = parseEvent(byTopic, line)
+    if (ev) remember(ev.roomId, ev.a)
   }
-  for (const list of out.values()) list.sort((a, b) => b.ts - a.ts)
-  return out
+  for (const id of roomIds) primed.add(id)
 }
+
+let watched: string[] = []
+const primed = new Set<string>()
+let stream: AbortController | null = null
+let onChange: (() => void) | null = null
+
+/**
+ * Fica ouvindo (uma conexão só, aberta) as salas do histórico e a sala atual: uma publicação nova
+ * chega aqui na hora, sem gastar consultas (o ntfy.sh limita quantas dá para fazer por minuto).
+ */
+export function watchRooms(roomIds: string[], changed: () => void): void {
+  onChange = changed
+  const ids = [...new Set(roomIds)].sort().slice(0, 30)
+  if (ids.join() === watched.join()) return
+  watched = ids
+  stream?.abort()
+  stream = null
+  if (!ids.length) return
+  const ctrl = new AbortController()
+  stream = ctrl
+  void listen(ids, ctrl)
+}
+
+async function listen(ids: string[], ctrl: AbortController): Promise<void> {
+  const byTopic = new Map(ids.map((id) => [topicFor(id), id]))
+  for (let attempt = 0; !ctrl.signal.aborted; attempt++) {
+    try {
+      // a consulta enche o cache com as últimas 12 h; a assinatura traz o que for publicado daqui para a frente
+      await poll(ids.filter((id) => !primed.has(id))).catch(() => {})
+      const res = await net.fetch(`${NTFY}/${[...byTopic.keys()].join(',')}/json`, { signal: ctrl.signal, cache: 'no-store' })
+      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`)
+      attempt = 0
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buf = ''
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        let nl: number
+        while ((nl = buf.indexOf('\n')) >= 0) {
+          const ev = parseEvent(byTopic, buf.slice(0, nl))
+          buf = buf.slice(nl + 1)
+          if (ev && remember(ev.roomId, ev.a)) onChange?.()
+        }
+      }
+    } catch {
+      // caiu (ou foi trocada): tenta de novo, esperando um pouco mais a cada falha
+    }
+    if (ctrl.signal.aborted) return
+    await new Promise((r) => setTimeout(r, Math.min(30000, 2000 * 2 ** Math.min(attempt, 4))))
+  }
+}
+
+/** Publicações da sala na ordem do ntfy.sh (consulta na hora se a sala ainda não estiver no cache). */
+async function announcementsOf(roomId: string): Promise<Announcement[]> {
+  if (!primed.has(roomId)) await poll([roomId])
+  return [...(cache.get(roomId)?.values() ?? [])].filter((a) => serverNow() - (a.sTime ?? 0) < 12 * 3600).sort(byServerOrder)
+}
+
+// ------------------------------------------------------------------ presença (quem está na sala)
+
+const probeCache = new Map<string, { at: number; result: { names: string[]; waiting: number } | null }>()
 
 /** Pergunta ao servidor da sala quem está nela (null = a sala não está no ar nesse código). */
 export async function probe(roomId: string, code: string): Promise<{ names: string[]; waiting: number } | null> {
+  const hit = probeCache.get(code)
+  if (hit && Date.now() - hit.at < 1500) return hit.result
+  let result: { names: string[]; waiting: number } | null = null
   try {
     const res = await fetchWithTimeout(`https://${code}.trycloudflare.com/presence?k=${presenceKeyFor(roomId)}`, {}, 4000)
-    if (!res.ok) return null
-    const data = (await res.json()) as { names?: unknown; waiting?: unknown }
-    if (!Array.isArray(data.names)) return null
-    return { names: data.names.map((n) => String(n).slice(0, 40)).slice(0, 50), waiting: Number(data.waiting) || 0 }
+    if (res.ok) {
+      const data = (await res.json()) as { names?: unknown; waiting?: unknown }
+      if (Array.isArray(data.names)) {
+        result = { names: data.names.map((n) => String(n).slice(0, 40)).slice(0, 50), waiting: Number(data.waiting) || 0 }
+      }
+    }
   } catch {
-    return null
+    // fora do ar
   }
+  probeCache.set(code, { at: Date.now(), result })
+  if (probeCache.size > 200) probeCache.delete(probeCache.keys().next().value!)
+  return result
 }
 
-/** A publicação mais recente da sala, se ela estiver no ar agora (e quem está nela). */
-export async function liveOf(roomId: string, list: Announcement[]): Promise<RoomLive | null> {
-  // se duas cópias estiverem no ar (reabriram juntas), vale a mais antiga: a outra se junta a ela
-  return (await liveCopies(roomId, list))[0] ?? null
-}
+/** Reservas valem por 45 s: depois disso, quem reservou desistiu ou travou. */
+const CLAIM_TTL = 45
 
-/** Todas as cópias da sala no ar agora (duas pessoas reabriram juntas), da mais antiga para a mais nova. */
-export async function liveCopies(roomId: string, list: Announcement[]): Promise<RoomLive[]> {
-  const open = list.filter((a) => !a.closed && !list.some((b) => b.closed && b.code === a.code && b.ts >= a.ts))
+/**
+ * Situação da sala agora:
+ *  - `live`: a cópia no ar (se duas pessoas abriram juntas, vale a publicada primeiro no ntfy.sh);
+ *  - `claims`: quem está abrindo agora (reservas recentes), na ordem do ntfy.sh.
+ */
+export async function roomState(roomId: string): Promise<RoomState> {
+  const list = await announcementsOf(roomId)
+  const isClosed = (a: Announcement): boolean => list.some((b) => b.closed && b.code === a.code && byServerOrder(b, a) > 0)
   const seen = new Set<string>()
-  const unique = open.filter((a) => !seen.has(a.code) && seen.add(a.code))
+  const open = list.filter((a) => !a.opening && !a.closed && !isClosed(a) && !seen.has(a.code) && !!seen.add(a.code)).slice(-5)
   const probed = await Promise.all(
-    unique.slice(0, 5).map(async (a) => {
+    open.map(async (a) => {
       const p = await probe(roomId, a.code)
       return p ? { code: a.code, hostName: a.hostName, ts: a.ts, ...p } : null
     })
   )
-  return probed.filter((x): x is RoomLive => !!x).sort((a, b) => a.ts - b.ts)
+  const live = probed.find((x): x is RoomLive => !!x) ?? null
+  const now = serverNow()
+  const claims = live
+    ? []
+    : list
+        .filter((a) => a.opening && a.claim && now - (a.sTime ?? 0) < CLAIM_TTL)
+        // reserva que já virou sala (no ar ou fechada depois) não conta mais
+        .filter((a) => !list.some((b) => !b.opening && b.claim === a.claim))
+        .map((a) => ({ claim: a.claim!, hostName: a.hostName, age: Math.max(0, Math.round(now - (a.sTime ?? 0))) }))
+  return { live, claims }
 }
 
 /** Qual sala do histórico tem esta etiqueta (para provar que já esteve nela). */

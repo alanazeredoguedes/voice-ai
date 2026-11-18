@@ -29,9 +29,8 @@ import { WebSocketServer, WebSocket } from 'ws'
 import {
   announce,
   callsDirOf,
-  liveCopies,
-  liveOf,
-  lookup,
+  roomState,
+  watchRooms,
   presenceKeyFor,
   proofFor,
   roomByTag,
@@ -39,6 +38,7 @@ import {
   type Announcement
 } from './callRendezvous'
 import { setShareAudioLogger, startLinuxShareAudio, stopLinuxShareAudio } from './linuxShareAudio'
+import { startEchoCancel, stopEchoCancel } from './linuxEchoCancel'
 
 // ---------------------------------------------------------------------------
 // Log da sala: o que acontece aqui (túnel, sinalização, som do Linux) aparece no log da tela de Chamada
@@ -534,6 +534,15 @@ export function registerCallIpc(getDataDir: () => string): void {
   )
   ipcMain.handle('call:linux-audio-stop', () => stopLinuxShareAudio())
 
+  // Linux: microfone sem eco (tira do microfone o som que sai na caixa de som); ver linuxEchoCancel.ts
+  ipcMain.handle('call:aec-start', async (_e, micLabel: string) => {
+    if (process.platform !== 'linux') return { ok: false, error: 'só no Linux' }
+    const res = await startEchoCancel(String(micLabel ?? ''), (level, msg) => mainLog(level, `[cancelamento de eco] ${msg}`))
+    if (!res.ok) mainLog('warn', `[cancelamento de eco] indisponível: ${res.error}`)
+    return res
+  })
+  ipcMain.handle('call:aec-stop', () => stopEchoCancel())
+
   ipcMain.handle('call:capture-pick', (_e, pick: { sourceId: string; audio: boolean }) => {
     pendingCapture = pick
   })
@@ -589,9 +598,20 @@ export function registerCallIpc(getDataDir: () => string): void {
   // ---- ponto de encontro (ntfy.sh): ver callRendezvous.ts
   ipcMain.handle('call:rv-announce', async (_e, roomId: string, a: Announcement) => {
     if (!SAFE_ID.test(roomId)) return false
+    const claim = typeof a.claim === 'string' ? a.claim.slice(0, 64) : undefined
     try {
-      await announce(roomId, { code: String(a.code), hostName: String(a.hostName ?? '').slice(0, 40), ts: Date.now(), closed: !!a.closed })
-      mainLog('info', `[ponto de encontro] ${a.closed ? 'sala marcada como fechada' : `código ${a.code} publicado`}`)
+      await announce(roomId, {
+        code: a.opening ? '' : String(a.code),
+        hostName: String(a.hostName ?? '').slice(0, 40),
+        ts: Date.now(),
+        closed: !!a.closed,
+        opening: !!a.opening,
+        claim
+      })
+      mainLog(
+        'info',
+        `[ponto de encontro] ${a.opening ? 'reserva publicada (estou abrindo a sala)' : a.closed ? 'sala marcada como fechada' : `código ${a.code} publicado`}`
+      )
       return true
     } catch (e) {
       mainLog('warn', `[ponto de encontro] não deu para publicar: ${e instanceof Error ? e.message : e}`)
@@ -599,27 +619,25 @@ export function registerCallIpc(getDataDir: () => string): void {
     }
   })
 
-  /** Quais salas do histórico estão no ar agora, e quem está em cada uma. */
-  ipcMain.handle('call:rv-status', async (_e, roomIds: string[]) => {
-    const ids = roomIds.filter((id) => SAFE_ID.test(id)).slice(0, 20)
-    try {
-      const all = await lookup(ids)
-      const out: Record<string, unknown> = {}
-      await Promise.all(ids.map(async (id) => (out[id] = await liveOf(id, all.get(id) ?? []))))
-      return out
-    } catch {
-      return null
-    }
+  /** Salas que o app quer acompanhar em tempo real (histórico + sala atual). */
+  ipcMain.handle('call:rv-watch', (e, roomIds: string[]) => {
+    const sender = e.sender
+    watchRooms(
+      (Array.isArray(roomIds) ? roomIds : []).filter((id) => SAFE_ID.test(id)),
+      () => !sender.isDestroyed() && sender.send('call:rv-changed')
+    )
   })
 
-  /** Cópias desta sala no ar agora (da mais antiga para a mais nova). */
-  ipcMain.handle('call:rv-copies', async (_e, roomId: string) => {
-    if (!SAFE_ID.test(roomId)) return []
+  /** Situação de cada sala: no ar (e quem está nela) ou alguém abrindo agora. */
+  ipcMain.handle('call:rv-state', async (_e, roomIds: string[]) => {
+    const ids = (Array.isArray(roomIds) ? roomIds : []).filter((id) => SAFE_ID.test(id)).slice(0, 20)
+    const out: Record<string, unknown> = {}
     try {
-      return await liveCopies(roomId, (await lookup([roomId])).get(roomId) ?? [])
+      await Promise.all(ids.map(async (id) => (out[id] = await roomState(id))))
+      return out
     } catch (e) {
       mainLog('warn', `[ponto de encontro] consulta falhou: ${e instanceof Error ? e.message : e}`)
-      return []
+      return null
     }
   })
 
@@ -628,6 +646,9 @@ export function registerCallIpc(getDataDir: () => string): void {
     const id = roomByTag(callsDirOf(getDataDir()), String(tag))
     return id ? proofFor(id) : null
   })
+
+  /** Linux com Wayland: o próprio sistema mostra o seletor de tela (exigência de segurança, não dá para pular). */
+  ipcMain.handle('call:session-type', () => (process.platform === 'linux' ? (process.env['XDG_SESSION_TYPE'] ?? '') : ''))
 
   ipcMain.handle('call:sources', async () => {
     const sources = await desktopCapturer.getSources({

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { SELF, useCallStore, type CallFile, type ShareQuality } from '../stores/call'
+import { DEFAULT_PEER_VOLUME, SELF, useCallStore, type CallFile, type ShareQuality } from '../stores/call'
 import CopyButton from '../components/CopyButton.vue'
 import ConfirmModal from '../components/ConfirmModal.vue'
 import CallShareModal from '../components/CallShareModal.vue'
@@ -17,7 +17,7 @@ const store = useCallStore()
 const mode = ref<'create' | 'join'>('create')
 const joinCode = ref('')
 const roomName = ref('')
-const busy = computed(() => store.status === 'connecting')
+const busy = computed(() => store.status === 'connecting' || !!store.reopening)
 const deletingRoom = ref<{ id: string; name: string } | null>(null)
 const showLogs = ref(false)
 const logProblems = computed(() => store.logs.filter((e) => e.level !== 'info').length)
@@ -48,20 +48,36 @@ function fmtDay(ts: number): string {
 
 // salas do histórico abertas agora (e quem está nelas), consultado de tempos em tempos fora da chamada
 let liveTimer: ReturnType<typeof setInterval> | null = null
-async function pollLive(): Promise<void> {
-  if (store.inCall || store.status === 'connecting' || document.hidden) return
-  await store.refreshLive()
+const checkingLive = ref(false)
+async function pollLive(force = false): Promise<void> {
+  if (store.inCall || store.status === 'connecting' || store.reopening || (document.hidden && !force) || checkingLive.value) return
+  checkingLive.value = true
+  try {
+    await store.refreshLive()
+  } finally {
+    checkingLive.value = false
+  }
 }
+const onAppFocus = (): void => void pollLive()
 onMounted(async () => {
   store.setViewOpen(true)
   await store.refreshRooms()
   void pollLive()
-  liveTimer = setInterval(() => void pollLive(), 20000)
+  liveTimer = setInterval(() => void pollLive(), 2500)
+  window.addEventListener('focus', onAppFocus)
 })
 onUnmounted(() => {
   store.setViewOpen(false)
   if (liveTimer) clearInterval(liveTimer)
+  window.removeEventListener('focus', onAppFocus)
 })
+// saiu de uma chamada: confere logo quem ficou nas salas
+watch(
+  () => store.inCall,
+  (inCall) => {
+    if (!inCall) setTimeout(() => void pollLive(true), 1500)
+  }
+)
 
 // ---------------------------------------------------------------- transmissões
 const showShare = ref(false)
@@ -173,6 +189,137 @@ async function minimize(): Promise<void> {
 async function closeView(): Promise<void> {
   if (document.fullscreenElement) await document.exitFullscreen()
   store.watch(null)
+}
+
+// ---------------------------------------------------------------- transmissão no topo do chat / miniatura solta
+// Aberta: fica presa no topo da coluna do chat, na proporção do vídeo (sem as faixas pretas), e o chat
+// continua embaixo. A divisória entre as duas dá para arrastar. Minimizada: miniatura que dá para arrastar
+// pela área do chat e redimensionar (pelo canto), sempre na proporção do vídeo.
+const chatColumn = ref<HTMLDivElement | null>(null)
+const col = reactive({ w: 0, h: 0 })
+const colObserver = new ResizeObserver(([entry]) => {
+  col.w = entry.contentRect.width
+  col.h = entry.contentRect.height
+})
+watch(chatColumn, (el, old) => {
+  if (old) colObserver.unobserve(old)
+  if (el) colObserver.observe(el)
+})
+onUnmounted(() => colObserver.disconnect())
+
+const videoAspect = ref(16 / 9)
+function onVideoSize(): void {
+  const v = screenVideo.value
+  if (v?.videoWidth && v.videoHeight) videoAspect.value = v.videoWidth / v.videoHeight
+}
+
+const DOCK_KEY = 'call.dockHeight'
+const MIN_CHAT = 220 // altura mínima que sobra para o chat (mensagens + campo de texto)
+const DIVIDER = 8
+/** altura escolhida arrastando a divisória (fração da coluna); null = a do vídeo inteiro */
+const dockPref = ref<number | null>(Number(localStorage.getItem(DOCK_KEY)) || null)
+const dockH = computed(() => {
+  const fit = col.w / videoAspect.value
+  const want = dockPref.value ? dockPref.value * col.h : fit
+  return Math.round(Math.max(140, Math.min(want, fit, col.h - MIN_CHAT)))
+})
+const docked = computed(() => expanded.value && !fullscreen.value)
+
+function onDividerDown(e: MouseEvent): void {
+  e.preventDefault()
+  const startY = e.clientY
+  const startH = dockH.value
+  const onMove = (ev: MouseEvent): void => {
+    if (col.h) dockPref.value = Math.max(140, startH + ev.clientY - startY) / col.h
+  }
+  const onUp = (): void => {
+    document.removeEventListener('mousemove', onMove)
+    document.removeEventListener('mouseup', onUp)
+    try {
+      if (dockPref.value) localStorage.setItem(DOCK_KEY, String(dockPref.value))
+    } catch {
+      // sem armazenamento: vale só agora
+    }
+  }
+  document.addEventListener('mousemove', onMove)
+  document.addEventListener('mouseup', onUp)
+}
+
+/** duplo clique na divisória: volta ao tamanho do vídeo inteiro */
+function resetDock(): void {
+  dockPref.value = null
+  localStorage.removeItem(DOCK_KEY)
+}
+
+const MINI_KEY = 'call.miniWidth'
+const miniW = ref(Number(localStorage.getItem(MINI_KEY)) || 320)
+/** posição da miniatura na coluna (null = canto inferior direito, acima do campo de texto) */
+const miniPos = ref<{ x: number; y: number } | null>(null)
+const miniBox = computed(() => {
+  const w = Math.round(Math.max(200, Math.min(miniW.value, col.w - 16)))
+  const h = Math.round(w / videoAspect.value)
+  const x = miniPos.value?.x ?? col.w - w - 16
+  const y = miniPos.value?.y ?? col.h - h - 96
+  return { w, h, x: Math.round(Math.max(8, Math.min(x, col.w - w - 8))), y: Math.round(Math.max(8, Math.min(y, col.h - h - 8))) }
+})
+
+const stageStyle = computed(() => {
+  if (fullscreen.value) return {}
+  if (docked.value) return { top: '0px', left: '0px', right: '0px', height: `${dockH.value}px`, cursor: videoStyle.value.cursor }
+  const b = miniBox.value
+  return { left: `${b.x}px`, top: `${b.y}px`, width: `${b.w}px`, height: `${b.h}px` }
+})
+
+/** Arrastar a miniatura (um clique sem arrastar abre a transmissão grande). */
+function onMiniDown(e: MouseEvent): void {
+  if ((e.target as HTMLElement).closest('button, input')) return
+  e.preventDefault()
+  const start = { x: e.clientX, y: e.clientY, bx: miniBox.value.x, by: miniBox.value.y }
+  let moved = false
+  const onMove = (ev: MouseEvent): void => {
+    const dx = ev.clientX - start.x
+    const dy = ev.clientY - start.y
+    if (!moved && Math.hypot(dx, dy) < 4) return
+    moved = true
+    miniPos.value = { x: start.bx + dx, y: start.by + dy }
+  }
+  const onUp = (): void => {
+    document.removeEventListener('mousemove', onMove)
+    document.removeEventListener('mouseup', onUp)
+    if (!moved) store.setViewMode('expanded')
+  }
+  document.addEventListener('mousemove', onMove)
+  document.addEventListener('mouseup', onUp)
+}
+
+/** Redimensionar a miniatura pelo canto superior esquerdo (o canto oposto fica parado), na proporção do vídeo. */
+function onMiniResize(e: MouseEvent): void {
+  e.preventDefault()
+  e.stopPropagation()
+  const b = miniBox.value
+  const startX = e.clientX
+  const onMove = (ev: MouseEvent): void => {
+    const w = Math.max(200, Math.min(b.w - (ev.clientX - startX), col.w - 16))
+    const h = w / videoAspect.value
+    miniW.value = w
+    miniPos.value = { x: b.x + b.w - w, y: b.y + b.h - h }
+  }
+  const onUp = (): void => {
+    document.removeEventListener('mousemove', onMove)
+    document.removeEventListener('mouseup', onUp)
+    try {
+      localStorage.setItem(MINI_KEY, String(Math.round(miniW.value)))
+    } catch {
+      // sem armazenamento: vale só agora
+    }
+  }
+  document.addEventListener('mousemove', onMove)
+  document.addEventListener('mouseup', onUp)
+}
+
+function onStageDown(e: MouseEvent): void {
+  if (mini.value) onMiniDown(e)
+  else onPanStart(e)
 }
 
 // ---------------------------------------------------------------- medidores de voz
@@ -368,6 +515,10 @@ function confirmLeave(): void {
             {{ busy ? (mode === 'create' ? 'Abrindo…' : 'Entrando…') : mode === 'create' ? 'Criar sala' : 'Entrar' }}
           </button>
           <p v-if="store.error && !busy" class="text-xs text-red-400 text-center">{{ store.error }}</p>
+          <div v-if="store.reopening" class="flex flex-col items-center gap-2 text-center">
+            <p class="text-xs text-amber-300">{{ store.reopening.hint }}</p>
+            <button type="button" class="text-xs text-slate-400 hover:text-slate-200 underline underline-offset-2" @click="store.cancelReopen()">Cancelar</button>
+          </div>
           <div v-if="busy && store.waitingApproval" class="flex flex-col items-center gap-2 text-center">
             <p class="text-xs text-amber-300">Aguardando alguém da sala aceitar a sua entrada…</p>
             <button type="button" class="text-xs text-slate-400 hover:text-slate-200 underline underline-offset-2" @click="store.leave()">Cancelar</button>
@@ -389,7 +540,20 @@ function confirmLeave(): void {
 
       <!-- salas anteriores: o histórico do chat fica guardado neste computador -->
       <div v-if="store.recentRooms.length" class="w-full max-w-md flex flex-col gap-2">
-        <p class="text-xs text-slate-500 uppercase tracking-wide px-1">Salas anteriores</p>
+        <div class="flex items-center gap-2 px-1">
+          <p class="text-xs text-slate-500 uppercase tracking-wide flex-1">Salas anteriores</p>
+          <button
+            :disabled="checkingLive"
+            class="flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-200 transition-colors disabled:opacity-60"
+            title="Ver agora quais salas estão abertas e quem está nelas (atualiza sozinho a cada 2,5 s e na hora em que alguém abre uma sala)"
+            @click="pollLive(true)"
+          >
+            <svg :class="['w-3.5 h-3.5', checkingLive ? 'animate-spin' : '']" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
+            </svg>
+            {{ checkingLive ? 'Verificando…' : 'Atualizar' }}
+          </button>
+        </div>
         <div class="bg-slate-800/60 rounded-2xl border border-slate-700/40 divide-y divide-slate-700/40 max-h-72 overflow-y-auto">
           <div v-for="r in store.recentRooms" :key="r.id" class="group flex items-center gap-3 px-4 py-3">
             <div class="flex-1 min-w-0">
@@ -400,9 +564,17 @@ function confirmLeave(): void {
                   class="flex-shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-500/15 text-[10px] font-medium text-emerald-300"
                   title="A sala está aberta agora"
                 ><span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />ao vivo</span>
+                <span
+                  v-else-if="store.roomsOpening[r.id]"
+                  class="flex-shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-500/15 text-[10px] font-medium text-amber-300"
+                  title="Alguém está abrindo a sala agora: clique em Entrar e você entra junto quando ela estiver no ar"
+                ><span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />abrindo</span>
               </p>
               <p v-if="store.roomsLive[r.id]" class="text-xs text-emerald-300/90 truncate" :title="store.roomsLive[r.id]!.names.join(', ')">
                 Na sala agora: {{ store.roomsLive[r.id]!.names.join(', ') || 'ninguém' }}
+              </p>
+              <p v-else-if="store.roomsOpening[r.id]" class="text-xs text-amber-300/90 truncate">
+                {{ store.roomsOpening[r.id] }} está abrindo a sala agora
               </p>
               <p class="text-xs text-slate-500 truncate">
                 {{ fmtDay(r.updatedAt) }} · {{ r.messageCount }} {{ r.messageCount === 1 ? 'mensagem' : 'mensagens' }}
@@ -414,7 +586,7 @@ function confirmLeave(): void {
               class="px-3 py-1.5 rounded-lg text-xs font-medium text-slate-100 bg-slate-700 hover:bg-indigo-600 transition-colors disabled:opacity-50"
               :title="store.roomsLive[r.id] ? 'Entra na sala que já está aberta (você já participou dela, então entra direto)' : 'Abre a sala de novo com o mesmo chat. Se alguém já estiver com ela aberta, você entra nela'"
               @click="reopen(r.id)"
-            >{{ store.roomsLive[r.id] ? 'Entrar' : 'Reabrir' }}</button>
+            >{{ store.roomsLive[r.id] || store.roomsOpening[r.id] ? 'Entrar' : 'Reabrir' }}</button>
             <button
               :disabled="busy"
               class="p-1.5 rounded-lg text-slate-500 hover:text-red-400 hover:bg-slate-700/60 transition-colors opacity-0 group-hover:opacity-100 disabled:opacity-0"
@@ -500,12 +672,17 @@ function confirmLeave(): void {
     <div class="flex flex-1 gap-4 min-h-0">
       <!-- Esquerda: chat da sala (a transmissão aberta se expande por cima dele) -->
       <div
+        ref="chatColumn"
         class="relative flex-1 min-w-0 flex flex-col bg-slate-800/60 rounded-2xl border border-slate-700/40 overflow-hidden"
         @dragover.prevent="onDragOver"
         @dragleave.self="dragging = false"
         @drop.prevent="onDrop"
       >
-        <div ref="chatEl" class="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-4 min-h-0">
+        <div
+          ref="chatEl"
+          class="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-4 min-h-0"
+          :style="docked ? { marginTop: `${dockH + DIVIDER}px` } : undefined"
+        >
           <p v-if="!store.messages.length" class="text-sm text-slate-600 text-center m-auto">
             Sem mensagens ainda. Escreva abaixo, cole um print ou arraste arquivos para cá.
           </p>
@@ -606,21 +783,39 @@ function confirmLeave(): void {
           <p class="text-sm text-indigo-300">Solte para anexar</p>
         </div>
 
-        <!-- Transmissão aberta: grande por cima do chat ou minimizada no canto -->
+        <!-- Transmissão aberta: presa no topo do chat (chat embaixo) ou miniatura solta pela área do chat -->
         <div
           v-show="store.watching"
           ref="stage"
+          :style="stageStyle"
           :class="[
             'group absolute z-10 bg-slate-950 flex items-center justify-center overflow-hidden',
-            expanded || fullscreen ? 'inset-0' : 'right-4 bottom-24 w-80 aspect-video rounded-xl border border-slate-600 shadow-2xl cursor-pointer'
+            fullscreen ? 'inset-0' : docked ? '' : 'rounded-xl border border-slate-600 shadow-2xl cursor-move'
           ]"
           @wheel="onWheel"
           @contextmenu.prevent="openMenu($event, 'screen')"
-          @mousedown="onPanStart"
+          @mousedown="onStageDown"
           @dblclick="expanded ? resetZoom() : undefined"
-          @click="mini ? store.setViewMode('expanded') : undefined"
         >
-          <video ref="screenVideo" autoplay muted playsinline :style="expanded ? videoStyle : undefined" class="w-full h-full object-contain select-none" />
+          <video
+            ref="screenVideo"
+            autoplay
+            muted
+            playsinline
+            :style="expanded ? videoStyle : undefined"
+            class="w-full h-full object-contain select-none pointer-events-none"
+            @loadedmetadata="onVideoSize"
+            @resize="onVideoSize"
+          />
+          <!-- miniatura: canto para redimensionar -->
+          <div
+            v-if="mini"
+            class="absolute top-0 left-0 w-4 h-4 cursor-nwse-resize z-10 opacity-0 group-hover:opacity-100"
+            title="Arraste para redimensionar"
+            @mousedown="onMiniResize"
+          >
+            <div class="absolute top-1 left-1 w-2 h-2 border-t-2 border-l-2 border-white/80 rounded-tl-sm" />
+          </div>
 
           <!-- topo: nome + minimizar, tela cheia, fechar -->
           <div class="absolute top-0 inset-x-0 flex items-center gap-2 p-2 bg-gradient-to-b from-black/70 to-transparent opacity-0 group-hover:opacity-100 transition-opacity">
@@ -717,6 +912,17 @@ function confirmLeave(): void {
             >1:1</button>
           </div>
         </div>
+        <!-- divisória entre a transmissão e o chat: arraste para mudar a altura -->
+        <div
+          v-if="docked && store.watching"
+          class="absolute left-0 right-0 z-10 flex items-center justify-center cursor-row-resize group/div bg-slate-900"
+          :style="{ top: `${dockH}px`, height: `${DIVIDER}px` }"
+          title="Arraste para mudar a altura (duplo clique: tamanho do vídeo)"
+          @mousedown="onDividerDown"
+          @dblclick="resetDock"
+        >
+          <div class="w-12 h-1 rounded-full bg-slate-600 group-hover/div:bg-indigo-400 transition-colors" />
+        </div>
       </div>
 
       <!-- Direita: participantes + transmissões -->
@@ -770,11 +976,11 @@ function confirmLeave(): void {
                   min="0"
                   max="1"
                   step="0.005"
-                  :value="volumeToSlider(store.peerVolumes[peer.id] ?? 1)"
+                  :value="volumeToSlider(store.peerVolumes[peer.id] ?? DEFAULT_PEER_VOLUME)"
                   class="flex-1 h-1 accent-indigo-500 cursor-pointer"
                   @input="onVolume(peer.id, $event)"
                 />
-                <span class="text-xs text-slate-500 w-11 text-right">{{ formatVolume(store.peerVolumes[peer.id] ?? 1) }}</span>
+                <span class="text-xs text-slate-500 w-11 text-right">{{ formatVolume(store.peerVolumes[peer.id] ?? DEFAULT_PEER_VOLUME) }}</span>
               </div>
             </li>
           </ul>
@@ -841,7 +1047,7 @@ function confirmLeave(): void {
       :x="menu.x"
       :y="menu.y"
       :title="menu.target === 'screen' ? `Som da transmissão de ${watchingLabel}` : `Voz de ${menuPeer?.name}`"
-      :volume="menu.target === 'screen' ? store.screenVolume : (store.peerVolumes[menu.target] ?? 1)"
+      :volume="menu.target === 'screen' ? store.screenVolume : (store.peerVolumes[menu.target] ?? DEFAULT_PEER_VOLUME)"
       :muted="menu.target === 'screen' ? store.screenMuted : store.mutedPeers.has(menu.target)"
       :mute-label="menu.target === 'screen' ? 'Mutar a transmissão' : 'Mutar para mim'"
       @volume="onMenuVolume"

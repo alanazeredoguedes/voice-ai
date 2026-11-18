@@ -106,11 +106,19 @@ interface Link {
   gain: GainNode
   screenGain: GainNode
   analyser: AnalyserNode
+  /** medidor do som da tela recebido (antes do volume escolhido aqui) */
+  screenAnalyser: AnalyserNode
+  /** ligar/desligar o envio da tela em fila (duas mudanças ao mesmo tempo dão erro no WebRTC) */
+  gating: Promise<void>
   output: HTMLAudioElement
   /** limitador final: deixa passar volumes acima de 100% sem estourar (distorcer) */
   limiter: DynamicsCompressorNode
   /** ids das faixas de áudio recebidas que são som da tela (as outras são microfone) */
   screenAudioTracks: Set<string>
+  /** ids dos fluxos do outro lado (vêm na mensagem "state"): identificam voz × som da tela sem adivinhar */
+  remoteStreams: { mic?: string; screen?: string }
+  /** faixas de áudio que chegaram antes de dar para saber se são voz ou som da tela */
+  pendingAudio: { track: MediaStreamTrack; stream: MediaStream | undefined; resolve: (screen: boolean) => void }[]
   /** já registrou no log por onde a conexão passou */
   routeLogged: boolean
   /** <audio> mudos: no Chromium o áudio WebRTC só chega ao Web Audio se também estiver num elemento de mídia */
@@ -128,6 +136,8 @@ const ICE_SERVERS: RTCIceServer[] = [
   { urls: 'stun:stun.cloudflare.com:3478' }
 ]
 const OUTPUT_KEY = 'call.audioOutput'
+/** volume inicial da voz de quem entra (a pessoa ajusta depois, pelo botão direito ou pela barra) */
+export const DEFAULT_PEER_VOLUME = 0.3
 /** som da tela é música/vídeo: o padrão do WebRTC (~32 kbps, pensado para voz) fica abafado */
 const SCREEN_AUDIO_BITRATE = 128_000
 
@@ -147,6 +157,8 @@ export function useCallRtc(log: CallLogFn = () => {}) {
   let handlers: Handlers | null = null
   let micTrack: MediaStreamTrack | null = null
   let screenStream: MediaStream | null = null
+  /** limites do vídeo da tela (taxa e quadros por segundo), escolhidos na qualidade da transmissão */
+  let screenVideoLimits: { maxBitrate: number; maxFramerate: number } | null = null
   let localState = { sharing: false, muted: false }
   let watchingPeerId: string | null = null
   let screenVolume = 1
@@ -385,11 +397,15 @@ export function useCallRtc(log: CallLogFn = () => {}) {
     // grafo de áudio: voz → medidor → ganho da pessoa → saída ; áudio da tela → ganho da transmissão → saída
     const ctx = new AudioContext()
     const gain = ctx.createGain()
+    gain.gain.value = DEFAULT_PEER_VOLUME
     const screenGain = ctx.createGain()
     screenGain.gain.value = 0 // só toca quando a tela desse participante está aberta
     const analyser = ctx.createAnalyser()
     analyser.fftSize = 64
     analyser.smoothingTimeConstant = 0.7
+    const screenAnalyser = ctx.createAnalyser()
+    screenAnalyser.fftSize = 2048
+    screenAnalyser.connect(screenGain)
     const limiter = ctx.createDynamicsCompressor()
     limiter.threshold.value = -3
     limiter.knee.value = 0
@@ -422,12 +438,16 @@ export function useCallRtc(log: CallLogFn = () => {}) {
       gain,
       screenGain,
       analyser,
+      screenAnalyser,
+      gating: Promise.resolve(),
       limiter,
       screenAudioTracks: new Set(),
+      remoteStreams: {},
+      pendingAudio: [],
       routeLogged: false,
       output,
       primers: [],
-      volume: 1,
+      volume: DEFAULT_PEER_VOLUME,
       muted: false
     }
     links.set(peerId, link)
@@ -481,14 +501,64 @@ export function useCallRtc(log: CallLogFn = () => {}) {
       }
       const single = new MediaStream([e.track])
       link.primers.push(hiddenAudio(single, true))
-      // mesmo fluxo do vídeo = áudio da tela; senão é o microfone
-      const isScreenAudio = (e.streams[0]?.getVideoTracks().length ?? 0) > 0
-      if (isScreenAudio) link.screenAudioTracks.add(e.track.id)
-      log('info', `recebendo faixa de áudio ${isScreenAudio ? 'da tela' : 'do microfone'} de ${nameOf(peerId)}`)
-      ctx.createMediaStreamSource(single).connect(isScreenAudio ? screenGain : analyser)
+      // Voz ou som da tela? Até saber, a faixa não toca em lugar nenhum (antes, um som da tela que chegava
+      // antes do vídeo era tratado como voz e tocava sem a pessoa ter aberto a transmissão).
+      classifyAudio(peerId, link, e.track, e.streams[0], (isScreenAudio) => {
+        if (isScreenAudio) link.screenAudioTracks.add(e.track.id)
+        log('info', `recebendo faixa de áudio ${isScreenAudio ? 'da tela' : 'do microfone'} de ${nameOf(peerId)}`)
+        ctx.createMediaStreamSource(single).connect(isScreenAudio ? screenAnalyser : analyser)
+      })
     }
     return link
   }
+
+  /**
+   * Decide se uma faixa de áudio recebida é a voz ou o som da tela:
+   *  1. pelo id do fluxo, que o outro lado informa na mensagem "state" (certeiro);
+   *  2. se o fluxo já tem vídeo, é da tela;
+   *  3. senão espera: o id chegar, o vídeo entrar no mesmo fluxo ou, em 3 s, trata como voz
+   *     (participante com versão antiga, que não informa os ids).
+   */
+  function classifyAudio(
+    peerId: string,
+    link: Link,
+    track: MediaStreamTrack,
+    stream: MediaStream | undefined,
+    done: (screen: boolean) => void
+  ): void {
+    const known = decide(link, stream)
+    if (known !== null) return done(known)
+    let settled = false
+    const resolve = (screen: boolean): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      stream?.removeEventListener('addtrack', onAdd)
+      link.pendingAudio = link.pendingAudio.filter((p) => p.track !== track)
+      done(screen)
+    }
+    const onAdd = (ev: MediaStreamTrackEvent): void => {
+      if (ev.track.kind === 'video') resolve(true)
+    }
+    stream?.addEventListener('addtrack', onAdd)
+    const timer = setTimeout(() => {
+      log('warn', `não deu para saber se o áudio de ${nameOf(peerId)} é voz ou tela: tratando como voz`)
+      resolve(false)
+    }, 3000)
+    link.pendingAudio.push({ track, stream, resolve })
+  }
+
+  function decide(link: Link, stream: MediaStream | undefined): boolean | null {
+    const id = stream?.id
+    if (id && link.remoteStreams.screen === id) return true
+    if (id && link.remoteStreams.mic === id) return false
+    if (id && link.remoteStreams.screen && link.remoteStreams.mic) return false
+    if ((stream?.getVideoTracks().length ?? 0) > 0) return true
+    return null
+  }
+
+  /** Mensagem "state": o que eu informo aos outros (mudo, transmitindo e os ids dos meus fluxos). */
+  const stateMessage = (): AppMessage => ({ kind: 'state', ...localState, micStream: micLabel.id, screenStream: screenLabel.id })
 
   function hiddenAudio(stream: MediaStream, muted: boolean): HTMLAudioElement {
     const el = document.createElement('audio')
@@ -505,7 +575,7 @@ export function useCallRtc(log: CallLogFn = () => {}) {
     link.dc = dc
     dc.onopen = () => {
       log('info', `canal de mensagens com ${nameOf(peerId)} aberto`)
-      sendData(dc, { kind: 'state', ...localState })
+      sendData(dc, stateMessage())
       // estava assistindo esta pessoa antes de a conexão abrir (ex.: reconexão): avisa de novo
       if (watchingPeerId === peerId) sendData(dc, { kind: 'watch', on: true })
       handlers?.onPeerReady(peerId)
@@ -525,6 +595,13 @@ export function useCallRtc(log: CallLogFn = () => {}) {
       if (msg.kind === 'state') {
         const peer = peers.find((p) => p.id === peerId)
         if (!peer) return
+        if (typeof msg.micStream === 'string' && typeof msg.screenStream === 'string') {
+          link.remoteStreams = { mic: msg.micStream, screen: msg.screenStream }
+          for (const p of [...link.pendingAudio]) {
+            const known = decide(link, p.stream)
+            if (known !== null) p.resolve(known)
+          }
+        }
         if (peer.sharing !== !!msg.sharing) log('info', `${peer.name} ${msg.sharing ? 'começou' : 'parou'} a transmitir a tela`)
         if (peer.muted !== !!msg.muted) log('info', `${peer.name} ${msg.muted ? 'mutou' : 'desmutou'} o microfone`)
         peer.sharing = !!msg.sharing
@@ -572,29 +649,49 @@ export function useCallRtc(log: CallLogFn = () => {}) {
   }
 
   /** Liga/desliga o envio da minha tela para este participante conforme ele esteja assistindo. */
-  async function gateScreen(link: Link): Promise<void> {
+  function gateScreen(link: Link): Promise<void> {
+    link.gating = link.gating.then(() => applyGate(link)).catch(() => {})
+    return link.gating
+  }
+
+  async function applyGate(link: Link, retry = true): Promise<void> {
     for (const sender of [link.screenVideoSender, link.screenAudioSender]) {
       if (!sender) continue
       const params = sender.getParameters()
       if (!params.encodings?.length) continue // ainda não negociado: aplica quando ficar "stable"
       const active = link.watchingMe
-      const bitrate = sender === link.screenAudioSender ? SCREEN_AUDIO_BITRATE : undefined
-      if (params.encodings.every((enc) => enc.active === active && (!bitrate || enc.maxBitrate === bitrate))) continue
+      const isVideo = sender === link.screenVideoSender
+      const bitrate = isVideo ? screenVideoLimits?.maxBitrate : SCREEN_AUDIO_BITRATE
+      const framerate = isVideo ? screenVideoLimits?.maxFramerate : undefined
+      if (
+        params.encodings.every(
+          (enc) => enc.active === active && (!bitrate || enc.maxBitrate === bitrate) && (!framerate || enc.maxFramerate === framerate)
+        )
+      )
+        continue
       params.encodings.forEach((enc) => {
         enc.active = active
         if (bitrate) enc.maxBitrate = bitrate
+        if (framerate) enc.maxFramerate = framerate
       })
+      if (isVideo && framerate && framerate > 30) params.degradationPreference = 'maintain-framerate'
       try {
         await sender.setParameters(params)
       } catch (e) {
+        // os parâmetros mudaram no meio (renegociação): lê de novo e tenta uma vez mais
+        if (retry && e instanceof DOMException && e.name === 'InvalidModificationError') {
+          await new Promise((r) => setTimeout(r, 200))
+          return applyGate(link, false)
+        }
         log('error', `falha ao ${active ? 'ligar' : 'desligar'} o envio da tela: ${errText(e)}`)
       }
     }
   }
 
   /** Tela compartilhada com todos (null = parar). Trocar de tela só substitui as faixas, sem renegociar. */
-  async function setScreenStream(stream: MediaStream | null): Promise<void> {
+  async function setScreenStream(stream: MediaStream | null, limits: { maxBitrate: number; maxFramerate: number } | null = null): Promise<void> {
     screenStream = stream
+    screenVideoLimits = stream ? limits : null
     const video = stream?.getVideoTracks()[0] ?? null
     const audio = stream?.getAudioTracks()[0] ?? null
     for (const link of links.values()) {
@@ -610,7 +707,7 @@ export function useCallRtc(log: CallLogFn = () => {}) {
 
   function setLocalState(patch: Partial<typeof localState>): void {
     localState = { ...localState, ...patch }
-    broadcast({ kind: 'state', ...localState })
+    broadcast(stateMessage())
   }
 
   // ---------------------------------------------------------------- arquivos (um canal por arquivo e por participante)
@@ -745,6 +842,16 @@ export function useCallRtc(log: CallLogFn = () => {}) {
 
   const dbfs = (level?: number): string => (level && level > 0 ? `${Math.round(20 * Math.log10(level))} dBFS` : 'silêncio')
 
+  /** Nível médio (dBFS) do que está chegando agora, medido no próprio áudio (a estatística do navegador fica em zero). */
+  function measured(an: AnalyserNode): string {
+    const buf = new Float32Array(an.fftSize)
+    an.getFloatTimeDomainData(buf)
+    let sum = 0
+    for (const v of buf) sum += v * v
+    const db = 10 * Math.log10(sum / buf.length + 1e-12)
+    return db < -90 ? 'silêncio' : `${Math.round(db)} dBFS`
+  }
+
   /**
    * Resumo de cada conexão para o log: o que chega e o que sai (taxa, perda, nível do som). O nível
    * mostra se um áudio chega baixo porque já saiu baixo de quem envia ou se é coisa de quem ouve.
@@ -765,7 +872,7 @@ export function useCallRtc(log: CallLogFn = () => {}) {
             if (!rate && r.kind === 'video') return
             let line = `recebe ${what}: ${rate ?? '?'} kbps`
             if (r.packetsLost) line += `, ${r.packetsLost} pacotes perdidos`
-            if (r.kind === 'audio') line += `, nível ${dbfs(r.audioLevel)}`
+            if (r.kind === 'audio') line += `, nível ${measured(what === 'som da tela' ? link.screenAnalyser : link.analyser)}`
             if (r.kind === 'video' && r.frameWidth) line += `, ${r.frameWidth}x${r.frameHeight} ${Math.round(r.framesPerSecond ?? 0)} fps`
             parts.push(line)
           }
