@@ -91,89 +91,6 @@ A desktop voice assistant: it transcribes what you say, chats with an AI (by tex
 
 ---
 
-## File translation
-
-In **Translate → Files**, drag one or more files (or click to pick). Each one is translated on your computer, offline, with the same language packages used for text translation. The queue shows progress (page by page for PDFs).
-
-| Format | How it is translated | Result |
-|--------|----------------------|--------|
-| **PDF** | the text is rewritten on top of the original page (details below) | very close to the original |
-| **Word (DOCX)** | only the text is replaced inside the file: paragraphs, tables, headers, footers, notes, text boxes and charts | practically identical |
-| **PowerPoint (PPTX)** | slides, notes, SmartArt and charts | practically identical |
-| **Excel (XLSX)** | text cells (formulas and numbers stay as they are) | identical |
-| **TXT, Markdown, SRT** | paragraph by paragraph; in Markdown, headings, lists and tables keep their markup and code blocks are not translated; in subtitles, numbers and timings are kept | identical |
-
-### How PDFs keep their layout
-
-A PDF does not store paragraphs, only pieces of text at fixed positions on the page. For each page, the app:
-
-1. **reads the text blocks** with position, font, size, color, bold and italic, and joins lines into paragraphs (respecting lists, numbering, columns and table cells);
-2. **translates each whole paragraph** (the model does much better with full sentences than with loose lines). Numbering ("1.", "a)") and list bullets stay out of the translation, and highlighted labels at the start of a paragraph ("**Note:**") are translated separately to keep their styling;
-3. **removes only the original text** from the page: images, lines, backgrounds and drawn tables stay;
-4. **writes the translation in the same box**, with the same size, color, alignment and line height. If the translated text is longer (English to Portuguese usually grows 15 to 30%), it uses the free space beside and below it and, if it still does not fit, the font shrinks a little.
-
-The font is picked in this order: **the font embedded in the PDF** (when it has every letter of the translation; PDFs usually carry only the letters used in the original, so an English document lacks "ç", "ã", "é"...); then **the same font installed on the computer** or a metric-compatible one (Arial ↔ Liberation Sans, Times ↔ Liberation Serif, Calibri ↔ Carlito...); finally a similar font (serif, sans-serif or monospace).
-
-### Preview, theme and save
-
-Each translated PDF has three actions:
-
-- **Light | Dark**: the file theme. Dark turns the background dark and the text light **while keeping the colors** (a blue heading stays blue, just lighter); photos and images stay as in the original and the text remains selectable. It is generated on demand, after the translation, and applies to preview and save.
-- **Preview**: opens the original and the translation side by side (or one at a time). It opens with the whole page on screen and has zoom (buttons, `Ctrl` + mouse wheel, `+`/`-`), rotate (`R`), drag to pan, theme toggle (`T`), arrows or a page list with search by number, and a **Save** button. Pages are rendered at your screen's resolution; a light version shows first and the sharp one right after, and the next page is prepared in the background.
-- **Save**: pick a folder and save the file in the chosen theme.
-
-Files stay in a temporary app folder until you save them; the item's **X** deletes that copy (what you saved stays). The space used shows in **Settings → Storage**.
-
-**Limitations:** scanned PDFs (photos of pages) and text inside images are not translated; within a paragraph the main style wins (a bold word in the middle of a sentence loses its bold); the dark theme is PDF only. Quality is that of Argos Translate: for Brazilian Portuguese, install the **English → Portuguese (Brazil)** pair.
-
----
-
-## Call
-
-Voice rooms to talk, watch someone's screen and exchange messages and files, **with no server of your own, no account and no router ports to open**.
-
-**What a room has:**
-
-- **Voice** with microphone and output device selection, a speaking indicator and, by right-clicking a person, individual volume (0 to 400%, with finer control at low volumes) and "mute for me".
-- **Screen sharing** (whole screen or one window) from 480p to 4K, with adjustable frame rate and **computer sound**. More than one person can share at once; viewers can enlarge, zoom, pan, go fullscreen or minimize it to a corner.
-- **Chat** with edit and delete for everyone, and **files up to 500 MB** (images and videos with preview; paste or drag them in).
-- **History kept on your computer**: newcomers receive the last 500 messages from whoever is already in the room, and an old file can be requested from anyone who has a copy.
-- **Live previous rooms**: the list shows which rooms are open right now and who is in them. **Reopen** joins the room that is already open (instead of everyone opening their own); if nobody has it open, you become the host. If two people click at the same time, whoever reserved first opens it and the other sees "Wait: X is opening the room" and joins.
-- **Adjustable microphone** (settings button next to **Logs**): microphone volume, **only transmit when I speak** (with a live meter and adjustable threshold) and, on Linux, **remove the computer's sound from the microphone**: a PipeWire process owned by the app runs WebRTC echo cancellation using everything played on the speakers as reference (someone watching a video on speakers does not send that sound back through the microphone). Nothing to install: the module ships with PipeWire, Ubuntu's default sound server since 22.10.
-- **Admission control**: first-time visitors wait until someone inside clicks **Accept** (or **Decline**, and they see a notice). People who were in the room before get in directly.
-- **Room logs** (**Logs** button): everything that happens in the call (connections, network route, microphone, sharing, volumes, files, errors), yours and the other participants' together, with filters and a **Copy** button. Every 30 s a summary of the connections is added (bitrate, packet loss and sound level).
-
-### How the network works
-
-```
-  Room creator                                            Guests
-┌──────────────────────┐                              ┌───────────────┐
-│ Signaling server     │◄── Cloudflare tunnel ───────►│ join with the │
-│ (local)              │    (room code =              │ code          │
-└──────────────────────┘     tunnel address)          └───────────────┘
-          ▲   only the "handshake" (SDP / ICE) goes through here
-          ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│ WebRTC mesh: each participant connects DIRECTLY to each of the        │
-│ others. Voice, screen, chat and files go person to person,            │
-│ encrypted (DTLS-SRTP), without going through any server.              │
-└──────────────────────────────────────────────────────────────────────┘
-```
-
-1. **Creating a room:** the app starts a minimal signaling server (a WebSocket bound to `127.0.0.1` only) and opens a **Cloudflare quick tunnel** (`cloudflared`, downloaded during setup) that gives it a temporary public address. The tunnel's random name (e.g. `calm-river-paper-moon`) is the **room code**. The code only shows up once the address already works from outside (the app waits for the name to exist on Cloudflare's DNS servers).
-2. **Joining:** the guest types the code and connects to the signaling server through the tunnel. Only WebRTC negotiation messages (SDP and ICE candidates) pass through it, **never audio, video, chat or files**.
-3. **Direct connection:** using public STUN servers (Google and Cloudflare), each participant discovers its public address and WebRTC opens a **peer-to-peer** connection to each of the others (a mesh). Each connection carries the microphone, the screen video and sound, and data channels for chat and files (in 64 KB chunks).
-4. **Saving bandwidth:** a screen is only sent to those watching it; the tracks are negotiated but paused until the person opens the stream. Renegotiation follows the *perfect negotiation* pattern (two participants can start sharing at the same time without deadlocking).
-5. **Rendezvous (ntfy.sh):** the code changes every time the room is opened, so the host publishes "the room is at code X" on an [ntfy.sh](https://ntfy.sh) topic. The topic name is a hash of the room id (known only to people who were in the room) and the content is **encrypted** (AES-256-GCM, key derived from the room id): ntfy.sh only sees bytes, and keeps only that (for 12 h). Who is in the room, seen from outside, comes from the room's own server.
-6. **Admission:** the room server sends a room tag; people who were in the room before answer with a proof (derived from the room id) and get in directly. Anyone without it waits until someone inside accepts.
-7. **If the host leaves** (or the tunnel drops), the call goes on (the connection is direct) and the room reopens by itself: if the host is still in the call, they open a new tunnel; otherwise whoever stayed with the lowest id starts a new server. The new code goes to the others over the direct channel and to the rendezvous.
-
-**Shared sound:** on Windows it is the whole computer's sound, except Voice AI itself (so nobody hears their own voice back). On Linux, the app creates a virtual microphone in PipeWire (`VoiceAI-Transmissao`, via `pw-cli`) and routes into it the sound of every program (whole screen) or only of the chosen window's program (X11). Before sending, an **automatic gain** raises the sound to a good level (never lowers it) with a limiter against distortion: even if the sharer listens quietly, it arrives full and viewers adjust the volume on their side. Shared sound goes up to 128 kbps.
-
-**Limits:** since it is a mesh, each person sends their voice (and their screen, to those watching) to each of the others, so it works best for small groups. There is no TURN relay server: on very restrictive networks (some corporate networks, or symmetric NAT on both sides) a direct connection may not be possible.
-
----
-
 ## Installation
 
 Download the latest version from [Releases](https://github.com/alanazeredoguedes/voice-ai/releases): the `.exe` for Windows or the `.AppImage` for Linux.
@@ -272,15 +189,7 @@ The Windows installer ships Python and the core libraries inside it. The heavy p
 └─────────────────────────────────────────────────┘
 ```
 
-**Hotkey transcription:** hold the hotkey, audio is captured, on release Whisper transcribes locally, the text goes to the clipboard and shows on screen. With "transcribe while speaking" on, text is produced during the recording.
-
-**Asking the AI:** hold the AI hotkey and speak. The question is transcribed (and appears in the chat input while you talk), Claude answers in streaming, each sentence becomes audio in parallel and starts playing as soon as it is ready. The conversation is saved in the chat.
-
-**Images and videos:** when you ask for them, or when they help the explanation, the AI marks in its answer what it wants to show. The app searches (DuckDuckGo, no key, or Google Images through Serper, with a key), shows a preview, and a Haiku model checks each result and writes the caption.
-
-**File translation:** the file goes into a backend queue (one translation at a time, on the GPU if available); progress arrives over the WebSocket. See [File translation](#file-translation).
-
-**Call:** the networking lives in Electron (signaling server and tunnel in the main process, WebRTC in the UI); the backend is not involved. See [Call](#call).
+Each tab is explained in detail under [Features](#features). In short: Electron renders the interface and talks to the Python backend (FastAPI) over the local port; the backend handles Whisper, Claude, voice and translation. The Call is the exception: its networking lives entirely in Electron and the backend is not involved.
 
 ---
 
@@ -390,6 +299,148 @@ npm run release -- 1.4.0     # exact version
 ```
 
 The script checks the code, bumps the version and pushes the `vX.Y.Z` tag. GitHub then builds the `.AppImage` (Linux) and the `.exe` (Windows) and publishes both under **Releases** (about 10 minutes; follow it in the **Actions** tab).
+
+---
+
+## Features
+
+One section per app tab: what it does and how it works inside.
+
+- [Microphone Transcription](#microphone-transcription)
+- [File Transcription](#file-transcription)
+- [AI Chat](#ai-chat)
+- [Translate](#translate)
+- [Call](#call)
+- [Logs](#logs)
+- [Settings and storage](#settings-and-storage)
+
+### Microphone Transcription
+
+Hold the hotkey (`Ctrl + T` by default), speak and release. Audio is captured while the hotkey is held and, on release, **Whisper transcribes it on your computer** (the audio is never sent to a server). The text goes to the clipboard, ready to paste, and shows on screen together with the two previous transcriptions.
+
+- **Transcribe while speaking** (`whisper_stream`): the text is produced during the recording, so it is nearly done when you release.
+- **Batched mode** (`whisper_batched`): audio longer than 30 s is split into parts processed together, which speeds up long recordings.
+- **Skip silences** (`whisper_vad`): off by default.
+- **Cancel:** two quick presses of the hotkey discard the recording.
+- The screen shows the live state (listening, transcribing), the audio level and the progress.
+
+It runs on an NVIDIA GPU (CUDA) when there is one, or on the CPU. The Whisper model is chosen in **Settings** (see [Whisper models](#whisper-models)).
+
+### File Transcription
+
+Pick or drop an audio or video file (MP3, OGG, WAV, M4A, MP4 and other formats `ffmpeg` can read) and get the full transcription, with progress, audio duration and processing time. Also fully local, with the same Whisper model as the microphone transcription.
+
+### AI Chat
+
+Talk to **Claude** (through the Claude Code installed on the computer) by text or by voice, with conversations saved in the app.
+
+- **Ask by voice:** hold the AI hotkey (`Ctrl + I`) and speak. While you talk, the transcription fills the chat input; on release, the question is sent. Claude answers in streaming, each sentence becomes audio in parallel and starts playing as soon as it is ready.
+- **Spoken answers:** with Edge TTS (free) or ElevenLabs (paid). See [Voice (TTS)](#voice-tts).
+- **Images and videos in answers:** when you ask for them, or when they help the explanation, the AI marks in its answer what it wants to show. The app searches (DuckDuckGo, no key, or Google Images through Serper, with a key), shows a preview, and a Haiku model checks each result and writes the caption. YouTube videos show thumbnail, duration, title and channel.
+- **Search again and refine:** search again finds other images without repeats; refine lets you describe by voice what you want to see.
+- **Attachments:** images and text files, with a configurable size limit.
+- **Web search:** the AI can search the internet when it needs current information (`web_search`).
+- **System prompt written by the AI:** say what you want and the AI writes the chat's system prompt; then review it, ask for changes or save it.
+- **Model:** Haiku, Sonnet (default) or Opus, with plan usage shown in the settings.
+
+### Translate
+
+**Offline** translation with Argos Translate: language packages are downloaded once, inside the app, and then work without internet. The tab has two parts: **Text** and **Files**.
+
+#### Text
+
+Type or paste a text and pick the languages; the middle button swaps the direction. Works with Portuguese, English and dozens of other languages. For Brazilian Portuguese, install the **English → Portuguese (Brazil)** pair, which avoids European Portuguese words ("projecto", "equipa").
+
+#### Files (PDF, Word, PowerPoint, Excel, text and subtitles)
+
+In **Translate → Files**, drag one or more files (or click to pick). Each one is translated on your computer, offline, with the same language packages used for text translation. The queue shows progress (page by page for PDFs).
+
+| Format | How it is translated | Result |
+|--------|----------------------|--------|
+| **PDF** | the text is rewritten on top of the original page (details below) | very close to the original |
+| **Word (DOCX)** | only the text is replaced inside the file: paragraphs, tables, headers, footers, notes, text boxes and charts | practically identical |
+| **PowerPoint (PPTX)** | slides, notes, SmartArt and charts | practically identical |
+| **Excel (XLSX)** | text cells (formulas and numbers stay as they are) | identical |
+| **TXT, Markdown, SRT** | paragraph by paragraph; in Markdown, headings, lists and tables keep their markup and code blocks are not translated; in subtitles, numbers and timings are kept | identical |
+
+##### How PDFs keep their layout
+
+A PDF does not store paragraphs, only pieces of text at fixed positions on the page. For each page, the app:
+
+1. **reads the text blocks** with position, font, size, color, bold and italic, and joins lines into paragraphs (respecting lists, numbering, columns and table cells);
+2. **translates each whole paragraph** (the model does much better with full sentences than with loose lines). Numbering ("1.", "a)") and list bullets stay out of the translation, and highlighted labels at the start of a paragraph ("**Note:**") are translated separately to keep their styling;
+3. **removes only the original text** from the page: images, lines, backgrounds and drawn tables stay;
+4. **writes the translation in the same box**, with the same size, color, alignment and line height. If the translated text is longer (English to Portuguese usually grows 15 to 30%), it uses the free space beside and below it and, if it still does not fit, the font shrinks a little.
+
+The font is picked in this order: **the font embedded in the PDF** (when it has every letter of the translation; PDFs usually carry only the letters used in the original, so an English document lacks "ç", "ã", "é"...); then **the same font installed on the computer** or a metric-compatible one (Arial ↔ Liberation Sans, Times ↔ Liberation Serif, Calibri ↔ Carlito...); finally a similar font (serif, sans-serif or monospace).
+
+##### Preview, theme and save
+
+Each translated PDF has three actions:
+
+- **Light | Dark**: the file theme. Dark turns the background dark and the text light **while keeping the colors** (a blue heading stays blue, just lighter); photos and images stay as in the original and the text remains selectable. It is generated on demand, after the translation, and applies to preview and save.
+- **Preview**: opens the original and the translation side by side (or one at a time). It opens with the whole page on screen and has zoom (buttons, `Ctrl` + mouse wheel, `+`/`-`), rotate (`R`), drag to pan, theme toggle (`T`), arrows or a page list with search by number, and a **Save** button. Pages are rendered at your screen's resolution; a light version shows first and the sharp one right after, and the next page is prepared in the background.
+- **Save**: pick a folder and save the file in the chosen theme.
+
+Files stay in a temporary app folder until you save them; the item's **X** deletes that copy (what you saved stays). The space used shows in **Settings → Storage**.
+
+**Limitations:** scanned PDFs (photos of pages) and text inside images are not translated; within a paragraph the main style wins (a bold word in the middle of a sentence loses its bold); the dark theme is PDF only. Quality is that of Argos Translate (see the Portuguese (Brazil) tip under [Text](#text)).
+
+### Call
+
+Voice rooms to talk, watch someone's screen and exchange messages and files, **with no server of your own, no account and no router ports to open**.
+
+**What a room has:**
+
+- **Voice** with microphone and output device selection, a speaking indicator and, by right-clicking a person, individual volume (0 to 400%, with finer control at low volumes) and "mute for me".
+- **Screen sharing** (whole screen or one window) from 480p to 4K, with adjustable frame rate and **computer sound**. More than one person can share at once; viewers can enlarge, zoom, pan, go fullscreen or minimize it to a corner.
+- **Chat** with edit and delete for everyone, and **files up to 500 MB** (images and videos with preview; paste or drag them in).
+- **History kept on your computer**: newcomers receive the last 500 messages from whoever is already in the room, and an old file can be requested from anyone who has a copy.
+- **Live previous rooms**: the list shows which rooms are open right now and who is in them. **Reopen** joins the room that is already open (instead of everyone opening their own); if nobody has it open, you become the host. If two people click at the same time, whoever reserved first opens it and the other sees "Wait: X is opening the room" and joins.
+- **Adjustable microphone** (settings button next to **Logs**): microphone volume, **only transmit when I speak** (with a live meter and adjustable threshold) and, on Linux, **remove the computer's sound from the microphone**: a PipeWire process owned by the app runs WebRTC echo cancellation using everything played on the speakers as reference (someone watching a video on speakers does not send that sound back through the microphone). Nothing to install: the module ships with PipeWire, Ubuntu's default sound server since 22.10.
+- **Admission control**: first-time visitors wait until someone inside clicks **Accept** (or **Decline**, and they see a notice). People who were in the room before get in directly.
+- **Room logs** (**Logs** button): everything that happens in the call (connections, network route, microphone, sharing, volumes, files, errors), yours and the other participants' together, with filters and a **Copy** button. Every 30 s a summary of the connections is added (bitrate, packet loss and sound level).
+
+#### How the network works
+
+```
+  Room creator                                            Guests
+┌──────────────────────┐                              ┌───────────────┐
+│ Signaling server     │◄── Cloudflare tunnel ───────►│ join with the │
+│ (local)              │    (room code =              │ code          │
+└──────────────────────┘     tunnel address)          └───────────────┘
+          ▲   only the "handshake" (SDP / ICE) goes through here
+          ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│ WebRTC mesh: each participant connects DIRECTLY to each of the        │
+│ others. Voice, screen, chat and files go person to person,            │
+│ encrypted (DTLS-SRTP), without going through any server.              │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+1. **Creating a room:** the app starts a minimal signaling server (a WebSocket bound to `127.0.0.1` only) and opens a **Cloudflare quick tunnel** (`cloudflared`, downloaded during setup) that gives it a temporary public address. The tunnel's random name (e.g. `calm-river-paper-moon`) is the **room code**. The code only shows up once the address already works from outside (the app waits for the name to exist on Cloudflare's DNS servers).
+2. **Joining:** the guest types the code and connects to the signaling server through the tunnel. Only WebRTC negotiation messages (SDP and ICE candidates) pass through it, **never audio, video, chat or files**.
+3. **Direct connection:** using public STUN servers (Google and Cloudflare), each participant discovers its public address and WebRTC opens a **peer-to-peer** connection to each of the others (a mesh). Each connection carries the microphone, the screen video and sound, and data channels for chat and files (in 64 KB chunks).
+4. **Saving bandwidth:** a screen is only sent to those watching it; the tracks are negotiated but paused until the person opens the stream. Renegotiation follows the *perfect negotiation* pattern (two participants can start sharing at the same time without deadlocking).
+5. **Rendezvous (ntfy.sh):** the code changes every time the room is opened, so the host publishes "the room is at code X" on an [ntfy.sh](https://ntfy.sh) topic. The topic name is a hash of the room id (known only to people who were in the room) and the content is **encrypted** (AES-256-GCM, key derived from the room id): ntfy.sh only sees bytes, and keeps only that (for 12 h). Who is in the room, seen from outside, comes from the room's own server.
+6. **Admission:** the room server sends a room tag; people who were in the room before answer with a proof (derived from the room id) and get in directly. Anyone without it waits until someone inside accepts.
+7. **If the host leaves** (or the tunnel drops), the call goes on (the connection is direct) and the room reopens by itself: if the host is still in the call, they open a new tunnel; otherwise whoever stayed with the lowest id starts a new server. The new code goes to the others over the direct channel and to the rendezvous.
+
+**Shared sound:** on Windows it is the whole computer's sound, except Voice AI itself (so nobody hears their own voice back). On Linux, the app creates a virtual microphone in PipeWire (`VoiceAI-Transmissao`, via `pw-cli`) and routes into it the sound of every program (whole screen) or only of the chosen window's program (X11). Before sending, an **automatic gain** raises the sound to a good level (never lowers it) with a limiter against distortion: even if the sharer listens quietly, it arrives full and viewers adjust the volume on their side. Shared sound goes up to 128 kbps.
+
+**Limits:** since it is a mesh, each person sends their voice (and their screen, to those watching) to each of the others, so it works best for small groups. There is no TURN relay server: on very restrictive networks (some corporate networks, or symmetric NAT on both sides) a direct connection may not be possible.
+
+### Logs
+
+History of every transcription (microphone and files), with source, model, where it ran (GPU or CPU), audio duration and speed. Click a row to read the full text.
+
+Call logs live on the Call screen itself, under the **Logs** button (see [Call](#call)).
+
+### Settings and storage
+
+Hotkeys, Whisper model (downloaded inside the app, with a benchmark that compares models on your computer), voice and sounds, Claude model and plan usage, image search, start with the system and **Storage**, which shows how much space each part uses (models, chats, audio, translated files...) and lets you delete it. The `settings.json` keys are listed under [Main settings](#main-settings).
+
+---
 
 ## Troubleshooting
 
