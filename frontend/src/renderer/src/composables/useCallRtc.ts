@@ -17,6 +17,8 @@ export interface CallPeer {
   name: string
   /** está compartilhando a tela agora */
   sharing: boolean
+  /** qualidade escolhida por quem transmite (ex.: "1080p · 60 fps"); vazio = versão antiga, sem essa informação */
+  quality: string
   /** está com o microfone mutado */
   muted: boolean
 }
@@ -26,6 +28,43 @@ export interface CallRoomInfo {
   name: string
   /** quem hospeda o servidor da sala agora (vazio = servidor antigo, sem essa informação) */
   hostPeerId: string
+}
+
+/** Medidas da conexão com um participante (uma amostra por segundo). */
+export interface NetSample {
+  /** latência de ida e volta (ms) */
+  rtt: number | null
+  /** por onde a conexão passa: "rede local", "internet (STUN)"... */
+  route: string
+  /** perda de pacotes da voz recebida (%) */
+  voiceLoss: number | null
+  /** variação do atraso da voz recebida (ms) */
+  jitter: number | null
+  /** tela deste participante que estou recebendo */
+  video: {
+    fps: number
+    width: number
+    height: number
+    kbps: number
+    loss: number
+    /** atraso estimado da imagem: espera no buffer + metade da latência (ms) */
+    delay: number
+    /** travadas neste segundo e quanto tempo travou (ms) */
+    freezes: number
+    freezeMs: number
+    dropped: number
+  } | null
+  /** a minha tela que estou enviando a este participante */
+  sending: {
+    fps: number
+    width: number
+    height: number
+    kbps: number
+    /** o que está limitando: "bandwidth", "cpu", "other" ou "none" */
+    limit: string
+    /** banda de envio que o WebRTC estima ter até esta pessoa (kbps) */
+    availKbps: number | null
+  } | null
 }
 
 /** Alguém pedindo para entrar na sala (aguardando alguém de dentro aceitar). */
@@ -121,6 +160,10 @@ interface Link {
   pendingAudio: { track: MediaStreamTrack; stream: MediaStream | undefined; resolve: (screen: boolean) => void }[]
   /** já registrou no log por onde a conexão passou */
   routeLogged: boolean
+  /** por onde a conexão passa (preenchido quando conecta) */
+  route: string
+  /** valores acumulados da amostra anterior (para calcular por segundo) */
+  prev: Map<string, number>
   /** <audio> mudos: no Chromium o áudio WebRTC só chega ao Web Audio se também estiver num elemento de mídia */
   primers: HTMLAudioElement[]
   volume: number
@@ -159,7 +202,7 @@ export function useCallRtc(log: CallLogFn = () => {}) {
   let screenStream: MediaStream | null = null
   /** limites do vídeo da tela (taxa e quadros por segundo), escolhidos na qualidade da transmissão */
   let screenVideoLimits: { maxBitrate: number; maxFramerate: number } | null = null
-  let localState = { sharing: false, muted: false }
+  let localState = { sharing: false, muted: false, quality: '' }
   let watchingPeerId: string | null = null
   let screenVolume = 1
   let outputDeviceId = localStorage.getItem(OUTPUT_KEY) || ''
@@ -365,7 +408,7 @@ export function useCallRtc(log: CallLogFn = () => {}) {
 
   function addPeer(id: string, name: string): void {
     if (peers.some((p) => p.id === id)) return
-    peers.push({ id, name, sharing: false, muted: false })
+    peers.push({ id, name, sharing: false, muted: false, quality: '' })
     emitPeers()
   }
 
@@ -445,6 +488,8 @@ export function useCallRtc(log: CallLogFn = () => {}) {
       remoteStreams: {},
       pendingAudio: [],
       routeLogged: false,
+      route: '',
+      prev: new Map(),
       output,
       primers: [],
       volume: DEFAULT_PEER_VOLUME,
@@ -606,6 +651,7 @@ export function useCallRtc(log: CallLogFn = () => {}) {
         if (peer.muted !== !!msg.muted) log('info', `${peer.name} ${msg.muted ? 'mutou' : 'desmutou'} o microfone`)
         peer.sharing = !!msg.sharing
         peer.muted = !!msg.muted
+        peer.quality = typeof msg.quality === 'string' ? msg.quality.slice(0, 40) : ''
         if (!peer.sharing && watchingPeerId === peerId) setWatching(null)
         emitPeers()
       } else if (msg.kind === 'watch') {
@@ -689,7 +735,11 @@ export function useCallRtc(log: CallLogFn = () => {}) {
   }
 
   /** Tela compartilhada com todos (null = parar). Trocar de tela só substitui as faixas, sem renegociar. */
-  async function setScreenStream(stream: MediaStream | null, limits: { maxBitrate: number; maxFramerate: number } | null = null): Promise<void> {
+  async function setScreenStream(
+    stream: MediaStream | null,
+    limits: { maxBitrate: number; maxFramerate: number } | null = null,
+    quality = ''
+  ): Promise<void> {
     screenStream = stream
     screenVideoLimits = stream ? limits : null
     const video = stream?.getVideoTracks()[0] ?? null
@@ -702,7 +752,7 @@ export function useCallRtc(log: CallLogFn = () => {}) {
       if (!stream) link.watchingMe = false
       void gateScreen(link)
     }
-    setLocalState({ sharing: !!stream })
+    setLocalState({ sharing: !!stream, quality: stream ? quality : '' })
   }
 
   function setLocalState(patch: Partial<typeof localState>): void {
@@ -821,6 +871,7 @@ export function useCallRtc(log: CallLogFn = () => {}) {
       const remote = all.get(pair.remoteCandidateId)
       const kind = (c?: Report): string =>
         ({ host: 'rede local', srflx: 'internet (STUN)', prflx: 'internet', relay: 'relay' })[c?.candidateType as string] ?? '?'
+      link.route = `${kind(local)} ↔ ${kind(remote)}`
       log(
         'info',
         `rota com ${nameOf(peerId)}: eu ${kind(local)} ↔ ${kind(remote)}, ${local?.protocol ?? '?'}` +
@@ -829,6 +880,76 @@ export function useCallRtc(log: CallLogFn = () => {}) {
     } catch {
       // sem estatísticas: segue sem esse detalhe
     }
+  }
+
+  /**
+   * Uma amostra por participante: latência, perda, atraso e, se houver transmissão, como a imagem está
+   * chegando (ou saindo). Os contadores do WebRTC são acumulados; aqui viram valores "por segundo".
+   */
+  async function sampleNet(): Promise<Record<string, NetSample>> {
+    const out: Record<string, NetSample> = {}
+    for (const [peerId, link] of links) {
+      let stats: RTCStatsReport
+      try {
+        stats = await link.pc.getStats()
+      } catch {
+        continue
+      }
+      const all = new Map<string, Report>()
+      stats.forEach((r: Report) => all.set(r.id, r))
+      const delta = (key: string, value: number | undefined): number => {
+        const v = Number(value) || 0
+        const before = link.prev.get(key)
+        link.prev.set(key, v)
+        return before === undefined ? 0 : Math.max(0, v - before)
+      }
+      let pair: Report | undefined
+      for (const r of all.values()) if (r.type === 'transport' && r.selectedCandidatePairId) pair = all.get(r.selectedCandidatePairId)
+      pair ??= [...all.values()].find((r) => r.type === 'candidate-pair' && r.nominated && r.state === 'succeeded')
+      const rtt = pair?.currentRoundTripTime ? Math.round(pair.currentRoundTripTime * 1000) : null
+      const sample: NetSample = { rtt, route: link.route, voiceLoss: null, jitter: null, video: null, sending: null }
+
+      for (const r of all.values()) {
+        if (r.type === 'inbound-rtp' && r.kind === 'audio' && !link.screenAudioTracks.has(r.trackIdentifier)) {
+          const lost = delta(`${r.id}:lost`, r.packetsLost)
+          const got = delta(`${r.id}:recv`, r.packetsReceived)
+          sample.voiceLoss = got + lost ? Math.round((lost / (got + lost)) * 1000) / 10 : 0
+          sample.jitter = r.jitter !== undefined ? Math.round(r.jitter * 1000) : null
+        }
+        if (r.type === 'inbound-rtp' && r.kind === 'video') {
+          const bytes = delta(`${r.id}:bytes`, r.bytesReceived)
+          const lost = delta(`${r.id}:lost`, r.packetsLost)
+          const got = delta(`${r.id}:recv`, r.packetsReceived)
+          const jbd = delta(`${r.id}:jbd`, r.jitterBufferDelay)
+          const jbe = delta(`${r.id}:jbe`, r.jitterBufferEmittedCount)
+          sample.video = {
+            fps: Math.round(r.framesPerSecond ?? 0),
+            width: r.frameWidth ?? 0,
+            height: r.frameHeight ?? 0,
+            kbps: Math.round((bytes * 8) / 1000),
+            loss: got + lost ? Math.round((lost / (got + lost)) * 1000) / 10 : 0,
+            delay: Math.round((jbe ? (jbd / jbe) * 1000 : 0) + (rtt ?? 0) / 2),
+            freezes: delta(`${r.id}:fz`, r.freezeCount),
+            freezeMs: Math.round(delta(`${r.id}:fzd`, r.totalFreezesDuration) * 1000),
+            dropped: delta(`${r.id}:drop`, r.framesDropped)
+          }
+        }
+        if (r.type === 'outbound-rtp' && r.kind === 'video') {
+          const bytes = delta(`${r.id}:bytes`, r.bytesSent)
+          if (!link.watchingMe) continue
+          sample.sending = {
+            fps: Math.round(r.framesPerSecond ?? 0),
+            width: r.frameWidth ?? 0,
+            height: r.frameHeight ?? 0,
+            kbps: Math.round((bytes * 8) / 1000),
+            limit: String(r.qualityLimitationReason ?? 'none'),
+            availKbps: pair?.availableOutgoingBitrate ? Math.round(pair.availableOutgoingBitrate / 1000) : null
+          }
+        }
+      }
+      out[peerId] = sample
+    }
+    return out
   }
 
   const lastBytes = new Map<string, { t: number; bytes: number }>()
@@ -977,7 +1098,7 @@ export function useCallRtc(log: CallLogFn = () => {}) {
     peers = []
     micTrack = null
     screenStream = null
-    localState = { sharing: false, muted: false }
+    localState = { sharing: false, muted: false, quality: '' }
     watchingPeerId = null
   }
 
@@ -1003,6 +1124,7 @@ export function useCallRtc(log: CallLogFn = () => {}) {
     getPeerAnalyser,
     setOutputDevice,
     getOutputDevice,
-    statsSummary
+    statsSummary,
+    sampleNet
   }
 }

@@ -12,6 +12,7 @@ import {
   type CallRoomInfo,
   type FileMeta,
   type IncomingFile,
+  type NetSample,
   type SignalOptions
 } from '../composables/useCallRtc'
 import { onWsMessage } from '../api/ws'
@@ -75,6 +76,24 @@ export interface RoomSummary {
   updatedAt: number
   participants: string[]
   messageCount: number
+}
+
+/** O que quem transmite está enviando (vem dele pelo canal direto, a cada segundo). */
+export interface ShareSendStats {
+  fps: number
+  width: number
+  height: number
+  kbps: number
+  limit: string
+  availKbps: number | null
+  /** quantas pessoas estão assistindo (cada uma recebe uma cópia) */
+  viewers: number
+}
+
+/** Diagnóstico da transmissão aberta: o que está limitando a imagem agora. */
+export interface StreamDiagnosis {
+  level: 'ok' | 'warn' | 'bad'
+  text: string
 }
 
 /** Uma linha do log da sala (minha ou de outro participante, recebida pelo canal de mensagens). */
@@ -198,6 +217,8 @@ export const useCallStore = defineStore('call', () => {
   const muted = ref(false)
   const hasMic = ref(false)
   const sharing = ref(false)
+  /** qualidade da minha transmissão (ex.: "1080p · 60 fps") */
+  const shareQuality = ref('')
   const micStream = shallowRef<MediaStream | null>(null)
   const mutedPeers = ref<Set<string>>(new Set())
   /** mensagens recebidas com a aba de Chamada fechada */
@@ -352,10 +373,121 @@ export const useCallStore = defineStore('call', () => {
   ipc().on('call:log', (_e: unknown, entry: { level: CallLogLevel; msg: string }) => log(entry.level, entry.msg))
   void ipc().invoke('call:log-target')
 
+  // ------------------------------------------------------------------ qualidade da conexão (uma amostra por segundo)
+  /** medidas de cada participante (latência, perda, transmissão recebida ou enviada) */
+  const netStats = shallowRef<Record<string, NetSample>>({})
+  /** o que cada pessoa que transmite está enviando (para saber se o gargalo é dela) */
+  const senderStats = shallowRef<Record<string, ShareSendStats>>({})
+  /** últimos 60 s da transmissão aberta: quadros por segundo e taxa (kbps) */
+  const viewHistory = shallowRef<{ fps: number[]; kbps: number[] }>({ fps: [], kbps: [] })
+  /** travadas acumuladas desde o último resumo no log */
+  const freezeAcc = new Map<string, { count: number; ms: number }>()
+  let sampleTimer: ReturnType<typeof setInterval> | null = null
+  let sampling = false
+
+  async function sampleQuality(): Promise<void> {
+    if (!inCall.value || sampling) return
+    sampling = true
+    try {
+      const s = await rtc.sampleNet()
+      netStats.value = s
+      const w = watching.value
+      if (w && w !== SELF && s[w]?.video) {
+        const v = s[w].video!
+        const h = viewHistory.value
+        viewHistory.value = { fps: [...h.fps, v.fps].slice(-60), kbps: [...h.kbps, v.kbps].slice(-60) }
+      }
+      for (const [peerId, sample] of Object.entries(s)) {
+        if (sample.video?.freezes) {
+          const acc = freezeAcc.get(peerId) ?? { count: 0, ms: 0 }
+          freezeAcc.set(peerId, { count: acc.count + sample.video.freezes, ms: acc.ms + sample.video.freezeMs })
+        }
+      }
+      // quem transmite conta a cada pessoa que assiste o que está saindo para ela
+      const viewers = Object.values(s).filter((x) => x.sending).length
+      for (const [peerId, sample] of Object.entries(s)) {
+        if (sample.sending) rtc.send(peerId, { kind: 'share-stats', ...sample.sending, viewers })
+      }
+    } catch {
+      // amostra perdida: a próxima vem em 1 s
+    } finally {
+      sampling = false
+    }
+  }
+
+  function receiveShareStats(peerId: string, msg: AppMessage): void {
+    const num = (v: unknown): number => (typeof v === 'number' && isFinite(v) ? v : 0)
+    senderStats.value = {
+      ...senderStats.value,
+      [peerId]: {
+        fps: num(msg.fps),
+        width: num(msg.width),
+        height: num(msg.height),
+        kbps: num(msg.kbps),
+        limit: typeof msg.limit === 'string' ? msg.limit.slice(0, 20) : 'none',
+        availKbps: typeof msg.availKbps === 'number' ? msg.availKbps : null,
+        viewers: num(msg.viewers) || 1
+      }
+    }
+  }
+
+  /** Nível do sinal de um participante (para as barrinhas): 3 bom, 2 médio, 1 ruim, 0 sem medida. */
+  function signalLevel(peerId: string): number {
+    const n = netStats.value[peerId]
+    if (!n || n.rtt === null) return 0
+    const loss = n.voiceLoss ?? 0
+    if (n.rtt < 120 && loss < 1) return 3
+    if (n.rtt < 300 && loss < 5) return 2
+    return 1
+  }
+
+  /** O que está limitando a transmissão aberta agora (texto curto para a tela). */
+  function diagnoseStream(peerId: string): StreamDiagnosis {
+    const who = peers.value.find((p) => p.id === peerId)?.name ?? 'quem transmite'
+    const recv = netStats.value[peerId]
+    const send = senderStats.value[peerId]
+    const v = recv?.video
+    if (!v) return { level: 'warn', text: 'Aguardando a imagem chegar…' }
+    if (send?.limit === 'bandwidth') {
+      const avail = send.availKbps ? ` (~${(send.availKbps / 1000).toFixed(1)} Mbps disponíveis` : ''
+      const viewers = send.viewers > 1 ? `${avail ? ', ' : ' ('}para ${send.viewers} pessoas)` : avail ? ')' : ''
+      return { level: 'bad', text: `A internet de envio de ${who} está no limite${avail}${viewers}: o WebRTC reduziu a qualidade.` }
+    }
+    if (send?.limit === 'cpu') return { level: 'bad', text: `O processador de ${who} está no limite: a qualidade foi reduzida para não travar.` }
+    if (v.loss >= 3 || v.freezes > 0) return { level: 'bad', text: `A conexão até você está perdendo pacotes (${v.loss}%): a imagem pode travar ou borrar.` }
+    if ((recv?.rtt ?? 0) > 300) return { level: 'warn', text: `Latência alta (${recv?.rtt} ms): a imagem chega com atraso.` }
+    if (v.loss >= 1) return { level: 'warn', text: `Pequena perda de pacotes (${v.loss}%).` }
+    return { level: 'ok', text: 'Sem gargalo: a transmissão está chegando como foi enviada.' }
+  }
+
+  /** Resumo de qualidade para o log (a cada 30 s): latência, perda, imagem recebida/enviada e o motivo da limitação. */
+  function qualityLines(): string[] {
+    const lines: string[] = []
+    for (const [peerId, n] of Object.entries(netStats.value)) {
+      const who = peers.value.find((p) => p.id === peerId)?.name ?? 'participante'
+      const parts = [`latência ${n.rtt ?? '?'} ms`, `rota ${n.route || '?'}`, `perda da voz ${n.voiceLoss ?? '?'}%`, `jitter ${n.jitter ?? '?'} ms`]
+      if (n.video) {
+        const fz = freezeAcc.get(peerId) ?? { count: 0, ms: 0 }
+        parts.push(
+          `tela recebida ${n.video.width}x${n.video.height} ${n.video.fps} fps ${n.video.kbps} kbps, perda ${n.video.loss}%, atraso ~${n.video.delay} ms, ${fz.count} travada(s) em 30 s (${fz.ms} ms)`
+        )
+        const send = senderStats.value[peerId]
+        if (send) parts.push(`${who} diz que envia ${send.width}x${send.height} ${send.fps} fps ${send.kbps} kbps, limitado por: ${send.limit}, banda estimada ${send.availKbps ?? '?'} kbps, ${send.viewers} assistindo`)
+      }
+      if (n.sending) {
+        parts.push(`envio da minha tela ${n.sending.width}x${n.sending.height} ${n.sending.fps} fps ${n.sending.kbps} kbps, limitado por: ${n.sending.limit}, banda estimada ${n.sending.availKbps ?? '?'} kbps`)
+      }
+      lines.push(`${who}: ${parts.join(' | ')}`)
+    }
+    freezeAcc.clear()
+    return lines
+  }
+
   let statsTimer: ReturnType<typeof setInterval> | null = null
   async function logStats(): Promise<void> {
     if (!inCall.value) return
     for (const line of await rtc.statsSummary()) log('info', `[estatísticas] ${line}`)
+    for (const line of qualityLines()) log('info', `[qualidade] ${line}`)
     if (screenLeveler) log('info', `[estatísticas] ganho automático do som da minha tela: ${screenLeveler.describe()}`)
   }
 
@@ -610,6 +742,8 @@ export const useCallStore = defineStore('call', () => {
     )
     if (statsTimer) clearInterval(statsTimer)
     statsTimer = setInterval(() => void logStats(), STATS_EVERY_MS)
+    if (sampleTimer) clearInterval(sampleTimer)
+    sampleTimer = setInterval(() => void sampleQuality(), 1000)
   }
 
   // ------------------------------------------------------------------ pedidos de entrada
@@ -732,6 +866,12 @@ export const useCallStore = defineStore('call', () => {
     if (isHost.value && codeReady.value && !peers.value.length) void announceRoom(true)
     if (statsTimer) clearInterval(statsTimer)
     statsTimer = null
+    if (sampleTimer) clearInterval(sampleTimer)
+    sampleTimer = null
+    netStats.value = {}
+    senderStats.value = {}
+    viewHistory.value = { fps: [], kbps: [] }
+    freezeAcc.clear()
     flushLogs()
     flushSave()
     rtc.disconnect()
@@ -762,6 +902,7 @@ export const useCallStore = defineStore('call', () => {
     muted.value = false
     hasMic.value = false
     sharing.value = false
+    shareQuality.value = ''
     watching.value = null
     viewStream.value = null
     thumbs.value = {}
@@ -1036,6 +1177,9 @@ export const useCallStore = defineStore('call', () => {
         break
       case 'log':
         receiveLogs(msg.entries)
+        break
+      case 'share-stats':
+        receiveShareStats(peerId, msg)
         break
       case 'signaling-moved':
         // quem passou a hospedar avisa o código novo pelo canal direto
@@ -1479,7 +1623,8 @@ export const useCallStore = defineStore('call', () => {
     const px = (vs0.width ?? quality.width) * (vs0.height ?? quality.height)
     const maxBitrate = Math.round(Math.min(25_000_000, Math.max(1_500_000, px * quality.fps * 0.065)))
     log('info', `vídeo da tela limitado a ${(maxBitrate / 1e6).toFixed(1)} Mbps e ${quality.fps} fps (${track.contentHint === 'motion' ? 'prioriza fluidez' : 'prioriza nitidez'})`)
-    await rtc.setScreenStream(stream, { maxBitrate, maxFramerate: quality.fps })
+    shareQuality.value = quality.label.replace(' - ', ' · ')
+    await rtc.setScreenStream(stream, { maxBitrate, maxFramerate: quality.fps }, shareQuality.value)
     if (watching.value === SELF) watch(SELF) // trocou de tela com a prévia aberta
     void snapshot(stream)
   }
@@ -1615,6 +1760,7 @@ export const useCallStore = defineStore('call', () => {
     })
     localScreen = null
     sharing.value = false
+    shareQuality.value = ''
     if (IS_LINUX) void ipc().invoke('call:linux-audio-stop')
     const rest = { ...thumbs.value }
     delete rest[SELF]
@@ -1627,6 +1773,7 @@ export const useCallStore = defineStore('call', () => {
   function watch(target: string | null): void {
     if (target !== watching.value) {
       viewMode.value = 'expanded'
+      viewHistory.value = { fps: [], kbps: [] }
       // toda transmissão abre com o som em 50% (e sem mudo); a pessoa aumenta se quiser
       if (target !== null && target !== SELF) {
         screenVolume.value = SCREEN_START_VOLUME
@@ -1779,6 +1926,7 @@ export const useCallStore = defineStore('call', () => {
     muted,
     hasMic,
     sharing,
+    shareQuality,
     watching,
     viewMode,
     viewStream,
@@ -1816,6 +1964,11 @@ export const useCallStore = defineStore('call', () => {
     getInputDevice,
     getOutputDevice,
     isWayland,
+    netStats,
+    senderStats,
+    viewHistory,
+    signalLevel,
+    diagnoseStream,
     roomsLive,
     roomsOpening,
     refreshLive,

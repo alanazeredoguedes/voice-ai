@@ -12,6 +12,7 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { spawn, ChildProcess, SpawnOptions } from 'child_process'
 import { checkClaudeMonitoring, type MonitoringLevel, type MonitoringReport } from './claudeMonitoring'
 import { setKeepOnTop, toggleWindowOnTop } from './windowToggle'
+import { diag, initWindowDiag, watchWindow } from './windowDiag'
 import { downloadCloudflared, findCloudflared, registerCallIpc } from './call'
 
 // app instalado: 18450; dev: 18451 (os dois podem rodar juntos sem um usar o backend do outro)
@@ -1072,7 +1073,9 @@ ipcMain.handle('clipboard:read-image', async () => {
 
 ipcMain.handle('window:toggle', (_e, opts?: { keepOnTop?: boolean }) => {
   if (!mainWindow || mainWindow.isDestroyed()) return null
-  return toggleWindowOnTop(mainWindow, !!opts?.keepOnTop)
+  const result = toggleWindowOnTop(mainWindow, !!opts?.keepOnTop)
+  diag('atalho mostrar/esconder', `${result === 'shown' ? 'mostrou' : 'escondeu'} a janela (manter na frente: ${opts?.keepOnTop ? 'sim' : 'não'})`)
+  return result
 })
 
 ipcMain.handle('window:keep-on-top', (_e, keepOnTop: boolean) => {
@@ -1157,9 +1160,13 @@ function createMainWindow(): BrowserWindow {
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
-      contextIsolation: true
+      contextIsolation: true,
+      // com o app em segundo plano, o navegador atrasaria os timers (até 1 s): o "só transmitir quando eu falar"
+      // e o ganho do som da transmissão dependem de medir o áudio a cada poucos milissegundos
+      backgroundThrottling: false
     }
   })
+  watchWindow(win, 'janela principal')
 
   win.on('ready-to-show', () => {
     // ao iniciar com o sistema (--hidden) fica só na bandeja, a menos que o setup seja necessário
@@ -1211,6 +1218,7 @@ function createOverlayWindow(): BrowserWindow {
   })
 
   win.setIgnoreMouseEvents(true)
+  watchWindow(win, 'indicador (overlay)')
 
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     win.loadURL(process.env['ELECTRON_RENDERER_URL'] + '/overlay.html')
@@ -1289,6 +1297,7 @@ function allowYouTubeEmbeds(): void {
 }
 
 app.whenReady().then(async () => {
+  initWindowDiag(getDataDir())
   electronApp.setAppUserModelId('com.voiceai')
   initAutostartDefault()
   allowYouTubeEmbeds()

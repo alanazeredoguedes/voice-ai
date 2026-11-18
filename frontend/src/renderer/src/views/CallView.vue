@@ -9,6 +9,8 @@ import CallComposer from '../components/CallComposer.vue'
 import CallMediaViewer from '../components/CallMediaViewer.vue'
 import CallVolumeMenu from '../components/CallVolumeMenu.vue'
 import CallLogPanel from '../components/CallLogPanel.vue'
+import CallStageMenu from '../components/CallStageMenu.vue'
+import CallStreamStats from '../components/CallStreamStats.vue'
 import { formatVolume, sliderToVolume, volumeToSlider } from '../utils/callVolume'
 
 const store = useCallStore()
@@ -20,6 +22,39 @@ const roomName = ref('')
 const busy = computed(() => store.status === 'connecting' || !!store.reopening)
 const deletingRoom = ref<{ id: string; name: string } | null>(null)
 const showLogs = ref(false)
+/** com salas anteriores, o formulário de criar / entrar com código só aparece quando pedido */
+const showForm = ref(false)
+function openForm(m: 'create' | 'join'): void {
+  mode.value = m
+  showForm.value = true
+}
+
+type RoomRow = (typeof store.recentRooms)[number]
+function roomState(id: string): 'live' | 'opening' | 'idle' {
+  return store.roomsLive[id] ? 'live' : store.roomsOpening[id] ? 'opening' : 'idle'
+}
+/** a sala em destaque: com gente dentro agora; senão alguém abrindo; senão a mais recente */
+const featured = computed<RoomRow | null>(() => {
+  const score = (r: RoomRow): number =>
+    roomState(r.id) === 'live' ? 2000 + (store.roomsLive[r.id]?.names.length ?? 0) : roomState(r.id) === 'opening' ? 1000 : 0
+  return [...store.recentRooms].sort((a, b) => score(b) - score(a) || b.updatedAt - a.updatedAt)[0] ?? null
+})
+const otherRooms = computed(() => {
+  const rest = store.recentRooms.filter((r) => r.id !== featured.value?.id)
+  // salas no ar primeiro
+  return rest.sort((a, b) => Number(roomState(b.id) !== 'idle') - Number(roomState(a.id) !== 'idle') || b.updatedAt - a.updatedAt)
+})
+
+const AVATAR_COLORS = ['bg-indigo-500', 'bg-emerald-600', 'bg-sky-600', 'bg-fuchsia-600', 'bg-amber-600', 'bg-rose-600', 'bg-teal-600', 'bg-violet-600']
+function avatarColor(name: string): string {
+  let h = 0
+  for (const c of name) h = (h * 31 + c.charCodeAt(0)) >>> 0
+  return AVATAR_COLORS[h % AVATAR_COLORS.length]
+}
+function initials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter((p) => /[\p{L}\p{N}]/u.test(p))
+  return ((parts[0]?.[0] ?? '?') + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase()
+}
 const logProblems = computed(() => store.logs.filter((e) => e.level !== 'info').length)
 
 function submit(): void {
@@ -75,7 +110,8 @@ onUnmounted(() => {
 watch(
   () => store.inCall,
   (inCall) => {
-    if (!inCall) setTimeout(() => void pollLive(true), 1500)
+    if (inCall) showForm.value = false // ao voltar, as salas aparecem de novo em destaque
+    else setTimeout(() => void pollLive(true), 1500)
   }
 )
 
@@ -87,9 +123,12 @@ const stage = ref<HTMLDivElement | null>(null)
 
 /** cards da lateral: uma por transmissão (a minha e as dos outros) */
 const shares = computed(() => [
-  ...(store.sharing ? [{ id: SELF, label: 'Sua tela' }] : []),
-  ...store.sharingPeers.map((p) => ({ id: p.id, label: p.name }))
+  ...(store.sharing ? [{ id: SELF, label: 'Sua tela', quality: store.shareQuality }] : []),
+  ...store.sharingPeers.map((p) => ({ id: p.id, label: p.name, quality: p.quality }))
 ])
+/** qualidade da transmissão aberta (a escolhida por quem transmite) e a resolução que está chegando */
+const watchingQuality = computed(() => shares.value.find((x) => x.id === store.watching)?.quality ?? '')
+const receivedRes = ref('')
 const watchingLabel = computed(() => shares.value.find((x) => x.id === store.watching)?.label ?? '')
 const expanded = computed(() => !!store.watching && store.viewMode === 'expanded')
 const mini = computed(() => !!store.watching && store.viewMode === 'mini')
@@ -97,7 +136,10 @@ const mini = computed(() => !!store.watching && store.viewMode === 'mini')
 watch(
   [screenVideo, () => store.viewStream],
   ([el, stream]) => {
-    if (el && el.srcObject !== stream) el.srcObject = stream
+    if (el && el.srcObject !== stream) {
+      el.srcObject = stream
+      receivedRes.value = ''
+    }
     if (!stream) resetZoom()
   },
   { flush: 'post' }
@@ -210,7 +252,10 @@ onUnmounted(() => colObserver.disconnect())
 const videoAspect = ref(16 / 9)
 function onVideoSize(): void {
   const v = screenVideo.value
-  if (v?.videoWidth && v.videoHeight) videoAspect.value = v.videoWidth / v.videoHeight
+  if (v?.videoWidth && v.videoHeight) {
+    videoAspect.value = v.videoWidth / v.videoHeight
+    receivedRes.value = `${v.videoWidth}×${v.videoHeight}`
+  }
 }
 
 const DOCK_KEY = 'call.dockHeight'
@@ -318,6 +363,7 @@ function onMiniResize(e: MouseEvent): void {
 }
 
 function onStageDown(e: MouseEvent): void {
+  if (e.button !== 0) return // botão direito abre o menu; só o esquerdo arrasta ou abre
   if (mini.value) onMiniDown(e)
   else onPanStart(e)
 }
@@ -379,6 +425,40 @@ function openMenu(e: MouseEvent, target: string): void {
   if (target === 'screen' && store.watching === SELF) return // a minha própria transmissão não toca som aqui
   menu.value = { x: e.clientX, y: e.clientY, target }
 }
+
+/** painel de estatísticas por cima da transmissão (lembra a escolha) */
+const STATS_KEY = 'call.showStreamStats'
+const showStats = ref(localStorage.getItem(STATS_KEY) === '1')
+function toggleStats(): void {
+  showStats.value = !showStats.value
+  try {
+    localStorage.setItem(STATS_KEY, showStats.value ? '1' : '0')
+  } catch {
+    // sem armazenamento: vale só agora
+  }
+}
+
+/** texto do sinal de um participante (dica das barrinhas) */
+function signalTitle(peerId: string): string {
+  const n = store.netStats[peerId]
+  if (!n || n.rtt === null) return 'Medindo a conexão…'
+  return `Latência ${n.rtt} ms · perda ${n.voiceLoss ?? 0}% · jitter ${n.jitter ?? '?'} ms${n.route ? ` · ${n.route}` : ''}`
+}
+const SIGNAL_COLOR = ['bg-slate-600', 'bg-red-500', 'bg-amber-400', 'bg-emerald-500']
+
+/** botão direito sobre a transmissão aberta: volume dela e dos participantes */
+const stageMenu = ref<{ x: number; y: number } | null>(null)
+function openStageMenu(e: MouseEvent): void {
+  stageMenu.value = { x: e.clientX, y: e.clientY }
+}
+// entrou ou saiu da tela cheia: o menu precisa ser desenhado em outro lugar, então fecha
+watch(fullscreen, () => (stageMenu.value = null))
+watch(
+  () => store.watching,
+  (w) => {
+    if (!w) stageMenu.value = null
+  }
+)
 
 function onMenuVolume(value: number): void {
   if (!menu.value) return
@@ -468,13 +548,222 @@ function confirmLeave(): void {
 <template>
   <!-- ============================== Fora de uma chamada ============================== -->
   <div v-if="!store.inCall" class="h-full overflow-y-auto">
-    <div class="min-h-full flex flex-col items-center justify-center gap-8 py-6">
-      <div class="w-full max-w-sm flex flex-col items-center gap-6">
+    <div class="min-h-full flex flex-col items-center justify-center gap-6 py-8 px-4">
+      <!-- ===== com salas anteriores: elas são o foco ===== -->
+      <template v-if="store.recentRooms.length && !showForm">
+        <div class="w-full max-w-2xl flex items-end gap-3">
+          <div class="flex-1 min-w-0">
+            <h1 class="text-2xl font-semibold text-slate-100">Suas salas</h1>
+            <p class="text-sm text-slate-500 mt-1 flex items-center gap-1.5 flex-wrap">
+              Você entra como
+              <input
+                v-model="store.name"
+                maxlength="40"
+                placeholder="seu nome"
+                :disabled="busy"
+                title="Clique para mudar o nome com que você aparece na sala"
+                class="bg-transparent border-b border-dashed border-slate-600 hover:border-slate-400 focus:border-indigo-400 focus:outline-none text-slate-200 font-medium px-0.5 w-40 disabled:opacity-60"
+              />
+            </p>
+          </div>
+          <button
+            :disabled="checkingLive"
+            class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors disabled:opacity-60"
+            title="Ver agora quais salas estão abertas e quem está nelas (atualiza sozinho a cada 2,5 s e na hora em que alguém abre uma sala)"
+            @click="pollLive(true)"
+          >
+            <svg :class="['w-3.5 h-3.5', checkingLive ? 'animate-spin' : '']" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
+            </svg>
+            {{ checkingLive ? 'Verificando…' : 'Atualizar' }}
+          </button>
+        </div>
+
+        <!-- sala em destaque -->
+        <div
+          v-if="featured"
+          :class="[
+            'group relative w-full max-w-2xl rounded-3xl border p-6 flex flex-col gap-5 transition-colors',
+            roomState(featured.id) === 'live'
+              ? 'bg-gradient-to-br from-emerald-500/15 via-slate-800/80 to-slate-800/60 border-emerald-500/40 shadow-lg shadow-emerald-900/20'
+              : roomState(featured.id) === 'opening'
+                ? 'bg-gradient-to-br from-amber-500/10 via-slate-800/80 to-slate-800/60 border-amber-500/40'
+                : 'bg-slate-800/60 border-slate-700/50'
+          ]"
+        >
+          <button
+            :disabled="busy"
+            class="absolute top-4 right-4 p-1.5 rounded-lg text-slate-500 hover:text-red-400 hover:bg-slate-700/60 transition-colors opacity-0 group-hover:opacity-100 disabled:opacity-0"
+            title="Excluir a sala e o histórico"
+            @click="deletingRoom = { id: featured.id, name: featured.name }"
+          >
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" /></svg>
+          </button>
+
+          <div class="flex flex-col gap-2 pr-10">
+            <span
+              :class="[
+                'self-start flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium',
+                roomState(featured.id) === 'live'
+                  ? 'bg-emerald-500/20 text-emerald-300'
+                  : roomState(featured.id) === 'opening'
+                    ? 'bg-amber-500/20 text-amber-300'
+                    : 'bg-slate-700/60 text-slate-400'
+              ]"
+            >
+              <span
+                :class="[
+                  'w-2 h-2 rounded-full',
+                  roomState(featured.id) === 'live' ? 'bg-emerald-400 animate-pulse' : roomState(featured.id) === 'opening' ? 'bg-amber-400 animate-pulse' : 'bg-slate-500'
+                ]"
+              />
+              {{ roomState(featured.id) === 'live' ? 'Ao vivo' : roomState(featured.id) === 'opening' ? 'Abrindo agora' : 'Ninguém na sala agora' }}
+            </span>
+            <h2 class="text-2xl font-semibold text-slate-50 truncate" :title="featured.name">{{ featured.name }}</h2>
+            <p class="text-sm text-slate-400">
+              Última conversa {{ fmtDay(featured.updatedAt) }} · {{ featured.messageCount }} {{ featured.messageCount === 1 ? 'mensagem' : 'mensagens' }}
+            </p>
+          </div>
+
+          <!-- quem está dentro agora -->
+          <div v-if="store.roomsLive[featured.id]" class="flex flex-col gap-2">
+            <p class="text-xs uppercase tracking-wide text-emerald-300/80">Na sala agora</p>
+            <div class="flex flex-wrap gap-2">
+              <span
+                v-for="n in store.roomsLive[featured.id]!.names"
+                :key="n"
+                class="flex items-center gap-2 pl-1 pr-3 py-1 rounded-full bg-slate-900/50 border border-emerald-500/30 text-sm text-slate-100"
+              >
+                <span :class="['w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-semibold text-white', avatarColor(n)]">{{ initials(n) }}</span>
+                {{ n }}
+              </span>
+              <span v-if="!store.roomsLive[featured.id]!.names.length" class="text-sm text-slate-400">Ninguém conectado</span>
+            </div>
+          </div>
+          <p v-else-if="store.roomsOpening[featured.id]" class="text-sm text-amber-200">
+            {{ store.roomsOpening[featured.id] }} está abrindo a sala. Clique em Entrar e você entra junto assim que ela estiver no ar.
+          </p>
+
+          <!-- participantes anteriores -->
+          <div v-if="featured.participants.length" class="flex items-center gap-3">
+            <div class="flex -space-x-2">
+              <span
+                v-for="n in featured.participants.slice(0, 6)"
+                :key="n"
+                :title="n"
+                :class="['w-8 h-8 rounded-full ring-2 ring-slate-800 flex items-center justify-center text-[11px] font-semibold text-white', avatarColor(n)]"
+              >{{ initials(n) }}</span>
+            </div>
+            <p class="text-xs text-slate-500 truncate">
+              Já participaram: {{ featured.participants.slice(0, 6).join(', ') }}<template v-if="featured.participants.length > 6"> e mais {{ featured.participants.length - 6 }}</template>
+            </p>
+          </div>
+
+          <button
+            :disabled="busy"
+            :class="[
+              'flex items-center justify-center gap-2 w-full py-3.5 rounded-2xl text-base font-semibold text-white transition-colors disabled:opacity-60',
+              roomState(featured.id) === 'live' ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-indigo-600 hover:bg-indigo-500'
+            ]"
+            @click="reopen(featured.id)"
+          >
+            <span v-if="busy" class="w-4 h-4 rounded-full border-2 border-white/40 border-t-white animate-spin" />
+            <svg v-else class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 6.75c0 8.284 6.716 15 15 15h2.25a2.25 2.25 0 002.25-2.25v-1.372c0-.516-.351-.966-.852-1.091l-4.423-1.106c-.44-.11-.902.055-1.173.417l-.97 1.293c-.282.376-.769.542-1.21.38a12.035 12.035 0 01-7.143-7.143c-.162-.441.004-.928.38-1.21l1.293-.97c.363-.271.527-.734.417-1.173L6.963 3.102a1.125 1.125 0 00-1.091-.852H4.5A2.25 2.25 0 002.25 4.5v2.25z" /></svg>
+            {{ busy ? 'Entrando…' : roomState(featured.id) === 'idle' ? 'Reabrir sala' : 'Entrar na sala' }}
+          </button>
+        </div>
+
+        <!-- avisos (entrando, aguardando, erro) -->
+        <div v-if="store.reopening || (busy && store.waitingApproval) || (store.error && !busy)" class="w-full max-w-2xl -mt-2 flex flex-col items-center gap-2 text-center">
+          <template v-if="store.reopening">
+            <p class="text-sm text-amber-300">{{ store.reopening.hint }}</p>
+            <button class="text-xs text-slate-400 hover:text-slate-200 underline underline-offset-2" @click="store.cancelReopen()">Cancelar</button>
+          </template>
+          <template v-else-if="busy && store.waitingApproval">
+            <p class="text-sm text-amber-300">Aguardando alguém da sala aceitar a sua entrada…</p>
+            <button class="text-xs text-slate-400 hover:text-slate-200 underline underline-offset-2" @click="store.leave()">Cancelar</button>
+          </template>
+          <p v-else class="text-sm text-red-400">{{ store.error }}</p>
+        </div>
+
+        <!-- outras salas -->
+        <div v-if="otherRooms.length" class="w-full max-w-2xl flex flex-col gap-2">
+          <p class="text-xs text-slate-500 uppercase tracking-wide px-1">Outras salas</p>
+          <div class="grid gap-2">
+            <div
+              v-for="r in otherRooms"
+              :key="r.id"
+              :class="[
+                'group flex items-center gap-3 px-4 py-3 rounded-2xl border transition-colors',
+                roomState(r.id) === 'live' ? 'bg-emerald-500/5 border-emerald-500/30' : roomState(r.id) === 'opening' ? 'bg-amber-500/5 border-amber-500/30' : 'bg-slate-800/40 border-slate-700/40 hover:border-slate-600'
+              ]"
+            >
+              <span
+                :class="[
+                  'w-2.5 h-2.5 rounded-full flex-shrink-0',
+                  roomState(r.id) === 'live' ? 'bg-emerald-400 animate-pulse' : roomState(r.id) === 'opening' ? 'bg-amber-400 animate-pulse' : 'bg-slate-600'
+                ]"
+              />
+              <div class="flex-1 min-w-0">
+                <p class="text-sm font-medium text-slate-100 truncate">{{ r.name }}</p>
+                <p v-if="store.roomsLive[r.id]" class="text-xs text-emerald-300 truncate">Ao vivo: {{ store.roomsLive[r.id]!.names.join(', ') || 'ninguém conectado' }}</p>
+                <p v-else-if="store.roomsOpening[r.id]" class="text-xs text-amber-300 truncate">{{ store.roomsOpening[r.id] }} está abrindo agora</p>
+                <p v-else class="text-xs text-slate-500 truncate">
+                  {{ fmtDay(r.updatedAt) }} · {{ r.messageCount }} {{ r.messageCount === 1 ? 'mensagem' : 'mensagens' }}<template v-if="r.participants.length"> · {{ r.participants.join(', ') }}</template>
+                </p>
+              </div>
+              <button
+                :disabled="busy"
+                class="p-1.5 rounded-lg text-slate-500 hover:text-red-400 hover:bg-slate-700/60 transition-colors opacity-0 group-hover:opacity-100 disabled:opacity-0"
+                title="Excluir a sala e o histórico"
+                @click="deletingRoom = { id: r.id, name: r.name }"
+              >
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" /></svg>
+              </button>
+              <button
+                :disabled="busy"
+                :class="[
+                  'px-3.5 py-1.5 rounded-lg text-xs font-medium text-white transition-colors disabled:opacity-50',
+                  roomState(r.id) === 'live' ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-slate-700 hover:bg-indigo-600'
+                ]"
+                @click="reopen(r.id)"
+              >{{ roomState(r.id) === 'idle' ? 'Reabrir' : 'Entrar' }}</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ações secundárias -->
+        <div class="flex items-center gap-2">
+          <button
+            :disabled="busy"
+            class="flex items-center gap-2 px-4 py-2 rounded-xl text-sm text-slate-300 border border-slate-700 hover:border-slate-500 hover:text-white transition-colors disabled:opacity-50"
+            @click="openForm('create')"
+          >
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>
+            Criar sala nova
+          </button>
+          <button
+            :disabled="busy"
+            class="flex items-center gap-2 px-4 py-2 rounded-xl text-sm text-slate-300 border border-slate-700 hover:border-slate-500 hover:text-white transition-colors disabled:opacity-50"
+            @click="openForm('join')"
+          >
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5.25 8.25h15m-16.5 7.5h15m-1.8-13.5l-3.9 19.5m-2.1-19.5l-3.9 19.5" /></svg>
+            Entrar com código
+          </button>
+        </div>
+        <button
+          v-if="store.logs.length"
+          class="text-xs text-slate-500 hover:text-slate-300 underline underline-offset-2"
+          title="O log da última chamada fica disponível até você entrar em outra"
+          @click="showLogs = true"
+        >Ver logs da última chamada ({{ store.logs.length }} linhas)</button>
+      </template>
+
+      <!-- ===== sem salas anteriores (ou criando / entrando com código) ===== -->
+      <div v-else class="w-full max-w-sm flex flex-col items-center gap-6">
         <div class="flex flex-col items-center gap-3 text-center">
           <div class="w-14 h-14 rounded-2xl bg-indigo-600/15 border border-indigo-500/30 flex items-center justify-center">
-            <svg class="w-7 h-7 text-indigo-400" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 6.75c0 8.284 6.716 15 15 15h2.25a2.25 2.25 0 002.25-2.25v-1.372c0-.516-.351-.966-.852-1.091l-4.423-1.106c-.44-.11-.902.055-1.173.417l-.97 1.293c-.282.376-.769.542-1.21.38a12.035 12.035 0 01-7.143-7.143c-.162-.441.004-.928.38-1.21l1.293-.97c.363-.271.527-.734.417-1.173L6.963 3.102a1.125 1.125 0 00-1.091-.852H4.5A2.25 2.25 0 002.25 4.5v2.25z" />
-            </svg>
+            <svg class="w-7 h-7 text-indigo-400" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 6.75c0 8.284 6.716 15 15 15h2.25a2.25 2.25 0 002.25-2.25v-1.372c0-.516-.351-.966-.852-1.091l-4.423-1.106c-.44-.11-.902.055-1.173.417l-.97 1.293c-.282.376-.769.542-1.21.38a12.035 12.035 0 01-7.143-7.143c-.162-.441.004-.928.38-1.21l1.293-.97c.363-.271.527-.734.417-1.173L6.963 3.102a1.125 1.125 0 00-1.091-.852H4.5A2.25 2.25 0 002.25 4.5v2.25z" /></svg>
           </div>
           <div>
             <h1 class="text-xl font-semibold text-slate-100">{{ mode === 'create' ? 'Criar uma sala' : 'Entrar em uma sala' }}</h1>
@@ -515,10 +804,6 @@ function confirmLeave(): void {
             {{ busy ? (mode === 'create' ? 'Abrindo…' : 'Entrando…') : mode === 'create' ? 'Criar sala' : 'Entrar' }}
           </button>
           <p v-if="store.error && !busy" class="text-xs text-red-400 text-center">{{ store.error }}</p>
-          <div v-if="store.reopening" class="flex flex-col items-center gap-2 text-center">
-            <p class="text-xs text-amber-300">{{ store.reopening.hint }}</p>
-            <button type="button" class="text-xs text-slate-400 hover:text-slate-200 underline underline-offset-2" @click="store.cancelReopen()">Cancelar</button>
-          </div>
           <div v-if="busy && store.waitingApproval" class="flex flex-col items-center gap-2 text-center">
             <p class="text-xs text-amber-300">Aguardando alguém da sala aceitar a sua entrada…</p>
             <button type="button" class="text-xs text-slate-400 hover:text-slate-200 underline underline-offset-2" @click="store.leave()">Cancelar</button>
@@ -536,70 +821,14 @@ function confirmLeave(): void {
           class="text-sm text-slate-400 hover:text-indigo-400 transition-colors disabled:opacity-50"
           @click="mode = mode === 'create' ? 'join' : 'create'"
         >{{ mode === 'create' ? 'Tenho um código, quero entrar em uma sala' : 'Quero criar uma sala nova' }}</button>
+        <button
+          v-if="store.recentRooms.length"
+          :disabled="busy"
+          class="text-sm text-slate-500 hover:text-slate-300 transition-colors disabled:opacity-50"
+          @click="showForm = false"
+        >← Voltar para as suas salas</button>
       </div>
 
-      <!-- salas anteriores: o histórico do chat fica guardado neste computador -->
-      <div v-if="store.recentRooms.length" class="w-full max-w-md flex flex-col gap-2">
-        <div class="flex items-center gap-2 px-1">
-          <p class="text-xs text-slate-500 uppercase tracking-wide flex-1">Salas anteriores</p>
-          <button
-            :disabled="checkingLive"
-            class="flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-200 transition-colors disabled:opacity-60"
-            title="Ver agora quais salas estão abertas e quem está nelas (atualiza sozinho a cada 2,5 s e na hora em que alguém abre uma sala)"
-            @click="pollLive(true)"
-          >
-            <svg :class="['w-3.5 h-3.5', checkingLive ? 'animate-spin' : '']" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
-            </svg>
-            {{ checkingLive ? 'Verificando…' : 'Atualizar' }}
-          </button>
-        </div>
-        <div class="bg-slate-800/60 rounded-2xl border border-slate-700/40 divide-y divide-slate-700/40 max-h-72 overflow-y-auto">
-          <div v-for="r in store.recentRooms" :key="r.id" class="group flex items-center gap-3 px-4 py-3">
-            <div class="flex-1 min-w-0">
-              <p class="text-sm text-slate-100 truncate flex items-center gap-2">
-                <span class="truncate">{{ r.name }}</span>
-                <span
-                  v-if="store.roomsLive[r.id]"
-                  class="flex-shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-500/15 text-[10px] font-medium text-emerald-300"
-                  title="A sala está aberta agora"
-                ><span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />ao vivo</span>
-                <span
-                  v-else-if="store.roomsOpening[r.id]"
-                  class="flex-shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-500/15 text-[10px] font-medium text-amber-300"
-                  title="Alguém está abrindo a sala agora: clique em Entrar e você entra junto quando ela estiver no ar"
-                ><span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />abrindo</span>
-              </p>
-              <p v-if="store.roomsLive[r.id]" class="text-xs text-emerald-300/90 truncate" :title="store.roomsLive[r.id]!.names.join(', ')">
-                Na sala agora: {{ store.roomsLive[r.id]!.names.join(', ') || 'ninguém' }}
-              </p>
-              <p v-else-if="store.roomsOpening[r.id]" class="text-xs text-amber-300/90 truncate">
-                {{ store.roomsOpening[r.id] }} está abrindo a sala agora
-              </p>
-              <p class="text-xs text-slate-500 truncate">
-                {{ fmtDay(r.updatedAt) }} · {{ r.messageCount }} {{ r.messageCount === 1 ? 'mensagem' : 'mensagens' }}
-                <template v-if="r.participants.length"> · {{ r.participants.join(', ') }}</template>
-              </p>
-            </div>
-            <button
-              :disabled="busy"
-              class="px-3 py-1.5 rounded-lg text-xs font-medium text-slate-100 bg-slate-700 hover:bg-indigo-600 transition-colors disabled:opacity-50"
-              :title="store.roomsLive[r.id] ? 'Entra na sala que já está aberta (você já participou dela, então entra direto)' : 'Abre a sala de novo com o mesmo chat. Se alguém já estiver com ela aberta, você entra nela'"
-              @click="reopen(r.id)"
-            >{{ store.roomsLive[r.id] || store.roomsOpening[r.id] ? 'Entrar' : 'Reabrir' }}</button>
-            <button
-              :disabled="busy"
-              class="p-1.5 rounded-lg text-slate-500 hover:text-red-400 hover:bg-slate-700/60 transition-colors opacity-0 group-hover:opacity-100 disabled:opacity-0"
-              title="Excluir a sala e o histórico"
-              @click="deletingRoom = { id: r.id, name: r.name }"
-            >
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
-              </svg>
-            </button>
-          </div>
-        </div>
-      </div>
     </div>
 
     <CallLogPanel v-if="showLogs" @close="showLogs = false" />
@@ -786,6 +1015,7 @@ function confirmLeave(): void {
         <!-- Transmissão aberta: presa no topo do chat (chat embaixo) ou miniatura solta pela área do chat -->
         <div
           v-show="store.watching"
+          id="call-stage"
           ref="stage"
           :style="stageStyle"
           :class="[
@@ -793,7 +1023,7 @@ function confirmLeave(): void {
             fullscreen ? 'inset-0' : docked ? '' : 'rounded-xl border border-slate-600 shadow-2xl cursor-move'
           ]"
           @wheel="onWheel"
-          @contextmenu.prevent="openMenu($event, 'screen')"
+          @contextmenu.prevent="openStageMenu"
           @mousedown="onStageDown"
           @dblclick="expanded ? resetZoom() : undefined"
         >
@@ -817,14 +1047,38 @@ function confirmLeave(): void {
             <div class="absolute top-1 left-1 w-2 h-2 border-t-2 border-l-2 border-white/80 rounded-tl-sm" />
           </div>
 
+          <!-- qualidade da transmissão, sempre visível (com o mouse em cima ela vai para a barra do topo) -->
+          <span
+            v-if="watchingQuality && !mini"
+            class="absolute top-2.5 left-2.5 px-1.5 py-0.5 rounded bg-black/55 text-[11px] font-medium text-white/80 pointer-events-none opacity-100 group-hover:opacity-0 transition-opacity"
+          >{{ watchingQuality }}</span>
+          <!-- estatísticas (botão de gráfico na barra do topo) -->
+          <div v-if="showStats && store.watching && !mini" class="absolute top-12 right-3 z-10">
+            <CallStreamStats :peer-id="store.watching" />
+          </div>
           <!-- topo: nome + minimizar, tela cheia, fechar -->
           <div class="absolute top-0 inset-x-0 flex items-center gap-2 p-2 bg-gradient-to-b from-black/70 to-transparent opacity-0 group-hover:opacity-100 transition-opacity">
             <span class="flex items-center gap-1.5 px-1.5 text-xs text-white truncate">
               <span class="w-1.5 h-1.5 rounded-full bg-red-500 flex-shrink-0" />
               {{ watchingLabel }}
             </span>
+            <span
+              v-if="watchingQuality"
+              class="px-1.5 py-0.5 rounded bg-white/15 text-[11px] text-white/90 font-medium flex-shrink-0"
+              :title="`Qualidade escolhida por quem transmite${receivedRes ? `; chegando em ${receivedRes}` : ''}`"
+            >{{ watchingQuality }}</span>
             <span v-if="expanded && scale !== 1" class="px-1.5 py-0.5 rounded bg-black/50 text-[11px] text-white font-mono">{{ scale.toFixed(1) }}×</span>
             <div class="flex-1" />
+            <button
+              v-if="!mini"
+              :class="['p-1.5 rounded-md transition-colors', showStats ? 'text-indigo-300 bg-white/15' : 'text-white/90 hover:text-white hover:bg-white/15']"
+              :title="showStats ? 'Esconder as estatísticas da transmissão' : 'Estatísticas da transmissão (qualidade, atraso, o que está limitando)'"
+              @click.stop="toggleStats"
+            >
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
+              </svg>
+            </button>
             <button
               v-if="expanded && !fullscreen"
               class="p-1.5 rounded-md text-white/90 hover:text-white hover:bg-white/15 transition-colors"
@@ -963,6 +1217,17 @@ function confirmLeave(): void {
                   />
                 </div>
                 <span class="text-sm text-slate-300 truncate flex-1">{{ peer.name }}</span>
+                <span class="flex items-center gap-1 flex-shrink-0" :title="signalTitle(peer.id)">
+                  <span class="flex items-end gap-[2px] h-3">
+                    <span
+                      v-for="b in 3"
+                      :key="b"
+                      :class="['w-[3px] rounded-sm', b <= store.signalLevel(peer.id) ? SIGNAL_COLOR[store.signalLevel(peer.id)] : 'bg-slate-700']"
+                      :style="{ height: `${b * 33}%` }"
+                    />
+                  </span>
+                  <span v-if="store.netStats[peer.id]?.rtt != null" class="text-[10px] text-slate-500 tabular-nums">{{ store.netStats[peer.id]!.rtt }} ms</span>
+                </span>
                 <span v-if="peer.muted" class="text-[11px] text-red-400 flex-shrink-0">mudo</span>
                 <button
                   :class="['px-1.5 py-0.5 rounded text-[11px] transition-colors flex-shrink-0', store.mutedPeers.has(peer.id) ? 'text-red-400 hover:text-red-300' : 'text-slate-500 hover:text-slate-300']"
@@ -1017,6 +1282,11 @@ function confirmLeave(): void {
                   </span>
                 </span>
                 <span v-else class="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded bg-indigo-600 text-[10px] font-medium text-white">Assistindo</span>
+                <span
+                  v-if="s.quality"
+                  class="absolute bottom-1.5 right-1.5 px-1.5 py-0.5 rounded bg-black/65 text-[10px] font-medium text-white/90"
+                  title="Qualidade escolhida por quem transmite"
+                >{{ s.quality }}</span>
               </div>
               <span class="flex items-center gap-1.5 px-1 text-xs text-slate-300 min-w-0">
                 <span class="w-1.5 h-1.5 rounded-full bg-red-500 flex-shrink-0" />
@@ -1041,6 +1311,14 @@ function confirmLeave(): void {
     </div>
 
  <CallLogPanel v-if="showLogs" @close="showLogs = false" />
+    <CallStageMenu
+      v-if="stageMenu && store.watching"
+      :x="stageMenu.x"
+      :y="stageMenu.y"
+      :title="watchingLabel"
+      :container="fullscreen ? '#call-stage' : 'body'"
+      @close="stageMenu = null"
+    />
     <CallShareModal v-if="showShare" @close="showShare = false" @start="onShareStart" />
     <CallVolumeMenu
       v-if="menu && (menu.target === 'screen' ? store.watching && store.watching !== SELF : menuPeer)"
