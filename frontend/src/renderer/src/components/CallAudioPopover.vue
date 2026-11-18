@@ -151,7 +151,8 @@ onUnmounted(() => {
           />
           <p class="text-[11px] text-slate-500">
             Fale normalmente: a barra fica verde quando o microfone abre. Ajuste a marca amarela para ficar acima do barulho de fundo
-            e abaixo da sua voz ({{ store.gateDb }} dBFS).
+            e abaixo da sua voz ({{ store.gateDb }} dBFS). Enquanto alguém da chamada fala, o limite sobe 10 dB sozinho, para o eco da
+            voz da pessoa na sua caixa de som não voltar para ela.
           </p>
         </div>
       </div>

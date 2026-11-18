@@ -108,6 +108,8 @@ const MIC_GAIN_KEY = 'call.micGain'
 const GATE_KEY = 'call.voiceGate'
 const GATE_DB_KEY = 'call.voiceGateDb'
 const AEC_KEY = 'call.echoCancel'
+/** com alguém da chamada falando, quanto mais forte o meu som precisa ser para o microfone abrir */
+const ECHO_GUARD_DB = 10
 
 function readSetting(key: string): string | null {
   try {
@@ -1183,6 +1185,21 @@ export const useCallStore = defineStore('call', () => {
     gateOpen.value = false
   }
 
+  /** Alguém da chamada está falando agora (voz recebida acima de -50 dBFS e não silenciada por mim)? */
+  const voiceBuf = new Float32Array(64)
+  function othersSpeaking(): boolean {
+    for (const p of peers.value) {
+      if (mutedPeers.value.has(p.id) || p.muted) continue
+      const an = rtc.getPeerAnalyser(p.id)
+      if (!an) continue
+      an.getFloatTimeDomainData(voiceBuf)
+      let peak = 0
+      for (const v of voiceBuf) peak = Math.max(peak, Math.abs(v))
+      if (peak > 0.006) return true // ≈ -44 dBFS de pico ≈ -50 dBFS de média
+    }
+    return false
+  }
+
   /** Volume → (medidor) → portão de voz → enviado. Devolve a faixa já tratada. */
   function buildMicChain(input: MediaStream): MediaStream {
     const ctx = new AudioContext()
@@ -1202,6 +1219,8 @@ export const useCallStore = defineStore('call', () => {
     const buf = new Float32Array(meter.fftSize)
     let lastLoud = 0
     let open = false
+    let othersUntil = 0
+    let guardLogged = false
     gate.gain.value = gateOn.value ? 0 : 1
     const timer = setInterval(() => {
       meter.getFloatTimeDomainData(buf)
@@ -1210,8 +1229,16 @@ export const useCallStore = defineStore('call', () => {
       const db = 10 * Math.log10(sum / buf.length + 1e-12)
       micLevelDb.value = Math.round(db)
       const now = performance.now()
+      // proteção contra retorno: enquanto alguém da chamada fala (e a voz dele sai na caixa de som), o
+      // microfone precisa de um som 10 dB mais forte para abrir; o eco fraco da voz dele não volta
+      if (gateOn.value && othersSpeaking()) othersUntil = now + 300
+      const guard = now < othersUntil ? ECHO_GUARD_DB : 0
+      if (guard && !guardLogged) {
+        guardLogged = true
+        log('info', `proteção contra retorno ativa: com alguém falando, o microfone só abre acima de ${gateDb.value + ECHO_GUARD_DB} dBFS`)
+      }
       // abre acima do limite; fecha só depois de 400 ms abaixo dele, para não cortar o fim das palavras
-      if (db > gateDb.value) lastLoud = now
+      if (db > gateDb.value + guard) lastLoud = now
       const want = !gateOn.value || now - lastLoud < 400
       if (want !== open) {
         open = want
@@ -1269,8 +1296,9 @@ export const useCallStore = defineStore('call', () => {
           const stream = await navigator.mediaDevices.getUserMedia({
             audio: {
               deviceId: { exact: device.deviceId },
-              // o eco já sai daqui; o do navegador por cima só piora a voz
-              echoCancellation: false,
+              // os dois juntos: o do PipeWire tira o som do computador (vídeo, música); o do navegador tira o
+              // que sobrar da voz dos participantes (ele tem a referência exata, porque é ele quem a toca)
+              echoCancellation: true,
               noiseSuppression: true,
               autoGainControl: true
             },
