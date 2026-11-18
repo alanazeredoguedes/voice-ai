@@ -446,6 +446,11 @@ function signalTitle(peerId: string): string {
 }
 const SIGNAL_COLOR = ['bg-slate-600', 'bg-red-500', 'bg-amber-400', 'bg-emerald-500']
 
+/** está falando agora (medidor de voz acima de um mínimo) */
+function isTalking(levels: number[] | undefined): boolean {
+  return !!levels && Math.max(...levels) > 0.3
+}
+
 /** botão direito sobre a transmissão aberta: volume dela e dos participantes */
 const stageMenu = ref<{ x: number; y: number } | null>(null)
 function openStageMenu(e: MouseEvent): void {
@@ -1185,67 +1190,96 @@ function confirmLeave(): void {
           <p class="px-4 py-2.5 border-b border-slate-700/40 text-xs text-slate-500 uppercase tracking-wide flex-shrink-0">
             Participantes ({{ store.peers.length + 1 }})
           </p>
-          <ul class="overflow-y-auto p-2 flex flex-col gap-0.5">
-            <li class="flex items-center gap-2.5 px-2 py-1.5 rounded-lg">
-              <div class="flex items-end gap-[2px] h-3.5 w-4 flex-shrink-0">
+          <ul class="overflow-y-auto p-2 flex flex-col gap-1">
+            <!-- eu -->
+            <li class="flex items-center gap-3 px-2 py-2 rounded-xl">
+              <span class="relative flex-shrink-0">
                 <span
-                  v-for="(lvl, i) in micBars"
-                  :key="i"
-                  :class="['flex-1 rounded-full', store.muted || !store.hasMic ? 'bg-slate-600' : 'bg-emerald-500']"
-                  :style="{ height: `${lvl * 100}%` }"
-                />
-              </div>
-              <span class="text-sm text-slate-100 truncate flex-1">{{ store.name || 'Você' }} <span class="text-slate-500">(você)</span></span>
-              <span v-if="!store.hasMic" class="text-[11px] text-amber-400 flex-shrink-0">sem microfone</span>
-              <span v-else-if="store.muted" class="text-[11px] text-red-400 flex-shrink-0">mudo</span>
+                  :class="[
+                    'w-9 h-9 rounded-full flex items-center justify-center text-xs font-semibold text-white ring-2 transition-shadow',
+                    avatarColor(store.name || 'Você'),
+                    !store.muted && store.hasMic && isTalking(micBars) ? 'ring-emerald-400' : 'ring-transparent'
+                  ]"
+                >{{ initials(store.name || 'Você') }}</span>
+                <span
+                  v-if="store.muted || !store.hasMic"
+                  class="absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full bg-red-600 ring-2 ring-slate-800 flex items-center justify-center"
+                  :title="store.hasMic ? 'Você está mudo' : 'Sem microfone'"
+                >
+                  <svg class="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z" /><path stroke-linecap="round" d="M4 4l16 16" /></svg>
+                </span>
+              </span>
+              <span class="flex flex-col min-w-0 flex-1">
+                <span class="text-sm text-slate-100 truncate">{{ store.name || 'Você' }}</span>
+                <span class="text-[11px] text-slate-500">{{ !store.hasMic ? 'você · sem microfone' : store.muted ? 'você · mudo' : 'você' }}</span>
+              </span>
             </li>
 
+            <!-- os outros -->
             <li
               v-for="peer in store.peers"
               :key="peer.id"
-              class="flex flex-col rounded-lg hover:bg-slate-700/30 transition-colors"
+              class="flex flex-col gap-1.5 px-2 py-2 rounded-xl hover:bg-slate-700/30 transition-colors"
               title="Botão direito: volume e mudo"
               @contextmenu.prevent="openMenu($event, peer.id)"
             >
-              <div class="flex items-center gap-2.5 px-2 py-1.5">
-                <div class="flex items-end gap-[2px] h-3.5 w-4 flex-shrink-0">
+              <div class="flex items-center gap-3">
+                <span class="relative flex-shrink-0">
                   <span
-                    v-for="(lvl, i) in peerBars[peer.id] ?? IDLE_BARS"
-                    :key="i"
-                    :class="['flex-1 rounded-full', peer.muted || store.mutedPeers.has(peer.id) ? 'bg-slate-600' : 'bg-emerald-500']"
-                    :style="{ height: `${lvl * 100}%` }"
-                  />
-                </div>
-                <span class="text-sm text-slate-300 truncate flex-1">{{ peer.name }}</span>
-                <span class="flex items-center gap-1 flex-shrink-0" :title="signalTitle(peer.id)">
+                    :class="[
+                      'w-9 h-9 rounded-full flex items-center justify-center text-xs font-semibold text-white ring-2 transition-shadow',
+                      avatarColor(peer.name),
+                      store.mutedPeers.has(peer.id) ? 'opacity-50' : '',
+                      !peer.muted && !store.mutedPeers.has(peer.id) && isTalking(peerBars[peer.id]) ? 'ring-emerald-400' : 'ring-transparent'
+                    ]"
+                  >{{ initials(peer.name) }}</span>
+                  <span
+                    v-if="peer.muted"
+                    class="absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full bg-red-600 ring-2 ring-slate-800 flex items-center justify-center"
+                    :title="`${peer.name} está com o microfone desligado`"
+                  >
+                    <svg class="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z" /><path stroke-linecap="round" d="M4 4l16 16" /></svg>
+                  </span>
+                </span>
+                <span class="flex flex-col min-w-0 flex-1">
+                  <span class="text-sm text-slate-100 truncate" :title="peer.name">{{ peer.name }}</span>
+                  <span class="text-[11px] truncate" :class="store.mutedPeers.has(peer.id) ? 'text-red-400' : 'text-slate-500'">
+                    {{ store.mutedPeers.has(peer.id) ? 'silenciado para você' : peer.muted ? 'microfone desligado' : peer.sharing ? 'transmitindo a tela' : 'conectado' }}
+                  </span>
+                </span>
+                <!-- sinal e ping, alinhados à direita -->
+                <span class="flex flex-col items-end gap-0.5 flex-shrink-0" :title="signalTitle(peer.id)">
                   <span class="flex items-end gap-[2px] h-3">
                     <span
                       v-for="b in 3"
                       :key="b"
-                      :class="['w-[3px] rounded-sm', b <= store.signalLevel(peer.id) ? SIGNAL_COLOR[store.signalLevel(peer.id)] : 'bg-slate-700']"
+                      :class="['w-1 rounded-sm', b <= store.signalLevel(peer.id) ? SIGNAL_COLOR[store.signalLevel(peer.id)] : 'bg-slate-700']"
                       :style="{ height: `${b * 33}%` }"
                     />
                   </span>
-                  <span v-if="store.netStats[peer.id]?.rtt != null" class="text-[10px] text-slate-500 tabular-nums">{{ store.netStats[peer.id]!.rtt }} ms</span>
+                  <span class="text-[10px] text-slate-500 tabular-nums leading-none">{{ store.netStats[peer.id]?.rtt != null ? `${store.netStats[peer.id]!.rtt} ms` : '…' }}</span>
                 </span>
-                <span v-if="peer.muted" class="text-[11px] text-red-400 flex-shrink-0">mudo</span>
-                <button
-                  :class="['px-1.5 py-0.5 rounded text-[11px] transition-colors flex-shrink-0', store.mutedPeers.has(peer.id) ? 'text-red-400 hover:text-red-300' : 'text-slate-500 hover:text-slate-300']"
-                  :title="store.mutedPeers.has(peer.id) ? 'Voltar a ouvir' : 'Silenciar para mim'"
-                  @click="store.togglePeerMute(peer.id)"
-                >{{ store.mutedPeers.has(peer.id) ? 'silenciado' : 'silenciar' }}</button>
               </div>
-              <div class="flex items-center gap-2 pl-9 pr-2 pb-1.5" title="Volume da voz deste participante para você">
+              <div class="flex items-center gap-2 pl-1" title="Volume da voz deste participante para você">
+                <button
+                  :class="['p-1 rounded-md transition-colors flex-shrink-0', store.mutedPeers.has(peer.id) ? 'text-red-400 hover:text-red-300 hover:bg-red-500/10' : 'text-slate-400 hover:text-slate-100 hover:bg-slate-700/60']"
+                  :title="store.mutedPeers.has(peer.id) ? `Voltar a ouvir ${peer.name}` : `Silenciar ${peer.name} para mim`"
+                  @click="store.togglePeerMute(peer.id)"
+                >
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" :d="store.mutedPeers.has(peer.id) ? 'M17.25 9.75L19.5 12m0 0l2.25 2.25M19.5 12l2.25-2.25M19.5 12l-2.25 2.25m-10.5-6l4.72-4.72a.75.75 0 011.28.531V19.94a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.506-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.395C2.806 8.757 3.63 8.25 4.51 8.25H6.75z' : 'M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z'" />
+                  </svg>
+                </button>
                 <input
                   type="range"
                   min="0"
                   max="1"
                   step="0.005"
                   :value="volumeToSlider(store.peerVolumes[peer.id] ?? DEFAULT_PEER_VOLUME)"
-                  class="flex-1 h-1 accent-indigo-500 cursor-pointer"
+                  :class="['flex-1 min-w-0 h-1 accent-indigo-500 cursor-pointer', store.mutedPeers.has(peer.id) ? 'opacity-40' : '']"
                   @input="onVolume(peer.id, $event)"
                 />
-                <span class="text-xs text-slate-500 w-11 text-right">{{ formatVolume(store.peerVolumes[peer.id] ?? DEFAULT_PEER_VOLUME) }}</span>
+                <span class="text-[11px] text-slate-400 w-10 text-right tabular-nums">{{ formatVolume(store.peerVolumes[peer.id] ?? DEFAULT_PEER_VOLUME) }}</span>
               </div>
             </li>
           </ul>
