@@ -1,8 +1,10 @@
+import time
 import shutil
 import threading
 from pathlib import Path
 
 
+from .. import system_log
 from fastapi import APIRouter, HTTPException, Request
 
 from ..config import HF_HOME
@@ -104,12 +106,16 @@ async def download_model(model_id: str, request: Request) -> dict:
                 stop_evt.wait(1.0)
 
         threading.Thread(target=monitor, daemon=True).start()
+        started = time.monotonic()
+        system_log.log("info", "modelos", f"baixando o modelo {model_id} (~{expected_mb} MB)")
         try:
             from huggingface_hub import snapshot_download
             snapshot_download(repo_id=_repo_id(model_id))
+            system_log.log("info", "modelos", f"modelo {model_id} baixado em {time.monotonic() - started:.0f}s")
             state.emit({"type": "model_download_progress", "model": model_id, "progress": 100.0})
             state.emit({"type": "model_download_complete", "model": model_id})
         except Exception as e:
+            system_log.log("error", "modelos", f"falha ao baixar o modelo {model_id}: {system_log.exc_text(e)}")
             state.emit({"type": "model_download_error", "model": model_id, "error": str(e)})
         finally:
             stop_evt.set()

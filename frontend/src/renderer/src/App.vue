@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted, provide } from 'vue'
+import { ref, onMounted, provide, watch } from 'vue'
+import { syslog } from './utils/syslog'
 import Sidebar from './components/Sidebar.vue'
 import StatusView from './views/StatusView.vue'
 import SettingsView from './views/SettingsView.vue'
@@ -18,6 +19,7 @@ type View = 'status' | 'settings' | 'transcribe' | 'logs' | 'translate' | 'chat'
 type Page = View | 'benchmark'
 
 const currentView = ref<Page>('status')
+watch(currentView, (v, old) => syslog('info', 'navegação', `abriu a tela ${v} (vinha de ${old})`))
 // as telas podem abrir outra página (ex.: Configurações → Testar desempenho)
 provide('navigate', (v: Page) => {
   currentView.value = v

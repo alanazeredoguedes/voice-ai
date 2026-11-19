@@ -103,6 +103,9 @@ class Orchestrator:
             on_ai_release=self._on_ai_release,
             window_key=self._hotkeys("window", "<ctrl>+<alt>+<f12>"),
             on_window_press=self._on_window_press,
+            call_ptt_key=self._hotkeys("call_ptt", None),
+            on_call_ptt_press=lambda: self.state.emit({"type": "call_ptt", "pressed": True}),
+            on_call_ptt_release=lambda: self.state.emit({"type": "call_ptt", "pressed": False}),
         )
 
         self.hotkey.start()
@@ -141,21 +144,19 @@ class Orchestrator:
             self.tts.reload(self.settings)
         if self.hotkey:
             if "transcription_key" in new_settings or "transcription_keys_extra" in new_settings:
-                keys = self._hotkeys("transcription", None)
-                if keys:
-                    self.hotkey.update_transcription_key(keys)
+                self.hotkey.update_transcription_key(self._hotkeys("transcription", None))  # pode ficar sem nenhum
             if "ai_key" in new_settings or "ai_keys_extra" in new_settings:
-                keys = self._hotkeys("ai", None)
-                if keys:
-                    self.hotkey.update_ai_key(keys)
+                self.hotkey.update_ai_key(self._hotkeys("ai", None))
             if "window_key" in new_settings or "window_keys_extra" in new_settings:
-                keys = self._hotkeys("window", None)
-                if keys:
-                    self.hotkey.update_window_key(keys)
+                self.hotkey.update_window_key(self._hotkeys("window", None))
+            if "call_ptt_key" in new_settings or "call_ptt_keys_extra" in new_settings:
+                self.hotkey.update_call_ptt_key(self._hotkeys("call_ptt", None))  # pode ficar sem nenhum
 
     def _hotkeys(self, kind: str, default: str | None) -> list[str]:
         """Atalho principal (`<kind>_key`) + adicionais (`<kind>_keys_extra`)."""
-        primary = self.settings.get(f"{kind}_key") or default
+        # vazio ("") = a pessoa removeu o atalho; o padrão só vale se nunca foi configurado
+        value = self.settings.get(f"{kind}_key")
+        primary = default if value is None else value
         extra = self.settings.get(f"{kind}_keys_extra") or []
         keys = ([primary] if primary else []) + [k for k in extra if isinstance(k, str) and k]
         return list(dict.fromkeys(keys))

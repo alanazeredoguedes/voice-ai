@@ -7,9 +7,17 @@ import { captureHotkey } from '../api'
  * como teclas. Clicar num atalho troca ele; o "+" adiciona outro. Todos ficam ativos ao mesmo tempo.
  */
 const props = defineProps<{ label: string; hint?: string; primary: string; extra: string[] }>()
-const emit = defineEmits<{ 'update:primary': [v: string]; 'update:extra': [v: string[]] }>()
+/** sempre os dois juntos (principal e adicionais): remover o principal promove o primeiro adicional */
+const emit = defineEmits<{ 'update:all': [primary: string, extra: string[]] }>()
 
-/** qual atalho está esperando a tecla: -1 = principal, 0.. = extras, 'new' = novo */
+/** Atalhos configurados, na ordem (o principal vazio = nenhum). */
+const all = (): string[] => [props.primary, ...props.extra].filter(Boolean)
+
+function save(list: string[]): void {
+  emit('update:all', list[0] ?? '', list.slice(1))
+}
+
+/** qual atalho está esperando a tecla: 0 = principal, 1.. = adicionais, 'new' = novo */
 const capturing = ref<number | 'new' | null>(null)
 const error = ref<string | null>(null)
 
@@ -53,7 +61,7 @@ function keys(hotkey: string): string[] {
 }
 
 function isDuplicate(hotkey: string, ignore: number): boolean {
-  return (ignore !== -1 && hotkey === props.primary) || props.extra.some((k, i) => i !== ignore && k === hotkey)
+  return all().some((k, i) => i !== ignore && k === hotkey)
 }
 
 /** Espera o novo atalho e grava no lugar certo. */
@@ -63,13 +71,11 @@ async function capture(slot: number | 'new'): Promise<void> {
   error.value = null
   try {
     const hotkey = await captureHotkey()
-    if (isDuplicate(hotkey, slot === 'new' ? -2 : slot)) {
+    if (isDuplicate(hotkey, slot === 'new' ? -1 : slot)) {
       error.value = 'Esse atalho já está nesta função'
       return
     }
-    if (slot === -1) emit('update:primary', hotkey)
-    else if (slot === 'new') emit('update:extra', [...props.extra, hotkey])
-    else emit('update:extra', props.extra.map((k, i) => (i === slot ? hotkey : k)))
+    save(slot === 'new' ? [...all(), hotkey] : all().map((k, i) => (i === slot ? hotkey : k)))
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : 'Nenhuma tecla pressionada'
   } finally {
@@ -79,7 +85,7 @@ async function capture(slot: number | 'new'): Promise<void> {
 
 function remove(index: number): void {
   error.value = null
-  emit('update:extra', props.extra.filter((_, i) => i !== index))
+  save(all().filter((_, i) => i !== index))
 }
 </script>
 
@@ -93,20 +99,21 @@ function remove(index: number): void {
     <div class="flex flex-col gap-1.5 min-w-0">
       <div class="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
       <div class="flex flex-wrap items-center gap-2">
-        <template v-for="(hotkey, i) in [primary, ...extra]" :key="`${i}:${hotkey}`">
+        <span v-if="!all().length && capturing === null" class="text-xs text-slate-500 italic">Nenhum atalho (função desligada)</span>
+        <template v-for="(hotkey, i) in all()" :key="`${i}:${hotkey}`">
           <div class="relative group">
             <button
-              :disabled="capturing !== null && capturing !== i - 1"
+              :disabled="capturing !== null && capturing !== i"
               :class="[
                 'flex items-center gap-1 h-9 px-2 rounded-lg border transition-colors',
-                capturing === i - 1
+                capturing === i
                   ? 'border-orange-500/70 bg-orange-500/10 animate-pulse'
                   : 'border-slate-700 bg-slate-900/50 hover:border-indigo-500/60 hover:bg-slate-900 disabled:opacity-50'
               ]"
-              :title="capturing === i - 1 ? '' : 'Clique para trocar este atalho'"
-              @click="capture(i - 1)"
+              :title="capturing === i ? '' : 'Clique para trocar este atalho'"
+              @click="capture(i)"
             >
-              <span v-if="capturing === i - 1" class="px-1 text-xs text-orange-300">Pressione o atalho…</span>
+              <span v-if="capturing === i" class="px-1 text-xs text-orange-300">Pressione o atalho…</span>
               <template v-else>
                 <template v-for="(k, j) in keys(hotkey)" :key="j">
                   <span v-if="j" class="text-[10px] text-slate-600">+</span>
@@ -117,10 +124,10 @@ function remove(index: number): void {
               </template>
             </button>
             <button
-              v-if="i > 0 && capturing === null"
+              v-if="capturing === null"
               class="absolute -top-1.5 -right-1.5 w-[18px] h-[18px] rounded-full bg-slate-600 hover:bg-red-600 text-white items-center justify-center hidden group-hover:flex shadow"
-              title="Remover este atalho"
-              @click="remove(i - 1)"
+              :title="all().length === 1 ? 'Remover (a função fica sem atalho)' : 'Remover este atalho'"
+              @click="remove(i)"
             >
               <svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
@@ -145,7 +152,7 @@ function remove(index: number): void {
             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
             </svg>
-            Adicionar
+            {{ all().length ? 'Adicionar' : 'Escolher atalho' }}
           </template>
         </button>
       </div>

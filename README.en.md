@@ -115,6 +115,8 @@ chmod +x Voice.AI-x.y.z.AppImage
 
 On first launch, the same setup screen downloads the Python components (on Linux they are not inside the AppImage, so the download is bigger) and the rest of the list above. Your data lives in `~/.config/voice-ai`.
 
+**Linux with Wayland** (Ubuntu's default): the system does not hand a program the keys and clicks made in other programs, so global hotkeys need a permission. The app shows a notice with an **Allow hotkeys** button (labeled *Liberar atalhos*): Ubuntu asks for the password once and a udev rule (`/etc/udev/rules.d/72-voice-ai-input.rules`) gives the person using the computer read access to the keyboard and mouse. From then on the app reads both directly (`/dev/input`) and hotkeys work anywhere, as on X11, without logging out. Keys still reach the other programs normally.
+
 **Settings → General** lets you **start with the system** (Windows and Linux). When a new app version needs new components, it asks to update on launch and downloads only what is missing.
 
 Larger Whisper models and translation languages are downloaded later, inside the app, whenever you want.
@@ -397,7 +399,7 @@ Voice rooms to talk, watch someone's screen and exchange messages and files, **w
 - **Chat** with edit and delete for everyone, and **files up to 500 MB** (images and videos with preview; paste or drag them in).
 - **History kept on your computer**: newcomers receive the last 500 messages from whoever is already in the room, and an old file can be requested from anyone who has a copy.
 - **Live previous rooms**: the list shows which rooms are open right now and who is in them. **Reopen** joins the room that is already open (instead of everyone opening their own); if nobody has it open, you become the host. If two people click at the same time, whoever reserved first opens it and the other sees "Wait: X is opening the room" and joins.
-- **Adjustable microphone** (settings button next to **Logs**): microphone volume, **only transmit when I speak** (with a live meter and adjustable threshold) and, on Linux, **remove the computer's sound from the microphone**: a PipeWire process owned by the app runs WebRTC echo cancellation using everything played on the speakers as reference (someone watching a video on speakers does not send that sound back through the microphone). Nothing to install: the module ships with PipeWire, Ubuntu's default sound server since 22.10.
+- **Adjustable microphone** (settings button next to **Logs**): microphone volume, **push to talk** (the microphone only transmits while you hold a global hotkey, which works with another program in front; chosen right there or in **Settings → Hotkeys**), **only transmit when I speak** (with a live meter and adjustable threshold) and, on Linux, **remove the computer's sound from the microphone**: a PipeWire process owned by the app runs WebRTC echo cancellation using everything played on the speakers as reference (someone watching a video on speakers does not send that sound back through the microphone). Nothing to install: the module ships with PipeWire, Ubuntu's default sound server since 22.10.
 - **Admission control**: first-time visitors wait until someone inside clicks **Accept** (or **Decline**, and they see a notice). People who were in the room before get in directly.
 - **Room logs** (**Logs** button): everything that happens in the call (connections, network route, microphone, sharing, volumes, files, errors), yours and the other participants' together, with filters and a **Copy** button. Every 30 s a summary of the connections is added (bitrate, packet loss and sound level).
 
@@ -453,6 +455,8 @@ Hotkeys, Whisper model (downloaded inside the app, with a benchmark that compare
 - **The room code takes a while to show:** expected (a few seconds); it only shows once it works for guests.
 - **Cannot connect to someone in a call:** without a TURN server, very restrictive networks (some corporate networks) can block the direct connection. Try another network.
 - **No shared sound on Linux:** sound sharing uses PipeWire (`pw-cli`, `pw-dump` and `pw-link`, from the `pipewire-bin` package); it does not work on PulseAudio-only systems. The reason shows up in **Logs**.
+- **Hotkeys don't work on Linux with Wayland:** use **Liberar atalhos** (in **Settings → Hotkeys** or on the microphone screen). **Logs → System** shows how hotkeys are being read and every hotkey press received.
+- **Something doesn't work and I don't know why:** open **Logs → System**, reproduce the problem and click **Download** (or **Copy**). It has everything the app did and every error (hotkeys, microphone, recordings, settings, calls, windows, backend), never the spoken text.
 - **Debugging a call:** open **Logs**, reproduce the problem and click **Copy**. Every participant's lines appear together.
 - **"No text found in the PDF":** the PDF is scanned (photos of pages). There is no text recognition (OCR) yet.
 - **File translation asks to update:** older installs get the new components (PyMuPDF, lxml) on the next launch.

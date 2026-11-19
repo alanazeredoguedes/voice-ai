@@ -711,7 +711,7 @@ export function registerCallIpc(getDataDir: () => string): void {
     const win = BrowserWindow.fromWebContents(event.sender) ?? undefined
     const safe = String(name || 'log-da-chamada.txt').replace(/[\\/:*?"<>|]+/g, '_')
     const res = await dialog.showSaveDialog(win!, {
-      title: 'Salvar o log da chamada',
+      title: 'Salvar o log',
       defaultPath: join(app.getPath('downloads'), safe),
       filters: [{ name: 'Texto', extensions: ['txt'] }]
     })

@@ -8,6 +8,8 @@ from collections.abc import Callable
 from datetime import datetime
 
 import numpy as np
+
+from .. import system_log
 import sounddevice as sd
 
 SAMPLE_RATE = 16000
@@ -175,14 +177,24 @@ class SpeechEngine:
         self._running = True
         self._stt_thread = threading.Thread(target=self._stt_loop, daemon=True)
         self._stt_thread.start()
-        self._stream = sd.InputStream(
-            samplerate=SAMPLE_RATE,
-            channels=1,
-            dtype="float32",
-            blocksize=CHUNK_SAMPLES,
-            callback=self._audio_callback,
-        )
-        self._stream.start()
+        try:
+            dev = sd.query_devices(kind="input")
+            dev_name = f"{dev.get('name')} ({int(dev.get('default_samplerate') or 0)} Hz, {dev.get('max_input_channels')} canais)"
+        except Exception as e:  # noqa: BLE001
+            dev_name = f"desconhecido ({e})"
+        try:
+            self._stream = sd.InputStream(
+                samplerate=SAMPLE_RATE,
+                channels=1,
+                dtype="float32",
+                blocksize=CHUNK_SAMPLES,
+                callback=self._audio_callback,
+            )
+            self._stream.start()
+            system_log.log("info", "microfone", f"microfone aberto: {dev_name}")
+        except Exception as e:  # noqa: BLE001
+            system_log.log("error", "microfone", f"não deu para abrir o microfone {dev_name}: {system_log.exc_text(e)}")
+            raise
         self._load_models()
 
     @property
@@ -215,6 +227,8 @@ class SpeechEngine:
         self._ptt_gen += 1
         self._stream_job = None
         self._recording = True
+        self._ptt_started = time.monotonic()
+        system_log.log("info", "gravação", "gravação iniciada" + (" (com prévia)" if preview else ""))
         self._emit_state("recording")
         if preview and self._on_partial:
             threading.Thread(target=self._preview_worker, args=(self._ptt_gen,), daemon=True).start()
@@ -228,6 +242,7 @@ class SpeechEngine:
         self._cancel_file_event.set()
 
     def cancel_ptt(self) -> None:
+        system_log.log("info", "gravação", "gravação cancelada")
         self._recording = False
         self._ptt_gen += 1  # descarta o que já foi transcrito durante a fala
         self._stream_job = None
@@ -242,6 +257,12 @@ class SpeechEngine:
             full_audio = np.concatenate(self._ptt_buffer)
             self._ptt_buffer = []
             rms = float(np.sqrt(np.mean(full_audio ** 2)))
+            dur = len(full_audio) / SAMPLE_RATE
+            system_log.log(
+                "info" if rms >= 0.003 else "warn", "gravação",
+                f"gravação terminada: {dur:.1f}s de áudio, volume médio {rms:.4f}"
+                + ("" if rms >= 0.003 else " (silêncio: nada para transcrever; o microfone certo está escolhido no sistema?)"),
+            )
             if rms < 0.003:
                 self._ptt_gen += 1
                 self._emit_state("idle")
@@ -254,6 +275,11 @@ class SpeechEngine:
                 return
             self._emit_state("processing")
         else:
+            held = time.monotonic() - getattr(self, "_ptt_started", time.monotonic())
+            system_log.log(
+                "warn", "gravação",
+                f"gravação terminada sem nenhum áudio do microfone ({held:.1f}s apertado): o microfone não está mandando som",
+            )
             self._emit_state("idle")
 
     def _emit_state(self, state: str) -> None:
@@ -474,7 +500,7 @@ class SpeechEngine:
         }
         print(
             f"[voice] {self._loaded_device.upper()} | {self._model_size} | "
-            f"áudio {audio_s:.1f}s | proc {proc_s:.2f}s | RTF {rtf}x | {text[:70]}",
+            f"áudio {audio_s:.1f}s | proc {proc_s:.2f}s | RTF {rtf}x | {len(text)} caracteres",
             flush=True,
         )
         if self._on_transcription:

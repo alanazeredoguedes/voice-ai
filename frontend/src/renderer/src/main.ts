@@ -7,10 +7,14 @@ import { useChatStore } from './stores/chat'
 import { useStatusStore } from './stores/status'
 import { useSettingsStore } from './stores/settings'
 import { onWsMessage } from './api/ws'
+import { errText, installErrorHandlers, syslog } from './utils/syslog'
+
+installErrorHandlers()
 
 const pinia = createPinia()
 const app = createApp(App)
 app.use(pinia)
+app.config.errorHandler = (err, _inst, info) => syslog('error', 'erro', `erro na tela (${info}): ${errText(err)}`)
 
 /** Liga as partes que conversam com o backend. Só depois que ele estiver no ar. */
 function startBackendFeatures(): void {
@@ -42,10 +46,12 @@ function startBackendFeatures(): void {
 void (async () => {
   const r = (await window.electron?.ipcRenderer?.invoke('backend:wait').catch(() => null)) as { ok: boolean; error?: string } | null
   if (r && !r.ok) {
+    syslog('error', 'app', `o backend não iniciou: ${r.error ?? 'sem detalhes'}`)
     const el = document.getElementById('boot-status')
     if (el) el.textContent = 'O serviço do Voice AI não iniciou. Feche e abra o app de novo; se continuar, veja os logs.'
     return
   }
   startBackendFeatures()
   app.mount('#app')
+  syslog('info', 'app', 'tela principal aberta')
 })()

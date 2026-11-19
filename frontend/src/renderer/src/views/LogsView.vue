@@ -4,6 +4,10 @@ import { useLogsStore } from '../stores/logs'
 import { onWsMessage } from '../api/ws'
 import type { LogEntry } from '../types'
 import CopyButton from '../components/CopyButton.vue'
+import SystemLogPanel from '../components/SystemLogPanel.vue'
+
+/** Abas: as transcrições (com o texto) e o log do sistema (ações e erros, sem o texto falado). */
+const tab = ref<'transcriptions' | 'system'>('transcriptions')
 
 const store = useLogsStore()
 
@@ -107,9 +111,12 @@ function toggleExpand(entry: LogEntry): void {
     <div class="flex items-center justify-between">
       <div>
         <h1 class="text-xl font-semibold text-slate-100">Logs</h1>
-        <p class="text-sm text-slate-500 mt-1">{{ store.total }} transcrições registradas</p>
+        <p class="text-sm text-slate-500 mt-1">
+          <template v-if="tab === 'transcriptions'">{{ store.total }} transcrições registradas</template>
+          <template v-else>Tudo o que o app fez e os erros, para investigar problemas</template>
+        </p>
       </div>
-      <div class="flex gap-2">
+      <div v-if="tab === 'transcriptions'" class="flex gap-2">
         <button
           v-if="!confirmClear"
           class="px-3 py-1.5 text-sm text-slate-400 hover:text-red-400 border border-slate-700 hover:border-red-700/60 rounded-lg transition-colors"
@@ -124,7 +131,21 @@ function toggleExpand(entry: LogEntry): void {
       </div>
     </div>
 
-    <div class="flex-1 overflow-auto">
+    <div class="flex gap-1 border-b border-slate-800 -mt-1">
+      <button
+        v-for="t in [{ id: 'transcriptions', label: 'Transcrições' }, { id: 'system', label: 'Sistema' }] as const"
+        :key="t.id"
+        :class="[
+          'px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors',
+          tab === t.id ? 'border-indigo-500 text-slate-100' : 'border-transparent text-slate-500 hover:text-slate-300'
+        ]"
+        @click="tab = t.id"
+      >{{ t.label }}</button>
+    </div>
+
+    <SystemLogPanel v-if="tab === 'system'" class="flex-1 min-h-0" />
+
+    <div v-if="tab === 'transcriptions'" class="flex-1 overflow-auto">
       <table class="w-full text-sm border-collapse">
         <thead>
           <tr class="text-left text-slate-500 text-xs uppercase tracking-wide">
@@ -227,7 +248,7 @@ function toggleExpand(entry: LogEntry): void {
       </table>
     </div>
 
-    <div v-if="store.total > store.limit" class="flex items-center justify-between text-sm text-slate-500 border-t border-slate-800 pt-3">
+    <div v-if="tab === 'transcriptions' && store.total > store.limit" class="flex items-center justify-between text-sm text-slate-500 border-t border-slate-800 pt-3">
       <span>{{ offset + 1 }}-{{ Math.min(offset + store.limit, store.total) }} de {{ store.total }}</span>
       <div class="flex gap-2">
         <button

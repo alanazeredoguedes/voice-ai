@@ -27,6 +27,9 @@ DEFAULT_SETTINGS: dict = {
     # Mostrar/esconder o Voice AI por cima de qualquer janela (até jogos em tela cheia sem bordas)
     "window_key": "<ctrl>+<alt>+<f12>",
     "window_keys_extra": [],
+    # Chamada: segurar para falar ("apertar para falar"); vazio até a pessoa escolher
+    "call_ptt_key": "",
+    "call_ptt_keys_extra": [],
     # Mostrar/esconder: desligado = a janela vem para a frente, mas outra janela clicada passa por cima;
     # ligado = fica sempre por cima até esconder pelo atalho
     "window_keep_on_top": False,

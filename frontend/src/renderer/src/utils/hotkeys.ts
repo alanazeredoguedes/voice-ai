@@ -17,18 +17,21 @@ const KEY_NAMES: Record<string, string> = {
 
 const MOUSE_NAMES: Record<string, string> = { middle: 'Mouse (botão do meio)', right: 'Mouse (botão direito)', x1: 'Mouse (botão lateral 1)', x2: 'Mouse (botão lateral 2)' }
 
+function mouseName(b: string): string {
+  const n = b.match(/^button(\d+)$/)
+  return MOUSE_NAMES[b] ?? (n ? `Mouse ${n[1]}` : `Mouse (${b})`)
+}
+
 export function prettyHotkey(hotkey: string): string {
   if (!hotkey) return ''
   if (hotkey.startsWith('gamepad:')) {
     return '🎮 ' + hotkey.slice('gamepad:'.length).split('+').map((b) => GAMEPAD_LABELS[b] ?? b).join(' + ')
   }
-  if (hotkey.startsWith('mouse:')) {
-    const b = hotkey.slice('mouse:'.length)
-    return MOUSE_NAMES[b] ?? `Mouse (${b})`
-  }
+  if (hotkey.startsWith('mouse:')) return mouseName(hotkey.slice('mouse:'.length))
   return hotkey
     .split('+')
     .map((part) => {
+      if (part.startsWith('mouse:')) return mouseName(part.slice('mouse:'.length))
       const k = part.replace(/^<|>$/g, '')
       return KEY_NAMES[k] ?? (k.length === 1 ? k.toUpperCase() : k.toUpperCase())
     })

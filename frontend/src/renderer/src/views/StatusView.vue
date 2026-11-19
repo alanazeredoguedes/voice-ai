@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import WaylandHotkeyNotice from '../components/WaylandHotkeyNotice.vue'
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { useStatusStore } from '../stores/status'
 import { useSettingsStore } from '../stores/settings'
@@ -64,6 +65,7 @@ onUnmounted(() => unsub())
 
 <template>
   <div class="flex flex-col gap-6 min-h-full">
+    <WaylandHotkeyNotice compact />
     <div class="flex flex-wrap items-start justify-between gap-3">
       <div>
         <h1 class="text-xl font-semibold text-slate-100">Transcrição de Microfone</h1>

@@ -1,10 +1,28 @@
 import axios from 'axios'
-import type { Settings, LogsPage, EdgeVoice, ElevenLabsVoice } from '../types'
+import type { Settings, LogsPage, EdgeVoice, ElevenLabsVoice, SystemLogEntry } from '../types'
 import { BACKEND_URL } from './port'
+import { syslog } from '../utils/syslog'
 
 const BASE_URL = BACKEND_URL
 
 const http = axios.create({ baseURL: BASE_URL, timeout: 15000 })
+
+// toda chamada ao backend que falha vai para o log do sistema (inclusive "backend não respondeu")
+http.interceptors.response.use(undefined, (err: unknown) => {
+  if (axios.isCancel(err)) return Promise.reject(err)
+  const e = err as { config?: { method?: string; url?: string }; response?: { status: number; data?: unknown }; code?: string; message?: string }
+  const where = `${(e.config?.method ?? '?').toUpperCase()} ${e.config?.url ?? '?'}`
+  if (e.response) {
+    const data = e.response.data as { detail?: unknown } | undefined
+    const detail = data?.detail !== undefined ? (typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail)) : ''
+    syslog(e.response.status >= 500 ? 'error' : 'warn', 'api', `${where} → ${e.response.status}${detail ? `: ${detail.slice(0, 500)}` : ''}`)
+  } else if (e.code === 'ECONNABORTED') {
+    syslog('error', 'api', `${where} → o backend não respondeu a tempo (${e.message ?? 'timeout'})`)
+  } else {
+    syslog('error', 'api', `${where} → sem resposta do backend (${e.code ?? ''} ${e.message ?? ''})`.trim())
+  }
+  return Promise.reject(err)
+})
 
 export async function getSettings(): Promise<Settings> {
   const { data } = await http.get('/settings')
@@ -25,6 +43,21 @@ export async function clearLogs(): Promise<void> {
   await http.delete('/logs')
 }
 
+export async function getSystemLogs(since = 0): Promise<{ items: SystemLogEntry[]; file: string }> {
+  const { data } = await http.get('/logs/system', { params: { since } })
+  return data
+}
+
+/** O arquivo sistema.log inteiro (inclui sessões anteriores). */
+export async function getSystemLogFile(): Promise<string> {
+  const { data } = await http.get('/logs/system/file', { responseType: 'text', timeout: 30000 })
+  return data
+}
+
+export async function clearSystemLogs(): Promise<void> {
+  await http.delete('/logs/system')
+}
+
 export async function getEdgeVoices(): Promise<EdgeVoice[]> {
   const { data } = await http.get('/voices/edge')
   return data
@@ -37,6 +70,26 @@ export async function fetchElevenLabsVoices(apiKey: string): Promise<ElevenLabsV
 
 export async function restartEngine(): Promise<void> {
   await http.post('/engine/restart')
+}
+
+export interface HotkeyStatus {
+  wayland: boolean
+  /** "evdev" = leitura direta (Wayland), "pynput" = normal (X11/Windows) */
+  method: string
+  needs_permission: boolean
+  devices: number
+  readable: number
+}
+
+export async function getHotkeyStatus(): Promise<HotkeyStatus> {
+  const { data } = await http.get('/hotkeys/status')
+  return data
+}
+
+/** Pede a senha do sistema e libera os atalhos globais no Wayland. Espera a pessoa digitar (até 3 min). */
+export async function grantHotkeyAccess(): Promise<HotkeyStatus & { ok: boolean; message: string }> {
+  const { data } = await http.post('/hotkeys/grant-access', null, { timeout: 200000 })
+  return data
 }
 
 export async function captureHotkey(): Promise<string> {

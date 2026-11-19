@@ -6,6 +6,9 @@ export interface Settings {
   /** mostrar/esconder o Voice AI por cima de qualquer janela */
   window_key?: string
   window_keys_extra?: string[]
+  /** Chamada: segurar para falar */
+  call_ptt_key?: string
+  call_ptt_keys_extra?: string[]
   window_keep_on_top?: boolean
   model: 'tiny' | 'base' | 'small' | 'medium' | 'large-v3-turbo' | 'large-v3'
   device: 'auto' | 'cuda' | 'cpu'
@@ -74,14 +77,31 @@ export interface WhisperModel {
   downloading: boolean
 }
 
+/** Uma linha do log do sistema (aba Logs → Sistema). */
+export interface SystemLogEntry {
+  id: number
+  /** segundos desde 1970 */
+  t: number
+  level: 'debug' | 'info' | 'warn' | 'error'
+  /** área do app: atalhos, microfone, gravação, chamada, api, janelas... */
+  cat: string
+  /** quem registrou: backend, tela, overlay, electron */
+  src: string
+  msg: string
+}
+
 export interface StateEvent {
-  type: 'state_changed' | 'audio_level' | 'log_added' | 'transcription_ready' | 'transcription_progress' | 'translate_download_progress' | 'translate_file' | 'chat_chunk' | 'chat_delta' | 'claude_usage' | 'ptt_partial' | 'toggle_window' | 'ai_rejected_short' | 'chat_error' | 'voice_user_message' | 'voice_chat_cancelled' | 'chat_media' | 'chat_media_preview' | 'tts_playing' | 'chats_changed' | 'ai_rejected_busy' | 'chat_activity' | 'tts_preparing' | 'tts_words' | 'speech_cache_progress' | 'engine_loading' | 'benchmark_started' | 'benchmark_progress' | 'benchmark_result' | 'benchmark_done' | 'model_download_progress' | 'model_download_complete' | 'model_download_error' | 'pong'
+  type: 'state_changed' | 'audio_level' | 'log_added' | 'transcription_ready' | 'transcription_progress' | 'translate_download_progress' | 'translate_file' | 'chat_chunk' | 'chat_delta' | 'claude_usage' | 'ptt_partial' | 'toggle_window' | 'ai_rejected_short' | 'chat_error' | 'voice_user_message' | 'voice_chat_cancelled' | 'chat_media' | 'chat_media_preview' | 'tts_playing' | 'chats_changed' | 'ai_rejected_busy' | 'chat_activity' | 'tts_preparing' | 'tts_words' | 'speech_cache_progress' | 'engine_loading' | 'benchmark_started' | 'benchmark_progress' | 'benchmark_result' | 'benchmark_done' | 'model_download_progress' | 'model_download_complete' | 'model_download_error' | 'system_log' | 'call_ptt' | 'pong'
   model?: string
   state?: AppState
   /** ptt_partial: de qual atalho é a gravação ("ai" = falar com a IA) */
   mode?: string
   level?: number
   entry?: LogEntry
+  /** call_ptt: atalho de "apertar para falar" apertado (true) ou solto (false) */
+  pressed?: boolean
+  /** system_log: nova linha do log do sistema */
+  log?: SystemLogEntry
   text?: string
   progress?: number
   from_code?: string

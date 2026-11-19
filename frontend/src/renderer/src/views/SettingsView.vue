@@ -6,6 +6,7 @@ import { getEdgeVoices, getEngineStatus, getWhisperModels, downloadWhisperModel,
 import { onWsMessage } from '../api/ws'
 import type { EdgeVoice, WhisperModel } from '../types'
 import HotkeyList from '../components/HotkeyList.vue'
+import WaylandHotkeyNotice from '../components/WaylandHotkeyNotice.vue'
 import SettingToggle from '../components/SettingToggle.vue'
 import SettingsCard from '../components/SettingsCard.vue'
 import StorageSettings from '../components/StorageSettings.vue'
@@ -247,30 +248,28 @@ onUnmounted(() => {
 
       <!-- Atalhos -->
       <SettingsCard id="hotkeys" title="Atalhos" class="col-span-full">
+        <WaylandHotkeyNotice class="mb-3" />
         <div class="flex flex-col divide-y divide-slate-700/40">
           <HotkeyList
             label="Transcrição"
             hint="Segure para ditar. Dois cliques rápidos cancelam."
             :primary="store.settings.transcription_key"
             :extra="store.settings.transcription_keys_extra ?? []"
-            @update:primary="(v) => set({ transcription_key: v })"
-            @update:extra="(v) => set({ transcription_keys_extra: v })"
+            @update:all="(p, e) => set({ transcription_key: p, transcription_keys_extra: e })"
           />
           <HotkeyList
             label="Perguntar à IA"
             hint="Segure para perguntar. Dois cliques rápidos cancelam a resposta ou param a fala."
             :primary="store.settings.ai_key"
             :extra="store.settings.ai_keys_extra ?? []"
-            @update:primary="(v) => set({ ai_key: v })"
-            @update:extra="(v) => set({ ai_keys_extra: v })"
+            @update:all="(p, e) => set({ ai_key: p, ai_keys_extra: e })"
           />
           <HotkeyList
             label="Mostrar/esconder o Voice AI"
             hint="Traz o app para a frente, até de jogos em tela cheia. De novo, ele volta para trás."
             :primary="store.settings.window_key ?? '<ctrl>+<alt>+<f12>'"
             :extra="store.settings.window_keys_extra ?? []"
-            @update:primary="(v) => set({ window_key: v })"
-            @update:extra="(v) => set({ window_keys_extra: v })"
+            @update:all="(p, e) => set({ window_key: p, window_keys_extra: e })"
           >
             <template #aside>
               <button
@@ -298,6 +297,13 @@ onUnmounted(() => {
               </button>
             </template>
           </HotkeyList>
+          <HotkeyList
+            label="Falar na chamada"
+            hint="Com &quot;Apertar para falar&quot; ligado na Chamada (ajustes do microfone), o microfone só transmite enquanto você segura."
+            :primary="store.settings.call_ptt_key ?? ''"
+            :extra="store.settings.call_ptt_keys_extra ?? []"
+            @update:all="(p, e) => set({ call_ptt_key: p, call_ptt_keys_extra: e })"
+          />
         </div>
       </SettingsCard>
 

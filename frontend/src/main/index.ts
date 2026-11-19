@@ -13,6 +13,7 @@ import { spawn, ChildProcess, SpawnOptions } from 'child_process'
 import { checkClaudeMonitoring, type MonitoringLevel, type MonitoringReport } from './claudeMonitoring'
 import { setKeepOnTop, toggleWindowOnTop } from './windowToggle'
 import { diag, initWindowDiag, watchWindow } from './windowDiag'
+import { backendTail, initSysLog, sysLog } from './sysLog'
 import { downloadCloudflared, findCloudflared, registerCallIpc } from './call'
 
 // app instalado: 18450; dev: 18451 (os dois podem rodar juntos sem um usar o backend do outro)
@@ -842,10 +843,27 @@ function spawnBackend(): void {
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true
   })
-  backendProcess.stdout?.on('data', (d) => process.stdout.write(`[backend] ${d}`))
-  backendProcess.stderr?.on('data', (d) => process.stderr.write(`[backend] ${d}`))
-  backendProcess.on('exit', (code) => {
-    console.log(`[backend] exited with code ${code}`)
+  const tail = backendTail()
+  const startedAt = Date.now()
+  backendProcess.stdout?.on('data', (d) => {
+    process.stdout.write(`[backend] ${d}`)
+    tail.push(String(d))
+  })
+  backendProcess.stderr?.on('data', (d) => {
+    process.stderr.write(`[backend] ${d}`)
+    tail.push(String(d))
+  })
+  backendProcess.on('error', (e) => sysLog('error', 'backend', `não deu para iniciar o backend (${python}): ${e.message}`))
+  backendProcess.on('exit', (code, signal) => {
+    process.stdout.write(`[backend] exited with code ${code}\n`)
+    const secs = Math.round((Date.now() - startedAt) / 1000)
+    if (code === 0 || quitting) sysLog('info', 'backend', `backend encerrado (código ${code ?? signal}, ficou ${secs} s no ar)`)
+    else
+      sysLog(
+        'error',
+        'backend',
+        `o backend parou sozinho (código ${code ?? signal}, depois de ${secs} s). Últimas linhas dele:\n${tail.lines().join('\n') || '(nenhuma)'}`
+      )
     backendProcess = null
   })
 }
@@ -896,6 +914,7 @@ ipcMain.on('overlay:state', (_, state: string) => {
     clearTimeout(overlayHideTimer)
     overlayHideTimer = null
   }
+  sysLog('info', 'overlay', state === 'idle' ? 'indicador: escondendo em 2 s' : `indicador: mostrando (${state})`)
   if (state === 'idle') {
     overlayHideTimer = setTimeout(() => {
       overlayWindow?.hide()
@@ -1310,7 +1329,16 @@ function allowYouTubeEmbeds(): void {
 }
 
 app.whenReady().then(async () => {
+  initSysLog(getDataDir(), BACKEND_URL)
   initWindowDiag(getDataDir())
+  sysLog(
+    'info',
+    'app',
+    `Voice AI ${app.getVersion()} aberto | ${process.platform} ${process.arch} | Electron ${process.versions.electron} (Chromium ${process.versions.chrome})` +
+      (process.platform === 'linux'
+        ? ` | sessão ${process.env['XDG_SESSION_TYPE'] || '?'} (${process.env['XDG_CURRENT_DESKTOP'] || '?'}) | DISPLAY=${process.env['DISPLAY'] || '-'} WAYLAND_DISPLAY=${process.env['WAYLAND_DISPLAY'] || '-'} | ozone=${app.commandLine.getSwitchValue('ozone-platform') || 'automático'}`
+        : '')
+  )
   electronApp.setAppUserModelId('com.voiceai')
   initAutostartDefault()
   allowYouTubeEmbeds()

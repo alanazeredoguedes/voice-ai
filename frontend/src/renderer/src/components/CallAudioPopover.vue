@@ -2,6 +2,9 @@
 import { onMounted, onUnmounted, ref } from 'vue'
 import CustomSelect from './CustomSelect.vue'
 import { useCallStore } from '../stores/call'
+import { useSettingsStore } from '../stores/settings'
+import { captureHotkey } from '../api'
+import { prettyHotkey } from '../utils/hotkeys'
 
 /** Microfone e saída de som usados na chamada (trocáveis sem sair da sala). */
 const store = useCallStore()
@@ -15,6 +18,29 @@ const output = ref('')
 const errorMsg = ref('')
 
 const SYSTEM = { value: '', label: 'Padrão do sistema' }
+
+// "apertar para falar": o atalho é global (funciona com outro programa na frente) e fica nas Configurações
+const settings = useSettingsStore()
+const pttKeys = (): string[] =>
+  [settings.settings?.call_ptt_key ?? '', ...(settings.settings?.call_ptt_keys_extra ?? [])].filter(Boolean)
+if (!settings.settings) void settings.fetchSettings()
+const capturingPtt = ref(false)
+const pttError = ref('')
+
+async function choosePttKey(): Promise<void> {
+  capturingPtt.value = true
+  pttError.value = ''
+  try {
+    const hotkey = await captureHotkey()
+    await settings.update({ call_ptt_key: hotkey })
+    store.log('info', `atalho de "apertar para falar": ${prettyHotkey(hotkey)}`)
+  } catch (e) {
+    const err = e as { response?: { data?: { detail?: string } }; message?: string }
+    pttError.value = err.response?.data?.detail ?? err.message ?? 'Nenhuma tecla pressionada'
+  } finally {
+    capturingPtt.value = false
+  }
+}
 
 // medidor do microfone: -80 dBFS (vazio) a 0 dBFS (cheio)
 const pctOf = (db: number): number => Math.min(100, Math.max(0, ((db + 80) / 80) * 100))
@@ -121,6 +147,40 @@ onUnmounted(() => {
       </div>
 
       <div class="flex flex-col gap-2">
+        <button class="flex items-center justify-between gap-3 text-left" @click="store.setPtt(!store.pttOn)">
+          <span class="flex flex-col">
+            <span class="text-sm text-slate-200">Apertar para falar</span>
+            <span class="text-[11px] text-slate-500">O microfone só transmite enquanto você segura o atalho (funciona com outro programa na frente)</span>
+          </span>
+          <span :class="['relative inline-flex items-center w-8 h-[18px] rounded-full transition-colors flex-shrink-0', store.pttOn ? 'bg-indigo-600' : 'bg-slate-700']">
+            <span :class="['inline-block w-3.5 h-3.5 rounded-full bg-white transition-transform', store.pttOn ? 'translate-x-4' : 'translate-x-0.5']" />
+          </span>
+        </button>
+        <div v-if="store.pttOn" class="flex flex-col gap-1.5">
+          <div class="flex items-center gap-2">
+            <span class="text-xs text-slate-400">Atalho:</span>
+            <span v-if="capturingPtt" class="text-xs text-orange-300 animate-pulse">Pressione o atalho (teclado, mouse ou controle)…</span>
+            <template v-else>
+              <kbd
+                v-for="k in pttKeys()"
+                :key="k"
+                class="px-1.5 py-0.5 rounded-md bg-slate-700/70 border-b-2 border-slate-950/60 text-xs font-medium text-slate-100 font-sans"
+              >{{ prettyHotkey(k) }}</kbd>
+              <span v-if="!pttKeys().length" class="text-xs text-amber-300">nenhum ainda</span>
+              <button class="ml-auto text-xs text-indigo-300 hover:text-indigo-200" @click="choosePttKey">
+                {{ pttKeys().length ? 'Trocar' : 'Escolher' }}
+              </button>
+            </template>
+          </div>
+          <p v-if="pttError" class="text-[11px] text-red-400">{{ pttError }}</p>
+          <p v-if="store.inCall" :class="['text-[11px] font-medium', store.gateOpen ? 'text-emerald-400' : 'text-slate-500']">
+            {{ store.gateOpen ? '● Transmitindo' : 'Microfone fechado: segure o atalho para falar' }}
+          </p>
+          <p class="text-[11px] text-slate-500">Mais atalhos para isso em Configurações → Atalhos.</p>
+        </div>
+      </div>
+
+      <div v-if="!store.pttOn" class="flex flex-col gap-2">
         <button class="flex items-center justify-between gap-3 text-left" @click="store.setGate(!store.gateOn)">
           <span class="flex flex-col">
             <span class="text-sm text-slate-200">Só transmitir quando eu falar</span>

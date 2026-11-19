@@ -9,6 +9,7 @@
 import { appendFileSync, existsSync, mkdirSync, renameSync, statSync } from 'fs'
 import { join } from 'path'
 import type { BrowserWindow } from 'electron'
+import { sysLog } from './sysLog'
 
 const MAX_BYTES = 1024 * 1024
 let file = ''
@@ -22,6 +23,8 @@ export function initWindowDiag(dataDir: string): string {
 }
 
 export function diag(who: string, msg: string): void {
+  // foco/perda de foco acontece o tempo todo: entra como detalhe (escondido por padrão na tela de logs)
+  sysLog(/foco/.test(msg) ? 'debug' : /trav|erro|crash|não responde|inesperad/i.test(msg) ? 'warn' : 'info', 'janelas', `${who}: ${msg}`)
   if (!file) return
   try {
     if (existsSync(file) && statSync(file).size > MAX_BYTES) renameSync(file, `${file}.1`)

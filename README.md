@@ -115,6 +115,8 @@ chmod +x Voice.AI-x.y.z.AppImage
 
 Na primeira abertura, a mesma tela de configuração baixa os componentes em Python (no Linux eles não vão dentro do AppImage, então o download é maior) e o resto da lista acima. Os dados ficam em `~/.config/voice-ai`.
 
+**Linux com Wayland** (padrão do Ubuntu): o sistema não entrega a um programa as teclas e cliques feitos em outros, então os atalhos globais precisam de uma permissão. O app mostra um aviso com o botão **Liberar atalhos**: o Ubuntu pede a senha uma vez e uma regra do udev (`/etc/udev/rules.d/72-voice-ai-input.rules`) dá a quem está usando o computador acesso de leitura ao teclado e ao mouse. A partir daí o app lê os dois direto (`/dev/input`) e os atalhos funcionam em qualquer lugar, como no X11, sem sair da sessão. As teclas continuam indo normalmente para os outros programas.
+
 Em **Configurações → Geral** dá para **iniciar com o sistema** (Windows e Linux). Quando uma versão nova do app precisa de componentes novos, ele pede para atualizar na abertura e baixa só o que falta.
 
 Os modelos maiores do Whisper e os idiomas de tradução são baixados depois, dentro do app, quando você quiser.
@@ -397,7 +399,7 @@ Salas de voz para conversar, assistir à tela de alguém e trocar mensagens e ar
 - **Chat** com edição e exclusão para todos, e **arquivos de até 500 MB** (imagens e vídeos com prévia; dá para colar ou arrastar).
 - **Histórico guardado no seu computador**: quem entra recebe as últimas 500 mensagens de quem já está na sala, e um arquivo antigo pode ser pedido a quem tem uma cópia.
 - **Salas anteriores ao vivo**: a lista mostra quais salas estão abertas agora e quem está nelas. **Reabrir** entra na sala que já está aberta (em vez de cada um abrir a sua); se ninguém estiver com ela aberta, você passa a hospedá-la. Se duas pessoas clicarem juntas, quem reservou primeiro abre e a outra vê "Aguarde: Fulano está abrindo a sala" e entra junto.
-- **Microfone ajustável** (botão de ajustes ao lado de **Logs**): volume do microfone, **só transmitir quando eu falar** (com medidor ao vivo e limite ajustável) e, no Linux, **tirar do microfone o som do computador**: um processo do PipeWire do próprio app roda o cancelamento de eco do WebRTC usando como referência tudo o que sai na caixa de som (quem assiste a um vídeo na caixa de som não manda esse som de volta pelo microfone). Não instala nada: o módulo vem no PipeWire, o servidor de som padrão do Ubuntu desde a 22.10.
+- **Microfone ajustável** (botão de ajustes ao lado de **Logs**): volume do microfone, **apertar para falar** (o microfone só transmite enquanto você segura um atalho global, que funciona com outro programa na frente; escolhido ali mesmo ou em **Configurações → Atalhos**), **só transmitir quando eu falar** (com medidor ao vivo e limite ajustável) e, no Linux, **tirar do microfone o som do computador**: um processo do PipeWire do próprio app roda o cancelamento de eco do WebRTC usando como referência tudo o que sai na caixa de som (quem assiste a um vídeo na caixa de som não manda esse som de volta pelo microfone). Não instala nada: o módulo vem no PipeWire, o servidor de som padrão do Ubuntu desde a 22.10.
 - **Controle de entrada**: quem chega pela primeira vez fica esperando até alguém de dentro clicar em **Aceitar** (ou **Recusar**, e a pessoa vê o aviso). Quem já participou da sala entra direto.
 - **Logs da sala** (botão **Logs**): tudo o que acontece na chamada (conexões, rota da rede, microfone, transmissão, volumes, arquivos, erros), os seus e os dos outros participantes juntos, com filtro e botão **Copiar**. A cada 30 s entra um resumo das conexões (taxa, perda de pacotes e nível do som).
 
@@ -453,6 +455,8 @@ Atalhos, modelo do Whisper (com download dentro do app e um teste de desempenho 
 - **O código da sala demora a aparecer:** é esperado (alguns segundos); ele só aparece quando já funciona para os convidados.
 - **Não consigo conectar com alguém na chamada:** sem servidor TURN, redes muito restritivas (algumas redes corporativas) podem bloquear a conexão direta. Teste em outra rede.
 - **Sem som da transmissão no Linux:** o compartilhamento de som usa o PipeWire (`pw-cli`, `pw-dump` e `pw-link`, do pacote `pipewire-bin`); em sistemas só com PulseAudio ele não funciona. O motivo aparece em **Logs**.
+- **Atalhos não funcionam no Linux com Wayland:** use **Liberar atalhos** (em **Configurações → Atalhos** ou na tela do microfone). Em **Logs → Sistema** aparece como os atalhos estão sendo lidos e cada tecla de atalho recebida.
+- **Algo não funciona e não sei por quê:** abra **Logs → Sistema**, reproduza o problema e clique em **Baixar** (ou **Copiar**). Ali fica tudo o que o app fez e todos os erros (atalhos, microfone, gravações, configurações, chamada, janelas, backend), nunca o texto falado.
 - **Para depurar uma chamada:** abra **Logs**, reproduza o problema e clique em **Copiar**. As linhas de todos os participantes aparecem juntas.
 - **"Não encontrei texto no PDF":** o PDF é digitalizado (fotos das páginas). Ainda não há reconhecimento de texto (OCR).
 - **Tradução de arquivos pede para atualizar:** instalações antigas recebem os componentes novos (PyMuPDF, lxml) na próxima abertura.

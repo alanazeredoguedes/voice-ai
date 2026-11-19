@@ -52,7 +52,7 @@ const savedTo = ref('')
 async function download(): Promise<void> {
   const t = new Date()
   const name = `log-chamada-${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}-${String(t.getHours()).padStart(2, '0')}${String(t.getMinutes()).padStart(2, '0')}.txt`
-  const path = (await window.electron.ipcRenderer.invoke('call:save-log', store.logText(shown.value), name)) as string | null
+  const path = (await window.electron.ipcRenderer.invoke('call:save-log', store.logText(store.logs), name)) as string | null
   if (path) {
     savedTo.value = path
     setTimeout(() => (savedTo.value = ''), 4000)
@@ -60,7 +60,8 @@ async function download(): Promise<void> {
 }
 
 async function copy(): Promise<void> {
-  await navigator.clipboard.writeText(store.logText(shown.value))
+  // sempre tudo (os filtros servem só para ler aqui): quem recebe precisa do registro completo
+  await navigator.clipboard.writeText(store.logText(store.logs))
   copied.value = true
   setTimeout(() => (copied.value = false), 1500)
 }
@@ -99,12 +100,12 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
           <div class="flex-1" />
           <button
             :class="['px-3 py-1.5 rounded-lg text-xs font-medium transition-colors', copied ? 'bg-emerald-600 text-white' : 'bg-indigo-600 hover:bg-indigo-500 text-white']"
-            title="Copia as linhas mostradas (com os filtros aplicados)"
+            title="Copia todos os registros (de todos os participantes, sem os filtros)"
             @click="copy"
           >{{ copied ? 'Copiado!' : 'Copiar' }}</button>
           <button
             class="px-3 py-1.5 rounded-lg text-xs font-medium text-slate-100 bg-slate-700 hover:bg-slate-600 transition-colors"
-            :title="savedTo ? `Salvo em ${savedTo}` : 'Salva as linhas mostradas num arquivo .txt (para mandar por e-mail, chat...)'"
+            :title="savedTo ? `Salvo em ${savedTo}` : 'Salva todos os registros num arquivo .txt (para mandar por e-mail, chat...)'"
             @click="download"
           >{{ savedTo ? 'Salvo!' : 'Baixar' }}</button>
           <button

@@ -76,6 +76,20 @@ function fit(srcW: number, srcH: number, maxW: number, maxH: number): { w: numbe
   return { w: Math.max(2, Math.floor((srcW * r) / 2) * 2), h: Math.max(2, Math.floor((srcH * r) / 2) * 2) }
 }
 
+/**
+ * Quantos pixels por segundo o Xorg aguenta copiar sem travar o computador. O Xorg desenha tudo num núcleo só;
+ * a cada quadro o x11grab pede a ele a tela inteira (na área desenhada, antes de reduzir). Medido numa tela de
+ * 6144x3456 (21 MP): 30 fps = Xorg em 45% de um núcleo e a tela responde em ~6 ms; 60 fps = Xorg em 100% e a
+ * tela inteira passa a responder em ~90 ms (tudo fica lento, e o WebRTC, achando que é a internet, derruba a
+ * banda). Acima disso a captura é limitada; numa tela 1080p comum (2 MP) o limite passa de 300 fps.
+ */
+const XORG_PIXELS_PER_SECOND = 650e6
+
+/** Maior fps (múltiplo de 5, mínimo 15) que a captura pode pedir de uma área de w x h sem travar o Xorg. */
+export function maxCaptureFps(w: number, h: number): number {
+  return Math.max(15, Math.floor(XORG_PIXELS_PER_SECOND / (w * h) / 5) * 5)
+}
+
 export function stopX11Capture(): void {
   const s = current
   current = null
@@ -97,7 +111,7 @@ export async function startX11Capture(
     return { ok: false, error: 'ffmpeg não encontrado (instale o pacote ffmpeg)' }
   }
 
-  const input: string[] = ['-f', 'x11grab', '-framerate', String(opts.fps), '-draw_mouse', '1']
+  const input: string[] = ['-f', 'x11grab', '-framerate', 'FPS', '-draw_mouse', '1']
   let src: { w: number; h: number }
   let region: string
   try {
@@ -116,6 +130,14 @@ export async function startX11Capture(
     return { ok: false, error: e instanceof Error ? e.message : String(e) }
   }
 
+  const fps = Math.min(opts.fps, maxCaptureFps(src.w, src.h))
+  input[input.indexOf('FPS')] = String(fps)
+  if (fps < opts.fps)
+    log(
+      'warn',
+      `captura limitada a ${fps} fps (pedido ${opts.fps}): copiar ${src.w}x${src.h} pixels ${opts.fps} vezes por segundo deixaria o ` +
+        `servidor gráfico (Xorg) no limite e o computador inteiro lento`
+    )
   const out = fit(src.w, src.h, opts.width, opts.height)
   const frameSize = (out.w * out.h * 3) / 2
   const token = randomBytes(16).toString('hex')
@@ -187,6 +209,6 @@ export async function startX11Capture(
     dropped = 0
   }, 10000)
 
-  log('info', `captura própria (ffmpeg x11grab) ligada: ${region} → ${out.w}x${out.h} a ${opts.fps} fps`)
-  return { ok: true, port, token, width: out.w, height: out.h, fps: opts.fps, region }
+  log('info', `captura própria (ffmpeg x11grab) ligada: ${region} → ${out.w}x${out.h} a ${fps} fps`)
+  return { ok: true, port, token, width: out.w, height: out.h, fps, region }
 }

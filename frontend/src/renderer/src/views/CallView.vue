@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { copyLocalImage } from '../utils/imageActions'
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { DEFAULT_PEER_VOLUME, SELF, useCallStore, type CallFile, type ShareQuality } from '../stores/call'
 import CopyButton from '../components/CopyButton.vue'
@@ -950,9 +951,9 @@ function confirmLeave(): void {
 
             <div v-if="msg.files.length" class="flex flex-wrap gap-2 mt-0.5">
               <template v-for="f in msg.files" :key="f.id">
-                <!-- imagem / vídeo com prévia: clica para ampliar -->
+                <!-- imagem / vídeo com prévia: clica para ampliar (imagem: botão de copiar ao passar o mouse) -->
+                <div v-if="f.url && (isImage(f) || isVideo(f))" class="relative group/img">
                 <button
-                  v-if="f.url && (isImage(f) || isVideo(f))"
                   class="relative rounded-xl overflow-hidden border border-slate-700/60 bg-slate-950 max-w-xs hover:border-indigo-500/60 transition-colors"
                   :title="`${f.name} - clique para ampliar`"
                   @click="viewer = f"
@@ -967,6 +968,17 @@ function confirmLeave(): void {
                     </span>
                   </template>
                 </button>
+                <button
+                  v-if="isImage(f)"
+                  class="absolute top-2 right-2 p-1.5 rounded-lg bg-black/70 text-slate-200 hover:text-white hover:bg-indigo-600 opacity-0 group-hover/img:opacity-100 transition-opacity"
+                  title="Copiar a imagem (para colar em outro lugar com Ctrl+V)"
+                  @click="copyLocalImage(f.url)"
+                >
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.7" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 01-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 011.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 00-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 01-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 00-3.375-3.375h-1.5a1.125 1.125 0 01-1.125-1.125v-1.5a3.375 3.375 0 00-3.375-3.375H9.75" />
+                  </svg>
+                </button>
+                </div>
 
                 <!-- outros arquivos (ou ainda chegando) -->
                 <div v-else class="w-72 flex flex-col gap-1.5 rounded-xl border border-slate-700/60 bg-slate-900/40 p-2.5">
@@ -1377,6 +1389,7 @@ function confirmLeave(): void {
       :video="isVideo(viewer)"
       @close="viewer = null"
       @download="viewer && store.downloadFile(viewer)"
+      @copy="viewer?.url && copyLocalImage(viewer.url)"
     />
     <ConfirmModal :open="showLeave" title="Sair da chamada?" confirm-label="Sair" @confirm="confirmLeave" @cancel="showLeave = false">
       {{

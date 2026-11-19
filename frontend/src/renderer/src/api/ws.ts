@@ -1,5 +1,6 @@
 import type { StateEvent } from '../types'
 import { BACKEND_PORT } from './port'
+import { syslog } from '../utils/syslog'
 
 type Handler = (event: StateEvent) => void
 
@@ -11,6 +12,8 @@ let socket: WebSocket | null = null
 let pingTimer: ReturnType<typeof setInterval> | null = null
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 let backoffMs = 500
+let wasOpen = false
+let downSince = 0
 const handlers: Handler[] = []
 
 export function onWsMessage(handler: Handler): () => void {
@@ -52,6 +55,9 @@ export function connect(): void {
   socket = new WebSocket(WS_URL)
 
   socket.onopen = () => {
+    if (downSince) syslog('info', 'conexão', `conexão em tempo real com o backend voltou (ficou ${Math.round((Date.now() - downSince) / 1000)} s fora)`)
+    wasOpen = true
+    downSince = 0
     backoffMs = 500
     startPing()
   }
@@ -65,7 +71,10 @@ export function connect(): void {
     }
   }
 
-  socket.onclose = () => {
+  socket.onclose = (e) => {
+    if (wasOpen) syslog('warn', 'conexão', `conexão em tempo real com o backend caiu (código ${e.code}); tentando de novo`)
+    wasOpen = false
+    if (!downSince) downSince = Date.now()
     stopPing()
     scheduleReconnect()
   }

@@ -47,6 +47,17 @@ export async function copyImage(item: MediaItem): Promise<void> {
   }
 }
 
+/** Copia uma imagem que já está no app (ex.: recebida no chat da chamada; endereço blob: ou data:). */
+export async function copyLocalImage(url: string): Promise<void> {
+  if (!invoke) return toast('Copiar imagem só funciona no app', { error: true })
+  try {
+    const ok = ((await invoke('media:copy-png', await toPngBase64(url))) as { ok: boolean }).ok
+    toast(ok ? 'Imagem copiada: é só colar (Ctrl+V)' : 'Não foi possível copiar a imagem', { error: !ok })
+  } catch {
+    toast('Não foi possível copiar a imagem', { error: true })
+  }
+}
+
 export async function saveImage(item: MediaItem): Promise<void> {
   if (!invoke) return toast('Baixar só funciona no app', { error: true })
   toast('Baixando...')

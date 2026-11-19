@@ -1,3 +1,4 @@
+import { syslog } from '../utils/syslog'
 import { defineStore } from 'pinia'
 import { computed, ref, shallowRef, watch as vueWatch } from 'vue'
 import {
@@ -133,6 +134,7 @@ const NAME_KEY = 'call.name'
 const MIC_GAIN_KEY = 'call.micGain'
 const GATE_KEY = 'call.voiceGate'
 const GATE_DB_KEY = 'call.voiceGateDb'
+const PTT_KEY = 'call.pushToTalk'
 const AEC_KEY = 'call.echoCancel'
 /** com alguém da chamada falando, quanto mais forte o meu som precisa ser para o microfone abrir */
 const ECHO_GUARD_DB = 10
@@ -160,7 +162,7 @@ const HISTORY_SYNC_LIMIT = 500
 /** prévias de imagem/vídeo carregadas na memória até este tamanho */
 const PREVIEW_MAX_BYTES = 50 * 1024 * 1024
 const SAFE_ID = /^[a-zA-Z0-9-]{8,64}$/
-const LOG_MAX = 5000
+const LOG_MAX = 20000 // ~6 h de chamada com duas pessoas (as medições a cada 10 s são a maior parte)
 /** a cada quanto tempo o log ganha o resumo das conexões (taxas, perdas, nível do som) */
 const STATS_EVERY_MS = 30_000
 
@@ -245,6 +247,10 @@ export const useCallStore = defineStore('call', () => {
   /** nível do microfone agora (dBFS, depois do volume): para ajustar o limite olhando */
   const micLevelDb = ref(-100)
   const gateOpen = ref(false)
+  /** "Apertar para falar": o microfone só transmite enquanto o atalho está apertado (vale mais que o portão de voz) */
+  const pttOn = ref(readSetting(PTT_KEY) === '1')
+  const pttHeld = ref(false)
+  let pttReleasedAt = 0
   /** volume da voz de cada participante para mim (0 a 2; sem valor = 100%) */
   const peerVolumes = ref<Record<string, number>>({})
 
@@ -307,6 +313,8 @@ export const useCallStore = defineStore('call', () => {
       remote: false
     }
     ;(level === 'info' ? console.log : console.warn)('[call]', msg)
+    // no log do sistema também, menos as medições periódicas (já estão na aba de logs da chamada)
+    if (level !== 'info' || !/^\[(estatísticas|qualidade|transmissão)\]/.test(msg)) syslog(level, 'chamada', entry.msg)
     pushLogs([entry])
     logOutbox.push(entry)
     if (!logFlushTimer) logFlushTimer = setTimeout(flushLogs, 1000)
@@ -1493,7 +1501,7 @@ export const useCallStore = defineStore('call', () => {
     let open = false
     let othersUntil = 0
     let guardLogged = false
-    gate.gain.value = gateOn.value ? 0 : 1
+    gate.gain.value = gateOn.value || pttOn.value ? 0 : 1
     const timer = setInterval(() => {
       meter.getFloatTimeDomainData(buf)
       let sum = 0
@@ -1511,7 +1519,10 @@ export const useCallStore = defineStore('call', () => {
       }
       // abre acima do limite; fecha só depois de 400 ms abaixo dele, para não cortar o fim das palavras
       if (db > gateDb.value + guard) lastLoud = now
-      const want = !gateOn.value || now - lastLoud < 400
+      // apertar para falar: aberto enquanto segura, e mais 250 ms depois de soltar (não corta a última palavra)
+      const want = pttOn.value
+        ? pttHeld.value || now - pttReleasedAt < 250
+        : !gateOn.value || now - lastLoud < 400
       if (want !== open) {
         open = want
         gateOpen.value = want
@@ -1543,7 +1554,7 @@ export const useCallStore = defineStore('call', () => {
         'info',
         `microfone aberto: "${track?.label}" (${st.sampleRate ?? '?'} Hz, eco do navegador ${st.echoCancellation ? 'sim' : 'não'}, ruído ${st.noiseSuppression ? 'sim' : 'não'}, ganho automático ${st.autoGainControl ? 'sim' : 'não'}; ` +
           `cancelamento de eco do sistema ${echoCancelActive.value ? 'ligado' : 'desligado'}, volume ${Math.round(micGain.value * 100)}%, ` +
-          `${gateOn.value ? `só quando falo (limite ${gateDb.value} dBFS)` : 'sempre aberto'})`
+          `${pttOn.value ? 'apertar para falar' : gateOn.value ? `só quando falo (limite ${gateDb.value} dBFS)` : 'sempre aberto'})`
       )
       await rtc.setMicTrack(stream.getAudioTracks()[0] ?? null)
     } catch (e) {
@@ -1603,6 +1614,13 @@ export const useCallStore = defineStore('call', () => {
     log('info', on ? `"só transmitir quando eu falar" ligado (limite ${gateDb.value} dBFS)` : '"só transmitir quando eu falar" desligado')
   }
 
+  function setPtt(on: boolean): void {
+    pttOn.value = on
+    pttHeld.value = false
+    saveSetting(PTT_KEY, on ? '1' : '0')
+    log('info', on ? '"apertar para falar" ligado: o microfone só transmite enquanto o atalho está apertado' : '"apertar para falar" desligado')
+  }
+
   function setGateDb(db: number): void {
     gateDb.value = Math.round(Math.min(Math.max(db, -80), -10))
     saveSetting(GATE_DB_KEY, String(gateDb.value))
@@ -1643,6 +1661,11 @@ export const useCallStore = defineStore('call', () => {
   }
   onWsMessage((e) => {
     if (e.type === 'state_changed' && e.state) onDictation(e.state === 'recording')
+    if (e.type === 'call_ptt') {
+      const held = !!e.pressed
+      if (!held && pttHeld.value) pttReleasedAt = performance.now()
+      pttHeld.value = held
+    }
   })
 
   // ------------------------------------------------------------------ compartilhamento de tela
@@ -1699,7 +1722,14 @@ export const useCallStore = defineStore('call', () => {
     localScreen?.getTracks().forEach((t) => (t.onended = null))
     stopOwnCapture()
     // Linux com Xorg: captura própria pelo ffmpeg (o capturador do Chromium não passa de ~10 fps em telas grandes)
-    if (IS_LINUX && !isWayland.value) stream = await startOwnCapture(sourceId, quality)
+    if (IS_LINUX && !isWayland.value) {
+      stream = await startOwnCapture(sourceId, quality)
+      // tela muito grande: a captura foi limitada (ver maxCaptureFps) e a transmissão segue o fps real
+      if (stream && ownCaptureFps && ownCaptureFps < quality.fps) {
+        log('warn', `transmissão em ${ownCaptureFps} fps em vez de ${quality.fps}: acima disso esta tela deixaria o computador lento`)
+        quality = { ...quality, fps: ownCaptureFps, label: quality.label.replace(/\d+\s*fps/, `${ownCaptureFps} fps`) }
+      }
+    }
     if (!stream) try {
       // Wayland: a tela já foi escolhida no seletor do sistema; a captura pela API de tela abriria o seletor
       // de novo (e falha com "Invalid capture constraints"), então vai direto pela captura do Electron
@@ -1772,7 +1802,10 @@ export const useCallStore = defineStore('call', () => {
   function stopOwnCapture(): void {
     ownCapture?.stop()
     ownCapture = null
+    ownCaptureFps = 0
   }
+  /** fps que a captura própria realmente usa (pode ser menor que o escolhido em telas muito grandes) */
+  let ownCaptureFps = 0
 
   /**
    * Captura pelo ffmpeg (ver main/linuxX11Capture.ts): os quadros chegam já na resolução escolhida, por um
@@ -1848,6 +1881,7 @@ export const useCallStore = defineStore('call', () => {
     }
     const info = `ffmpeg x11grab, ${res.region} → ${res.width}x${res.height} a ${res.fps} fps`
     ownCapture = { stop: close, info }
+    ownCaptureFps = res.fps
     const report = setInterval(() => {
       if (closed) return clearInterval(report)
       if (skipped > frames * 0.2) log('warn', `captura própria: ${skipped} de ${frames} quadros descartados nos últimos 10 s (o app não acompanhou)`)
@@ -2247,6 +2281,9 @@ export const useCallStore = defineStore('call', () => {
     setMicGain,
     setGate,
     setGateDb,
+    pttOn,
+    pttHeld,
+    setPtt,
     setEchoCancel,
     isLinux: IS_LINUX,
     waitingApproval,
