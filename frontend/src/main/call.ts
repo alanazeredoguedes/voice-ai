@@ -7,8 +7,8 @@
  *   O nome aleatório do túnel (ex.: "calm-river-paper-moon") é o código da sala.
  * - cloudflared: baixado no setup (ou na primeira sala, se ainda não existir).
  */
-import { app, desktopCapturer, ipcMain, net, session, shell, type WebContents } from 'electron'
-import { spawn, type ChildProcess } from 'child_process'
+import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, net, screen, session, shell, type WebContents } from 'electron'
+import { execFile, spawn, type ChildProcess } from 'child_process'
 import {
   chmodSync,
   copyFileSync,
@@ -39,6 +39,7 @@ import {
 } from './callRendezvous'
 import { setShareAudioLogger, startLinuxShareAudio, stopLinuxShareAudio } from './linuxShareAudio'
 import { startEchoCancel, stopEchoCancel } from './linuxEchoCancel'
+import { startX11Capture, stopX11Capture } from './linuxX11Capture'
 
 // ---------------------------------------------------------------------------
 // Log da sala: o que acontece aqui (túnel, sinalização, som do Linux) aparece no log da tela de Chamada
@@ -387,7 +388,9 @@ export function stopCallHost(): void {
   stopSignaling()
 }
 
-app.on('before-quit', () => void stopLinuxShareAudio())
+app.on('before-quit', () => {
+  void stopLinuxShareAudio()
+})
 
 // ---------------------------------------------------------------------------
 // Histórico das salas: <dados do app>/calls/<id>.json + arquivos em <dados do app>/calls/<id>/
@@ -543,6 +546,26 @@ export function registerCallIpc(getDataDir: () => string): void {
   })
   ipcMain.handle('call:aec-stop', () => stopEchoCancel())
 
+  // Linux com Xorg: captura de tela própria (ffmpeg), bem mais rápida que a do Chromium; ver linuxX11Capture.ts
+  ipcMain.handle('call:x11-capture-start', async (_e, opts: { sourceId: string; width: number; height: number; fps: number }) => {
+    let displayId = ''
+    if (String(opts?.sourceId).startsWith('screen:')) {
+      const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } }).catch(() => [])
+      displayId = sources.find((s) => s.id === opts.sourceId)?.display_id ?? ''
+    }
+    return startX11Capture(
+      {
+        sourceId: String(opts?.sourceId ?? ''),
+        displayId,
+        width: Math.min(Math.max(Number(opts?.width) || 1920, 320), 7680),
+        height: Math.min(Math.max(Number(opts?.height) || 1080, 240), 4320),
+        fps: Math.min(Math.max(Number(opts?.fps) || 30, 5), 120)
+      },
+      (level, msg) => mainLog(level, `[captura] ${msg}`)
+    )
+  })
+  ipcMain.handle('call:x11-capture-stop', () => stopX11Capture())
+
   ipcMain.handle('call:capture-pick', (_e, pick: { sourceId: string; audio: boolean }) => {
     pendingCapture = pick
   })
@@ -645,6 +668,57 @@ export function registerCallIpc(getDataDir: () => string): void {
   ipcMain.handle('call:room-proof', (_e, tag: string) => {
     const id = roomByTag(callsDirOf(getDataDir()), String(tag))
     return id ? proofFor(id) : null
+  })
+
+  /**
+   * Telas do computador, para o log da transmissão: tamanho lógico, escala e pixels reais. No Linux com
+   * Xorg também o tamanho da área desenhada (com escala fracionária ela é maior que a própria tela).
+   */
+  ipcMain.handle('call:display-info', async () => {
+    const displays = screen.getAllDisplays().map((d) => ({
+      id: String(d.id),
+      label: d.label || '',
+      size: `${d.size.width}x${d.size.height}`,
+      scale: d.scaleFactor,
+      pixels: `${Math.round(d.size.width * d.scaleFactor)}x${Math.round(d.size.height * d.scaleFactor)}`,
+      hz: d.displayFrequency,
+      primary: d.id === screen.getPrimaryDisplay().id
+    }))
+    let framebuffer = ''
+    if (process.platform === 'linux' && process.env['XDG_SESSION_TYPE'] !== 'wayland') {
+      try {
+        const out = await new Promise<string>((resolve, reject) =>
+          execFile('xrandr', ['--current'], { timeout: 3000 }, (err, stdout) => (err ? reject(err) : resolve(stdout)))
+        )
+        framebuffer = out.match(/current (\d+) x (\d+)/)?.slice(1, 3).join('x') ?? ''
+      } catch {
+        // sem xrandr
+      }
+    }
+    return {
+      platform: `${process.platform} ${process.arch}`,
+      session: process.env['XDG_SESSION_TYPE'] ?? '',
+      desktop: process.env['XDG_CURRENT_DESKTOP'] ?? '',
+      electron: process.versions.electron,
+      chrome: process.versions.chrome,
+      displays,
+      framebuffer
+    }
+  })
+
+  /** "Baixar" o log da sala: escolhe onde salvar (começa em Downloads) e grava o texto. */
+  ipcMain.handle('call:save-log', async (event, text: string, name: string) => {
+    const win = BrowserWindow.fromWebContents(event.sender) ?? undefined
+    const safe = String(name || 'log-da-chamada.txt').replace(/[\\/:*?"<>|]+/g, '_')
+    const res = await dialog.showSaveDialog(win!, {
+      title: 'Salvar o log da chamada',
+      defaultPath: join(app.getPath('downloads'), safe),
+      filters: [{ name: 'Texto', extensions: ['txt'] }]
+    })
+    if (res.canceled || !res.filePath) return null
+    writeFileSync(res.filePath, String(text ?? ''), 'utf8')
+    shell.showItemInFolder(res.filePath)
+    return res.filePath
   })
 
   /** Linux com Wayland: o próprio sistema mostra o seletor de tela (exigência de segurança, não dá para pular). */

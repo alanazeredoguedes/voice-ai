@@ -53,6 +53,11 @@ export interface NetSample {
     freezes: number
     freezeMs: number
     dropped: number
+    /** decodificador em uso (ex.: "libvpx", "ExternalDecoder" = placa de vídeo) */
+    decoder: string
+    /** pedidos de quadro-chave / reenvio feitos a quem transmite neste segundo */
+    pli: number
+    nack: number
   } | null
   /** a minha tela que estou enviando a este participante */
   sending: {
@@ -64,6 +69,18 @@ export interface NetSample {
     limit: string
     /** banda de envio que o WebRTC estima ter até esta pessoa (kbps) */
     availKbps: number | null
+    /** o que a captura da tela está entregando (antes de comprimir): se for baixo, o gargalo é a captura */
+    captureFps: number
+    captureWidth: number
+    captureHeight: number
+    /** codificador em uso (ex.: "libvpx", "ExternalEncoder" = placa de vídeo) */
+    encoder: string
+    /** % do tempo (desde o início) limitado por banda e por processador */
+    limitBandwidthPct: number
+    limitCpuPct: number
+    /** pedidos de quadro-chave / reenvio vindos de quem assiste neste segundo */
+    pli: number
+    nack: number
   } | null
 }
 
@@ -366,7 +383,7 @@ export function useCallRtc(log: CallLogFn = () => {}) {
         }
         link.settingRemoteAnswer = desc.type === 'answer'
         try {
-          await link.pc.setRemoteDescription(desc)
+          await link.pc.setRemoteDescription(withStartBitrate(desc))
         } catch (e) {
           log('error', `negociação com ${nameOf(msg.from)}: falha ao aplicar ${desc.type}: ${errText(e)}`)
           throw e
@@ -393,6 +410,35 @@ export function useCallRtc(log: CallLogFn = () => {}) {
   }
 
   // ---------------------------------------------------------------- participantes
+
+  /**
+   * O WebRTC começa estimando ~300 kbps e sobe aos poucos: a tela começava borrada por dezenas de segundos.
+   * "x-google-start-bitrate" (kbps) nos formatos de vídeo da descrição recebida faz o envio daqui começar mais alto.
+   */
+  function withStartBitrate(desc: RTCSessionDescriptionInit): RTCSessionDescriptionInit {
+    if (!desc.sdp) return desc
+    const lines = desc.sdp.split('\r\n')
+    let inVideo = false
+    const videoPts = new Set<string>()
+    for (const l of lines) {
+      if (l.startsWith('m=')) inVideo = l.startsWith('m=video')
+      const m = inVideo && l.match(/^a=rtpmap:(\d+) (VP8|VP9|H264|AV1)\//)
+      if (m) videoPts.add(m[1])
+    }
+    const out = lines.map((l) => {
+      const m = l.match(/^a=fmtp:(\d+) (.*)$/)
+      if (!m || !videoPts.has(m[1]) || l.includes('x-google-start-bitrate')) return l
+      return `${l};x-google-start-bitrate=2500`
+    })
+    // formatos de vídeo sem linha fmtp (ex.: VP8): cria uma
+    for (const pt of videoPts) {
+      if (!out.some((l) => l.startsWith(`a=fmtp:${pt} `))) {
+        const i = out.findIndex((l) => l.startsWith(`a=rtpmap:${pt} `))
+        if (i >= 0) out.splice(i + 1, 0, `a=fmtp:${pt} x-google-start-bitrate=2500`)
+      }
+    }
+    return { type: desc.type, sdp: out.join('\r\n') }
+  }
 
   function nameOf(id: string): string {
     return peers.find((p) => p.id === id)?.name ?? 'participante'
@@ -687,10 +733,35 @@ export function useCallRtc(log: CallLogFn = () => {}) {
     }
   }
 
+  /**
+   * Codecs da tela, em ordem: H.264 (no Windows e no Mac usa a placa de vídeo para comprimir), depois VP8.
+   * VP9/AV1 ficam por último: em transmissão de tela o Chromium os limita a poucos quadros por segundo.
+   */
+  function preferScreenCodecs(link: Link, sender: RTCRtpSender): void {
+    try {
+      const tr = link.pc.getTransceivers().find((t) => t.sender === sender)
+      const caps = RTCRtpReceiver.getCapabilities('video')?.codecs
+      if (!tr || !caps?.length || typeof tr.setCodecPreferences !== 'function') return
+      const rank = (c: RTCRtpCodec): number => {
+        const mime = c.mimeType.toLowerCase()
+        if (mime === 'video/h264') return c.sdpFmtpLine?.includes('packetization-mode=1') ? 0 : 1
+        if (mime === 'video/vp8') return 2
+        if (mime === 'video/rtx' || mime === 'video/red' || mime === 'video/ulpfec') return 5
+        return 4
+      }
+      tr.setCodecPreferences([...caps].sort((a, b) => rank(a) - rank(b)))
+    } catch (e) {
+      log('warn', `não deu para escolher o codec da tela: ${errText(e)}`)
+    }
+  }
+
   function addScreenTracks(link: Link, stream: MediaStream): void {
     const video = stream.getVideoTracks()[0]
     const audio = stream.getAudioTracks()[0]
-    if (video) link.screenVideoSender = link.pc.addTrack(video, screenLabel)
+    if (video) {
+      link.screenVideoSender = link.pc.addTrack(video, screenLabel)
+      preferScreenCodecs(link, link.screenVideoSender)
+    }
     if (audio) link.screenAudioSender = link.pc.addTrack(audio, screenLabel)
   }
 
@@ -720,7 +791,9 @@ export function useCallRtc(log: CallLogFn = () => {}) {
         if (bitrate) enc.maxBitrate = bitrate
         if (framerate) enc.maxFramerate = framerate
       })
-      if (isVideo && framerate && framerate > 30) params.degradationPreference = 'maintain-framerate'
+      // banda apertada: com 60/90 fps divide a perda entre resolução e fluidez ("balanced"); até 30 fps mantém a
+      // nitidez. ("maintain-framerate", usado antes, derrubava a imagem para 320x180 em qualquer aperto.)
+      if (isVideo && framerate) params.degradationPreference = framerate > 30 ? 'balanced' : 'maintain-resolution'
       try {
         await sender.setParameters(params)
       } catch (e) {
@@ -746,7 +819,10 @@ export function useCallRtc(log: CallLogFn = () => {}) {
     const audio = stream?.getAudioTracks()[0] ?? null
     for (const link of links.values()) {
       if (link.screenVideoSender) await link.screenVideoSender.replaceTrack(video)
-      else if (video) link.screenVideoSender = link.pc.addTrack(video, screenLabel)
+      else if (video) {
+        link.screenVideoSender = link.pc.addTrack(video, screenLabel)
+        preferScreenCodecs(link, link.screenVideoSender)
+      }
       if (link.screenAudioSender) await link.screenAudioSender.replaceTrack(audio)
       else if (audio) link.screenAudioSender = link.pc.addTrack(audio, screenLabel)
       if (!stream) link.watchingMe = false
@@ -931,19 +1007,36 @@ export function useCallRtc(log: CallLogFn = () => {}) {
             delay: Math.round((jbe ? (jbd / jbe) * 1000 : 0) + (rtt ?? 0) / 2),
             freezes: delta(`${r.id}:fz`, r.freezeCount),
             freezeMs: Math.round(delta(`${r.id}:fzd`, r.totalFreezesDuration) * 1000),
-            dropped: delta(`${r.id}:drop`, r.framesDropped)
+            dropped: delta(`${r.id}:drop`, r.framesDropped),
+            decoder: `${String(all.get(r.codecId)?.mimeType ?? '?').replace('video/', '')} · ${String(r.decoderImplementation ?? '?')}`,
+            pli: delta(`${r.id}:pli`, r.pliCount),
+            nack: delta(`${r.id}:nack`, r.nackCount)
           }
         }
         if (r.type === 'outbound-rtp' && r.kind === 'video') {
           const bytes = delta(`${r.id}:bytes`, r.bytesSent)
+          const pli = delta(`${r.id}:pli`, r.pliCount)
+          const nack = delta(`${r.id}:nack`, r.nackCount)
           if (!link.watchingMe) continue
+          const src = r.mediaSourceId ? all.get(r.mediaSourceId) : undefined
+          const durations = (r.qualityLimitationDurations ?? {}) as Record<string, number>
+          const total = Object.values(durations).reduce((a, b) => a + (Number(b) || 0), 0)
+          const pct = (k: string): number => (total ? Math.round(((Number(durations[k]) || 0) / total) * 100) : 0)
           sample.sending = {
             fps: Math.round(r.framesPerSecond ?? 0),
             width: r.frameWidth ?? 0,
             height: r.frameHeight ?? 0,
             kbps: Math.round((bytes * 8) / 1000),
             limit: String(r.qualityLimitationReason ?? 'none'),
-            availKbps: pair?.availableOutgoingBitrate ? Math.round(pair.availableOutgoingBitrate / 1000) : null
+            availKbps: pair?.availableOutgoingBitrate ? Math.round(pair.availableOutgoingBitrate / 1000) : null,
+            captureFps: Math.round(src?.framesPerSecond ?? 0),
+            captureWidth: src?.width ?? 0,
+            captureHeight: src?.height ?? 0,
+            encoder: `${String(all.get(r.codecId)?.mimeType ?? '?').replace('video/', '')} · ${String(r.encoderImplementation ?? '?')}`,
+            limitBandwidthPct: pct('bandwidth'),
+            limitCpuPct: pct('cpu'),
+            pli,
+            nack
           }
         }
       }

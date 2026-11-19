@@ -211,6 +211,10 @@ function resetZoom(): void {
 const fullscreen = ref(false)
 const onFullscreenChange = (): void => {
   fullscreen.value = !!document.fullscreenElement
+  store.log(
+    'info',
+    fullscreen.value ? 'transmissão em tela cheia' : `saiu da tela cheia${document.hasFocus() ? '' : ' (o app perdeu o foco: saída automática para não travar os outros programas)'}`
+  )
 }
 onMounted(() => document.addEventListener('fullscreenchange', onFullscreenChange))
 onUnmounted(() => document.removeEventListener('fullscreenchange', onFullscreenChange))
@@ -514,7 +518,7 @@ function confirmDelete(): void {
 
 function onDrop(e: DragEvent): void {
   dragging.value = false
-  composer.value?.addFiles(Array.from(e.dataTransfer?.files ?? []))
+  void composer.value?.addFiles(Array.from(e.dataTransfer?.files ?? []))
 }
 
 function onDragOver(e: DragEvent): void {
@@ -1058,8 +1062,8 @@ function confirmLeave(): void {
             class="absolute top-2.5 left-2.5 px-1.5 py-0.5 rounded bg-black/55 text-[11px] font-medium text-white/80 pointer-events-none opacity-100 group-hover:opacity-0 transition-opacity"
           >{{ watchingQuality }}</span>
           <!-- estatísticas (botão de gráfico na barra do topo) -->
-          <div v-if="showStats && store.watching && !mini" class="absolute top-12 right-3 z-10">
-            <CallStreamStats :peer-id="store.watching" />
+          <div v-if="showStats && store.watching && !mini" class="absolute top-12 right-3 bottom-3 z-10 flex flex-col items-end pointer-events-none">
+            <CallStreamStats :peer-id="store.watching" class="pointer-events-auto" />
           </div>
           <!-- topo: nome + minimizar, tela cheia, fechar -->
           <div class="absolute top-0 inset-x-0 flex items-center gap-2 p-2 bg-gradient-to-b from-black/70 to-transparent opacity-0 group-hover:opacity-100 transition-opacity">

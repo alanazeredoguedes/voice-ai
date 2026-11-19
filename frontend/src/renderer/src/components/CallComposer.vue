@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
+import { useCallStore } from '../stores/call'
 
 /**
  * Caixa de mensagem do chat da chamada (no estilo do Discord): cresce conforme o texto, aceita
@@ -14,6 +15,7 @@ interface Attachment {
   url: string | null
 }
 
+const store = useCallStore()
 const text = ref('')
 const attachments = ref<Attachment[]>([])
 const box = ref<HTMLTextAreaElement | null>(null)
@@ -41,10 +43,24 @@ function autosize(): void {
   el.style.height = `${Math.min(el.scrollHeight, 240)}px`
 }
 
-/** Adiciona arquivos (do clipe, de um arrastar ou colados). */
-function addFiles(files: File[]): void {
+/**
+ * Adiciona arquivos (do clipe, de um arrastar ou colados). O conteúdo é lido na hora: o navegador guarda só
+ * uma "referência" ao arquivo do disco e se recusa a lê-lo se ele mudar depois de escolhido (ex.: um log que
+ * continua sendo escrito), o que fazia o envio falhar com "could not be read".
+ */
+async function addFiles(files: File[]): Promise<void> {
   if (props.editing) return
-  for (const file of files) {
+  for (const original of files) {
+    let file: File
+    try {
+      file = new File([await original.arrayBuffer()], original.name, { type: original.type, lastModified: original.lastModified })
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      store.log('error', `não deu para ler "${original.name}" (${Math.round(original.size / 1024)} KB) ao anexar: ${msg}`)
+      store.error = `Não deu para ler "${original.name}". Se ele ainda está sendo gravado ou foi alterado, tente anexar de novo.`
+      continue
+    }
+    store.log('info', `anexado "${file.name}" (${Math.max(1, Math.round(file.size / 1024))} KB, ${file.type || 'tipo desconhecido'})`)
     const previewable = file.type.startsWith('image/') || file.type.startsWith('video/')
     attachments.value.push({ key: crypto.randomUUID(), file, url: previewable ? URL.createObjectURL(file) : null })
   }
@@ -62,7 +78,7 @@ function onPaste(e: ClipboardEvent): void {
   if (!files.length) return
   e.preventDefault()
   // print colado vem sem nome útil ("image.png"): dá um nome com a hora
-  addFiles(
+  void addFiles(
     files.map((f) =>
       f.name && f.name !== 'image.png'
         ? f
@@ -73,7 +89,7 @@ function onPaste(e: ClipboardEvent): void {
 
 function onPick(e: Event): void {
   const input = e.target as HTMLInputElement
-  addFiles(Array.from(input.files ?? []))
+  void addFiles(Array.from(input.files ?? []))
   input.value = ''
 }
 
@@ -162,7 +178,6 @@ defineExpose({ addFiles })
         ref="box"
         v-model="text"
         rows="1"
-        maxlength="4000"
         :placeholder="editing ? 'Edite a mensagem…' : 'Escreva uma mensagem…'"
         class="flex-1 min-w-0 bg-transparent px-2 py-2 text-sm text-slate-100 placeholder-slate-600 leading-relaxed resize-none focus:outline-none max-h-60"
         @input="autosize"

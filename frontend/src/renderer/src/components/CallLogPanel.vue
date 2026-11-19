@@ -47,6 +47,18 @@ function authorColor(e: CallLogEntry): string {
   return COLORS[h % COLORS.length]
 }
 
+const savedTo = ref('')
+/** Salva o log (com os filtros aplicados) num arquivo .txt, para mandar por onde quiser. */
+async function download(): Promise<void> {
+  const t = new Date()
+  const name = `log-chamada-${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}-${String(t.getHours()).padStart(2, '0')}${String(t.getMinutes()).padStart(2, '0')}.txt`
+  const path = (await window.electron.ipcRenderer.invoke('call:save-log', store.logText(shown.value), name)) as string | null
+  if (path) {
+    savedTo.value = path
+    setTimeout(() => (savedTo.value = ''), 4000)
+  }
+}
+
 async function copy(): Promise<void> {
   await navigator.clipboard.writeText(store.logText(shown.value))
   copied.value = true
@@ -90,6 +102,11 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
             title="Copia as linhas mostradas (com os filtros aplicados)"
             @click="copy"
           >{{ copied ? 'Copiado!' : 'Copiar' }}</button>
+          <button
+            class="px-3 py-1.5 rounded-lg text-xs font-medium text-slate-100 bg-slate-700 hover:bg-slate-600 transition-colors"
+            :title="savedTo ? `Salvo em ${savedTo}` : 'Salva as linhas mostradas num arquivo .txt (para mandar por e-mail, chat...)'"
+            @click="download"
+          >{{ savedTo ? 'Salvo!' : 'Baixar' }}</button>
           <button
             class="px-3 py-1.5 rounded-lg text-xs text-slate-300 bg-slate-800 hover:bg-slate-700 transition-colors"
             title="Limpa só aqui (não apaga o log dos outros participantes)"

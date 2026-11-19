@@ -428,6 +428,8 @@ Salas de voz para conversar, assistir à tela de alguém e trocar mensagens e ar
 
 **Som da transmissão:** no Windows é o som do computador inteiro, menos o do próprio Voice AI (para ninguém ouvir a própria voz de volta). No Linux, o app cria um microfone virtual no PipeWire (`VoiceAI-Transmissao`, com `pw-cli`) e liga a ele o som de todos os programas (tela inteira) ou só o do programa da janela escolhida (X11). Antes de enviar, um **ganho automático** sobe o som até um nível bom (nunca abaixa) com um limitador contra distorção: mesmo que quem transmite esteja ouvindo baixo, o som chega cheio e quem assiste ajusta o volume do seu lado. O som da tela vai a até 128 kbps.
 
+**Captura da tela no Linux com Xorg:** o app copia a tela com o `ffmpeg` (`x11grab`) em vez do capturador do Chromium, que no Xorg fica em ~10 fps em telas grandes (ele se limita a 50% de um núcleo). Com o ffmpeg, 1080p chega a ~58 fps, 2K a ~35 e 4K a ~28 (o limite passa a ser a compressão no processador). Sem ffmpeg, ou se algo falhar, volta sozinho para a captura do Chromium; o motivo aparece em **Logs**. A próxima etapa, comprimir pela placa de vídeo, está em [docs/plano-transmissao-placa-de-video.md](docs/plano-transmissao-placa-de-video.md).
+
 **Limites:** como é uma malha, cada pessoa envia sua voz (e sua tela, para quem assiste) para cada um dos outros, então funciona melhor com grupos pequenos. Não há servidor TURN de retransmissão: em redes muito restritivas (algumas redes corporativas ou NAT simétrico dos dois lados), a conexão direta pode não ser possível.
 
 ### Logs

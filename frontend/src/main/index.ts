@@ -1167,6 +1167,19 @@ function createMainWindow(): BrowserWindow {
     }
   })
   watchWindow(win, 'janela principal')
+  // Transmissão em tela cheia + troca para outro programa (Alt+Tab): no Linux (e há relato no Windows) a janela
+  // em tela cheia continuava por cima de tudo sem foco, e o computador parecia travado até apertar ESC
+  // (janela.log da Manu: "perdeu o foco (… TELA CHEIA)" e só voltou com ESC). Ao perder o foco, sai da tela cheia.
+  win.on('blur', () => {
+    setTimeout(() => {
+      if (win.isDestroyed() || win.isFocused() || !win.isFullScreen()) return
+      diag('janela principal', 'perdeu o foco em tela cheia: saindo da tela cheia para não ficar por cima dos outros programas')
+      void win.webContents.executeJavaScript('document.fullscreenElement ? document.exitFullscreen() : null', true).catch(() => {})
+      setTimeout(() => {
+        if (!win.isDestroyed() && win.isFullScreen() && !win.isFocused()) win.setFullScreen(false)
+      }, 400)
+    }, 300)
+  })
 
   win.on('ready-to-show', () => {
     // ao iniciar com o sistema (--hidden) fica só na bandeja, a menos que o setup seja necessário

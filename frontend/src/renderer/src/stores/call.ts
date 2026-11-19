@@ -88,6 +88,13 @@ export interface ShareSendStats {
   availKbps: number | null
   /** quantas pessoas estão assistindo (cada uma recebe uma cópia) */
   viewers: number
+  /** quadros por segundo que a captura da tela entrega (antes de comprimir) */
+  captureFps: number
+  captureWidth: number
+  captureHeight: number
+  encoder: string
+  limitBandwidthPct: number
+  limitCpuPct: number
 }
 
 /** Diagnóstico da transmissão aberta: o que está limitando a imagem agora. */
@@ -403,6 +410,7 @@ export const useCallStore = defineStore('call', () => {
           freezeAcc.set(peerId, { count: acc.count + sample.video.freezes, ms: acc.ms + sample.video.freezeMs })
         }
       }
+      accumulateShareLog(s)
       // quem transmite conta a cada pessoa que assiste o que está saindo para ela
       const viewers = Object.values(s).filter((x) => x.sending).length
       for (const [peerId, sample] of Object.entries(s)) {
@@ -413,6 +421,101 @@ export const useCallStore = defineStore('call', () => {
     } finally {
       sampling = false
     }
+  }
+
+  // ------------------------------------------------------------------ log da transmissão a cada 10 s
+  // Junta as amostras de 1 s e, a cada 10, escreve no log da sala uma linha por transmissão: o que a captura
+  // entrega, o que é enviado e o que chega, com mínimos e médias. É o que permite saber onde está o gargalo.
+  const SHARE_LOG_EVERY = 10
+  type Acc = { n: number; v: Record<string, number[]>; last: Record<string, string> }
+  const shareAcc = new Map<string, Acc>()
+  const push = (acc: Acc, key: string, value: number): void => {
+    ;(acc.v[key] ??= []).push(value)
+  }
+  const avg = (xs: number[] = []): number => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.length) : 0)
+  const min = (xs: number[] = []): number => (xs.length ? Math.min(...xs) : 0)
+  const sum = (xs: number[] = []): number => xs.reduce((a, b) => a + b, 0)
+
+  function accumulateShareLog(sample: Record<string, NetSample>): void {
+    const w = watching.value
+    for (const [peerId, n] of Object.entries(sample)) {
+      // envio da minha tela para esta pessoa
+      if (n.sending) {
+        const acc = shareAcc.get(`send:${peerId}`) ?? { n: 0, v: {}, last: {} }
+        acc.n++
+        push(acc, 'cap', n.sending.captureFps)
+        push(acc, 'fps', n.sending.fps)
+        push(acc, 'kbps', n.sending.kbps)
+        push(acc, 'avail', n.sending.availKbps ?? 0)
+        push(acc, 'rtt', n.rtt ?? 0)
+        push(acc, 'pli', n.sending.pli)
+        push(acc, 'nack', n.sending.nack)
+        acc.last = {
+          res: `${n.sending.width}x${n.sending.height}`,
+          capRes: `${n.sending.captureWidth}x${n.sending.captureHeight}`,
+          limit: n.sending.limit,
+          encoder: n.sending.encoder,
+          limitPct: `banda ${n.sending.limitBandwidthPct}% do tempo, processador ${n.sending.limitCpuPct}%`
+        }
+        shareAcc.set(`send:${peerId}`, acc)
+        if (acc.n >= SHARE_LOG_EVERY) {
+          const who = peers.value.find((p) => p.id === peerId)?.name ?? 'participante'
+          const cap = avg(acc.v.cap)
+          const chosen = shareQualityFps()
+          log(
+            'info',
+            `[transmissão] minha tela → ${who}: captura ${acc.last.capRes} ${cap} fps (mín ${min(acc.v.cap)}) | enviado ${acc.last.res} ${avg(acc.v.fps)} fps (mín ${min(acc.v.fps)}), ${avg(acc.v.kbps)} kbps | ` +
+              `banda estimada ${avg(acc.v.avail)} kbps | limitado agora por: ${acc.last.limit} (${acc.last.limitPct}) | codificador ${acc.last.encoder} | ` +
+              `latência ${avg(acc.v.rtt)} ms | pedidos de reenvio ${sum(acc.v.nack)}, de quadro-chave ${sum(acc.v.pli)} | escolhida ${shareQuality.value}`
+          )
+          if (chosen && cap < chosen * 0.6) {
+            log(
+              'warn',
+              `[transmissão] a captura da tela está entregando só ${cap} fps (escolhido ${chosen}): o gargalo é a captura neste computador, antes da internet`
+            )
+          } else if (acc.last.limit === 'bandwidth') {
+            log('warn', `[transmissão] o envio para ${who} está limitado pela internet (banda estimada ${avg(acc.v.avail)} kbps)`)
+          } else if (acc.last.limit === 'cpu') {
+            log('warn', `[transmissão] o envio para ${who} está limitado pelo processador (compressão do vídeo)`)
+          }
+          shareAcc.delete(`send:${peerId}`)
+        }
+      }
+      // transmissão desta pessoa que estou assistindo
+      if (w === peerId && n.video) {
+        const acc = shareAcc.get(`recv:${peerId}`) ?? { n: 0, v: {}, last: {} }
+        acc.n++
+        push(acc, 'fps', n.video.fps)
+        push(acc, 'kbps', n.video.kbps)
+        push(acc, 'loss', n.video.loss)
+        push(acc, 'delay', n.video.delay)
+        push(acc, 'fz', n.video.freezes)
+        push(acc, 'fzms', n.video.freezeMs)
+        push(acc, 'drop', n.video.dropped)
+        push(acc, 'rtt', n.rtt ?? 0)
+        acc.last = { res: `${n.video.width}x${n.video.height}`, decoder: n.video.decoder }
+        shareAcc.set(`recv:${peerId}`, acc)
+        if (acc.n >= SHARE_LOG_EVERY) {
+          const who = peers.value.find((p) => p.id === peerId)?.name ?? 'participante'
+          const snd = senderStats.value[peerId]
+          log(
+            'info',
+            `[transmissão] ${who} → eu: chegando ${acc.last.res} ${avg(acc.v.fps)} fps (mín ${min(acc.v.fps)}), ${avg(acc.v.kbps)} kbps | perda ${avg(acc.v.loss)}% | ` +
+              `atraso ~${avg(acc.v.delay)} ms | travadas ${sum(acc.v.fz)} (${sum(acc.v.fzms)} ms) | quadros descartados ${sum(acc.v.drop)} | decodificador ${acc.last.decoder} | latência ${avg(acc.v.rtt)} ms` +
+              (snd
+                ? ` || do lado de ${who}: captura ${snd.captureWidth}x${snd.captureHeight} ${snd.captureFps} fps, enviando ${snd.width}x${snd.height} ${snd.fps} fps ${snd.kbps} kbps, limitado por: ${snd.limit}, banda ${snd.availKbps ?? '?'} kbps, codificador ${snd.encoder}, ${snd.viewers} assistindo`
+                : ` || ${who} não enviou estatísticas (versão antiga)`) +
+              ` | escolhida ${peers.value.find((p) => p.id === peerId)?.quality || '?'}`
+          )
+          shareAcc.delete(`recv:${peerId}`)
+        }
+      }
+    }
+  }
+
+  /** fps escolhido na minha transmissão atual (0 = não estou transmitindo) */
+  function shareQualityFps(): number {
+    return Number(shareQuality.value.match(/(\d+)\s*fps/)?.[1] ?? 0)
   }
 
   function receiveShareStats(peerId: string, msg: AppMessage): void {
@@ -426,7 +529,13 @@ export const useCallStore = defineStore('call', () => {
         kbps: num(msg.kbps),
         limit: typeof msg.limit === 'string' ? msg.limit.slice(0, 20) : 'none',
         availKbps: typeof msg.availKbps === 'number' ? msg.availKbps : null,
-        viewers: num(msg.viewers) || 1
+        viewers: num(msg.viewers) || 1,
+        captureFps: num(msg.captureFps),
+        captureWidth: num(msg.captureWidth),
+        captureHeight: num(msg.captureHeight),
+        encoder: typeof msg.encoder === 'string' ? msg.encoder.slice(0, 40) : '?',
+        limitBandwidthPct: num(msg.limitBandwidthPct),
+        limitCpuPct: num(msg.limitCpuPct)
       }
     }
   }
@@ -448,6 +557,13 @@ export const useCallStore = defineStore('call', () => {
     const send = senderStats.value[peerId]
     const v = recv?.video
     if (!v) return { level: 'warn', text: 'Aguardando a imagem chegar…' }
+    const chosenFps = Number(peers.value.find((p) => p.id === peerId)?.quality.match(/(\d+)\s*fps/)?.[1] ?? 0)
+    if (send && chosenFps && send.captureFps > 0 && send.captureFps < chosenFps * 0.6) {
+      return {
+        level: 'bad',
+        text: `A captura da tela de ${who} entrega só ${send.captureFps} fps (escolhido ${chosenFps}): o computador de ${who} não consegue copiar a tela mais rápido. Não é a internet.`
+      }
+    }
     if (send?.limit === 'bandwidth') {
       const avail = send.availKbps ? ` (~${(send.availKbps / 1000).toFixed(1)} Mbps disponíveis` : ''
       const viewers = send.viewers > 1 ? `${avail ? ', ' : ' ('}para ${send.viewers} pessoas)` : avail ? ')' : ''
@@ -868,6 +984,7 @@ export const useCallStore = defineStore('call', () => {
     statsTimer = null
     if (sampleTimer) clearInterval(sampleTimer)
     sampleTimer = null
+    shareAcc.clear()
     netStats.value = {}
     senderStats.value = {}
     viewHistory.value = { fps: [], kbps: [] }
@@ -880,6 +997,7 @@ export const useCallStore = defineStore('call', () => {
     localScreen = null
     screenLeveler?.stop()
     screenLeveler = null
+    stopOwnCapture()
     if (IS_LINUX) void ipc().invoke('call:linux-audio-stop')
     stopMic()
     void ipc().invoke('call:aec-stop')
@@ -1233,7 +1351,17 @@ export const useCallStore = defineStore('call', () => {
     }
   }
 
+  /** acima disso, o texto vai como arquivo .txt (ex.: um log colado), em vez de ser cortado */
+  const LONG_TEXT = 4000
+
   function sendMessage(text: string, files: File[] = []): void {
+    if (text.length > LONG_TEXT) {
+      const t = new Date()
+      const stamp = `${String(t.getHours()).padStart(2, '0')}-${String(t.getMinutes()).padStart(2, '0')}-${String(t.getSeconds()).padStart(2, '0')}`
+      files = [new File([text], `texto-${stamp}.txt`, { type: 'text/plain' }), ...files]
+      log('info', `texto longo (${text.length} caracteres) enviado como arquivo .txt`)
+      text = ''
+    }
     const tooBig = files.find((f) => f.size > MAX_FILE_BYTES)
     if (tooBig) {
       error.value = `"${tooBig.name}" é grande demais (máximo ${Math.round(MAX_FILE_BYTES / 1024 / 1024)} MB).`
@@ -1563,11 +1691,16 @@ export const useCallStore = defineStore('call', () => {
   }
 
   async function startShare(sourceId: string, quality: ShareQuality, withAudio: boolean): Promise<void> {
-    let stream: MediaStream
+    let stream: MediaStream | null = null
     log('info', `iniciando transmissão: ${sourceId}, ${quality.label} (${quality.width}x${quality.height} ${quality.fps} fps), ${withAudio ? 'com som' : 'sem som'}`)
     // no Linux o som não vem da captura da tela (ver linuxShareAudio abaixo)
     const systemAudio = withAudio && !IS_LINUX
-    try {
+    // trocando de tela no meio da transmissão: o fim da captura antiga não pode encerrar a nova
+    localScreen?.getTracks().forEach((t) => (t.onended = null))
+    stopOwnCapture()
+    // Linux com Xorg: captura própria pelo ffmpeg (o capturador do Chromium não passa de ~10 fps em telas grandes)
+    if (IS_LINUX && !isWayland.value) stream = await startOwnCapture(sourceId, quality)
+    if (!stream) try {
       // Wayland: a tela já foi escolhida no seletor do sistema; a captura pela API de tela abriria o seletor
       // de novo (e falha com "Invalid capture constraints"), então vai direto pela captura do Electron
       if (isWayland.value) throw new Error('Wayland: usando a captura do Electron')
@@ -1582,6 +1715,7 @@ export const useCallStore = defineStore('call', () => {
         return
       }
     }
+    if (!stream) return
     if (systemAudio && !stream.getAudioTracks().length) log('warn', 'a captura veio sem som do sistema')
     // Linux: o Chromium não captura o som do sistema; ele vem de um microfone virtual do PipeWire
     if (withAudio && IS_LINUX && !stream.getAudioTracks().length) {
@@ -1610,6 +1744,7 @@ export const useCallStore = defineStore('call', () => {
       void stopShare()
     }
     const vs = track.getSettings()
+    void logShareStart(sourceId, quality, track, stream)
     log(
       'info',
       `transmitindo: vídeo ${vs.width}x${vs.height} ${Math.round(vs.frameRate ?? 0)} fps, ${stream.getAudioTracks().length ? `com som ("${rawAudio?.label}")` : 'sem som'}`
@@ -1618,15 +1753,142 @@ export const useCallStore = defineStore('call', () => {
     localScreen?.getTracks().forEach((t) => t.stop())
     localScreen = stream
     sharing.value = true
-    // taxa máxima proporcional a pixels × quadros (1080p60 ≈ 8 Mbps, 1080p90 ≈ 11 Mbps; teto de 25 Mbps)
+    // taxa máxima proporcional a pixels × quadros (1080p60 ≈ 4,4 Mbps, 2K60 ≈ 7,7 Mbps, 4K60 ≈ 17 Mbps; teto de 20 Mbps).
+    // Um teto alto demais fazia o envio empurrar dados além do que a rede aguentava, e a estimativa de banda despencava.
     const vs0 = track.getSettings()
     const px = (vs0.width ?? quality.width) * (vs0.height ?? quality.height)
-    const maxBitrate = Math.round(Math.min(25_000_000, Math.max(1_500_000, px * quality.fps * 0.065)))
+    const maxBitrate = Math.round(Math.min(20_000_000, Math.max(1_500_000, px * quality.fps * 0.035)))
     log('info', `vídeo da tela limitado a ${(maxBitrate / 1e6).toFixed(1)} Mbps e ${quality.fps} fps (${track.contentHint === 'motion' ? 'prioriza fluidez' : 'prioriza nitidez'})`)
     shareQuality.value = quality.label.replace(' - ', ' · ')
     await rtc.setScreenStream(stream, { maxBitrate, maxFramerate: quality.fps }, shareQuality.value)
     if (watching.value === SELF) watch(SELF) // trocou de tela com a prévia aberta
     void snapshot(stream)
+  }
+
+  // ------------------------------------------------------------------ captura própria (Linux com Xorg)
+  /** captura própria em andamento: o que fecha a conexão com o ffmpeg */
+  let ownCapture: { stop: () => void; info: string } | null = null
+
+  function stopOwnCapture(): void {
+    ownCapture?.stop()
+    ownCapture = null
+  }
+
+  /**
+   * Captura pelo ffmpeg (ver main/linuxX11Capture.ts): os quadros chegam já na resolução escolhida, por um
+   * WebSocket local, e viram uma faixa de vídeo comum (MediaStreamTrackGenerator). null = não deu (o motivo vai
+   * para o log) e a transmissão usa a captura do Chromium.
+   */
+  async function startOwnCapture(sourceId: string, quality: ShareQuality): Promise<MediaStream | null> {
+    const Generator = (window as unknown as { MediaStreamTrackGenerator?: new (o: { kind: 'video' }) => MediaStreamTrack & { writable: WritableStream<VideoFrame> } })
+      .MediaStreamTrackGenerator
+    if (!Generator) {
+      log('warn', 'captura própria indisponível neste Electron (sem MediaStreamTrackGenerator): usando a do Chromium')
+      return null
+    }
+    const res = (await ipc()
+      .invoke('call:x11-capture-start', { sourceId, width: quality.width, height: quality.height, fps: quality.fps })
+      .catch((e: unknown) => ({ ok: false, error: e instanceof Error ? e.message : String(e) }))) as
+      | { ok: true; port: number; token: string; width: number; height: number; fps: number; region: string }
+      | { ok: false; error: string }
+    if (!res.ok) {
+      log('warn', `captura própria (ffmpeg) indisponível: ${res.error}; usando a do Chromium`)
+      return null
+    }
+    const gen = new Generator({ kind: 'video' })
+    const writer = gen.writable.getWriter()
+    const ws = new WebSocket(`ws://127.0.0.1:${res.port}/?t=${res.token}`)
+    ws.binaryType = 'arraybuffer'
+    let writing = false
+    let frames = 0
+    let skipped = 0
+    let closed = false
+    const close = (): void => {
+      if (closed) return
+      closed = true
+      ws.close()
+      void writer.close().catch(() => {})
+      void ipc().invoke('call:x11-capture-stop')
+    }
+    const firstFrame = new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => resolve(false), 4000)
+      ws.onmessage = (e) => {
+        if (!frames) {
+          clearTimeout(timer)
+          resolve(true)
+        }
+        frames++
+        // a faixa ainda está gravando o quadro anterior: descarta este (nunca acumula atraso)
+        if (writing) {
+          skipped++
+          return
+        }
+        writing = true
+        const frame = new VideoFrame(new Uint8Array(e.data as ArrayBuffer), {
+          format: 'I420',
+          codedWidth: res.width,
+          codedHeight: res.height,
+          timestamp: Math.round(performance.now() * 1000)
+        })
+        writer.write(frame).catch(() => frame.close()).finally(() => (writing = false))
+      }
+      ws.onerror = () => {
+        clearTimeout(timer)
+        resolve(false)
+      }
+    })
+    ws.onclose = () => {
+      if (!closed) log('warn', 'a captura própria (ffmpeg) foi encerrada')
+      close()
+    }
+    if (!(await firstFrame)) {
+      log('warn', 'a captura própria (ffmpeg) não entregou nenhum quadro em 4 s; usando a do Chromium')
+      close()
+      return null
+    }
+    const info = `ffmpeg x11grab, ${res.region} → ${res.width}x${res.height} a ${res.fps} fps`
+    ownCapture = { stop: close, info }
+    const report = setInterval(() => {
+      if (closed) return clearInterval(report)
+      if (skipped > frames * 0.2) log('warn', `captura própria: ${skipped} de ${frames} quadros descartados nos últimos 10 s (o app não acompanhou)`)
+      frames = 0
+      skipped = 0
+    }, 10000)
+    log('info', `captura própria ligada: ${info}`)
+    return new MediaStream([gen])
+  }
+
+  /** Tudo sobre a transmissão que começou: as telas do computador, o que foi pedido e o que a captura entregou. */
+  async function logShareStart(sourceId: string, quality: ShareQuality, track: MediaStreamTrack, stream: MediaStream): Promise<void> {
+    try {
+      const info = (await ipc().invoke('call:display-info')) as {
+        platform: string
+        session: string
+        desktop: string
+        electron: string
+        chrome: string
+        displays: { id: string; label: string; size: string; scale: number; pixels: string; hz: number; primary: boolean }[]
+        framebuffer: string
+      }
+      const st = track.getSettings() as MediaTrackSettings & { displaySurface?: string; cursor?: string }
+      const caps = (track.getCapabilities?.() ?? {}) as MediaTrackCapabilities
+      const telas = info.displays
+        .map((d) => `${d.primary ? '[principal] ' : ''}${d.label || d.id}: ${d.size} lógico, escala ${d.scale}, ${d.pixels} pixels, ${d.hz} Hz`)
+        .join('; ')
+      log(
+        'info',
+        `[transmissão] início | sistema ${info.platform}, sessão ${info.session || '?'} (${info.desktop || '?'}), Electron ${info.electron} / Chromium ${info.chrome} | ` +
+          `telas: ${telas}` +
+          (info.framebuffer ? ` | área desenhada do Xorg: ${info.framebuffer}` : '') +
+          ` | fonte: ${sourceId.startsWith('screen:') ? 'tela inteira' : 'janela'} (${sourceId}) | ` +
+          `captura: ${ownCapture ? `própria (${ownCapture.info})` : isWayland.value ? 'seletor do sistema (PipeWire)' : IS_LINUX ? 'Xorg pelo Chromium (cópia da tela pela memória, ~10 fps em telas grandes)' : 'API do sistema'} | ` +
+          `pedido ${quality.width}x${quality.height} ${quality.fps} fps | entregue ${st.width}x${st.height} ${st.frameRate ?? '?'} fps` +
+          (caps.width ? ` | máximo da fonte ${(caps.width as ULongRange).max}x${(caps.height as ULongRange).max}` : '') +
+          ` | som: ${stream.getAudioTracks().length ? 'sim' : 'não'} | prioridade: ${track.contentHint || 'padrão'}`
+      )
+    } catch (e) {
+      log('warn', `[transmissão] não deu para ler as informações da tela: ${e instanceof Error ? e.message : e}`)
+    }
   }
 
   /** Som da transmissão no Linux: o app monta o microfone virtual e grava dele. */
@@ -1752,6 +2014,7 @@ export const useCallStore = defineStore('call', () => {
   async function stopShare(): Promise<void> {
     if (!localScreen) return
     log('info', 'parei a transmissão')
+    stopOwnCapture()
     screenLeveler?.stop()
     screenLeveler = null
     localScreen.getTracks().forEach((t) => {

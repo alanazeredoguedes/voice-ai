@@ -428,6 +428,8 @@ Voice rooms to talk, watch someone's screen and exchange messages and files, **w
 
 **Shared sound:** on Windows it is the whole computer's sound, except Voice AI itself (so nobody hears their own voice back). On Linux, the app creates a virtual microphone in PipeWire (`VoiceAI-Transmissao`, via `pw-cli`) and routes into it the sound of every program (whole screen) or only of the chosen window's program (X11). Before sending, an **automatic gain** raises the sound to a good level (never lowers it) with a limiter against distortion: even if the sharer listens quietly, it arrives full and viewers adjust the volume on their side. Shared sound goes up to 128 kbps.
 
+**Screen capture on Linux with Xorg:** the app grabs the screen with `ffmpeg` (`x11grab`) instead of Chromium's capturer, which on Xorg stays at ~10 fps on large screens (it caps itself at 50% of one core). With ffmpeg, 1080p reaches ~58 fps, 2K ~35 and 4K ~28 (compression on the CPU becomes the limit). Without ffmpeg, or if anything fails, it falls back to Chromium's capturer and the reason shows up in **Logs**. The next step, GPU compression, is described in [docs/plano-transmissao-placa-de-video.md](docs/plano-transmissao-placa-de-video.md).
+
 **Limits:** since it is a mesh, each person sends their voice (and their screen, to those watching) to each of the others, so it works best for small groups. There is no TURN relay server: on very restrictive networks (some corporate networks, or symmetric NAT on both sides) a direct connection may not be possible.
 
 ### Logs
