@@ -4,8 +4,20 @@ import { app, BrowserWindow, Tray, Menu, nativeImage, shell, ipcMain, session, s
 if (process.platform === 'linux') app.commandLine.appendSwitch('no-sandbox')
 // Chamada: o áudio dos outros participantes toca sem exigir um clique antes
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
+// Transmissão com a janela minimizada ou atrás de outras: o Chromium marca a tela do app como "em segundo
+// plano" e baixa a prioridade dela; no Windows 11 ainda liga o modo de eficiência (EcoQoS), que em
+// processadores Intel com núcleos de economia joga a captura e a compressão do vídeo para os núcleos lentos.
+// Medido (Windows, 1080p60): janela minimizada ~30 fps, aberta ~56 fps. O app quase não trabalha quando está
+// parado, então manter a prioridade normal não pesa.
+app.commandLine.appendSwitch('disable-renderer-backgrounding')
+app.commandLine.appendSwitch('disable-background-timer-throttling')
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows')
+if (process.platform === 'win32') {
+  // a janela coberta por outras (não só minimizada) também conta como "escondida" no Windows
+  app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion,UseEcoQoSForBackgroundProcess')
+}
 import { join, delimiter } from 'path'
-import { homedir } from 'os'
+import { homedir, cpus } from 'os'
 import { existsSync, writeFileSync, mkdirSync, readFileSync, readdirSync, rmSync, copyFileSync } from 'fs'
 import { createHash } from 'crypto'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -1072,6 +1084,57 @@ ipcMain.handle('media:save-image', async (_e, opts: { urls: string[]; name?: str
 // Alt+V no chat: imagem que está na área de transferência (ex.: um print da tela)
 // Transcrição → área de transferência pelo próprio Electron: no Linux o pyperclip do backend depende do xclip/xsel,
 // que nem toda máquina tem (sem eles a cópia falhava em silêncio)
+/** Alerta de pedido para entrar na chamada: notificação do sistema (clicar traz o app para a frente) e ícone piscando. */
+ipcMain.handle('call:notify', (_e, title: string, body: string) => {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  if (!mainWindow.isFocused()) mainWindow.flashFrame(true)
+  if (Notification.isSupported()) {
+    const n = new Notification({ title: String(title).slice(0, 100), body: String(body).slice(0, 300), urgency: 'critical' })
+    n.on('click', () => {
+      if (!mainWindow || mainWindow.isDestroyed()) return
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.show()
+      mainWindow.focus()
+    })
+    n.show()
+  }
+})
+
+/**
+ * Desempenho agora (para o log da transmissão): uso do processador do computador e de cada parte do app, e o
+ * estado da janela. 100% em uma parte do app = um núcleo inteiro ocupado.
+ */
+let lastCpuTimes = cpus().map((c) => c.times)
+ipcMain.handle('app:perf', (e) => {
+  const now = cpus().map((c) => c.times)
+  let busy = 0
+  let total = 0
+  now.forEach((t, i) => {
+    const p = lastCpuTimes[i] ?? t
+    const all = t.user + t.nice + t.sys + t.idle + t.irq - (p.user + p.nice + p.sys + p.idle + p.irq)
+    total += all
+    busy += all - (t.idle - p.idle)
+  })
+  lastCpuTimes = now
+  const parts: Record<string, number> = {}
+  for (const m of app.getAppMetrics()) {
+    const name =
+      m.type === 'Tab' ? 'tela' : m.type === 'GPU' ? 'gráficos' : m.type === 'Browser' ? 'principal'
+        : m.type === 'Utility' ? (/video_capture/i.test(m.serviceName ?? '') ? 'captura' : /audio/i.test(m.serviceName ?? '') ? 'som' : 'outros')
+          : 'outros'
+    parts[name] = (parts[name] ?? 0) + m.cpu.percentCPUUsage
+  }
+  const win = BrowserWindow.fromWebContents(e.sender)
+  return {
+    system: total > 0 ? Math.round((busy / total) * 100) : 0,
+    cores: now.length,
+    parts: Object.fromEntries(Object.entries(parts).map(([k, v]) => [k, Math.round(v)])),
+    window: win
+      ? { minimized: win.isMinimized(), visible: win.isVisible(), focused: win.isFocused() }
+      : null
+  }
+})
+
 ipcMain.handle('clipboard:write-text', (_e, text: string) => {
   if (typeof text === 'string' && text) clipboard.writeText(text)
 })

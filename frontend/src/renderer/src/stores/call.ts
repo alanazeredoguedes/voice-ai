@@ -444,6 +444,33 @@ export const useCallStore = defineStore('call', () => {
   const min = (xs: number[] = []): number => (xs.length ? Math.min(...xs) : 0)
   const sum = (xs: number[] = []): number => xs.reduce((a, b) => a + b, 0)
 
+  // Desempenho e estado da janela durante a transmissão (vão junto da linha de 10 s): mostra se uma queda de fps
+  // coincide com o app minimizado/coberto ou com o processador no limite.
+  let perfText = ''
+  let hiddenTicks = 0
+  let perfTicks = 0
+  setInterval(() => {
+    if (!localScreen) {
+      perfText = ''
+      hiddenTicks = perfTicks = 0
+      return
+    }
+    perfTicks++
+    if (document.visibilityState === 'hidden') hiddenTicks++
+    void ipc()
+      .invoke('app:perf')
+      .then((p: { system: number; cores: number; parts: Record<string, number>; window: { minimized: boolean; visible: boolean; focused: boolean } | null }) => {
+        const w = p.window
+        const state = !w ? '?' : w.minimized ? 'minimizada' : !w.visible ? 'escondida' : w.focused ? 'aberta, em uso' : 'aberta, atrás de outras'
+        const parts = Object.entries(p.parts).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v}%`).join(', ')
+        perfText =
+          `janela: ${state}${hiddenTicks ? `, marcada como escondida pelo sistema em ${Math.round((hiddenTicks / perfTicks) * 100)}% do tempo` : ''} | ` +
+          `processador: computador ${p.system}% de ${p.cores} núcleos; app: ${parts} (100% = 1 núcleo)`
+        hiddenTicks = perfTicks = 0
+      })
+      .catch(() => {})
+  }, 5000)
+
   function accumulateShareLog(sample: Record<string, NetSample>): void {
     const w = watching.value
     for (const [peerId, n] of Object.entries(sample)) {
@@ -474,7 +501,8 @@ export const useCallStore = defineStore('call', () => {
             'info',
             `[transmissão] minha tela → ${who}: captura ${acc.last.capRes} ${cap} fps (mín ${min(acc.v.cap)}) | enviado ${acc.last.res} ${avg(acc.v.fps)} fps (mín ${min(acc.v.fps)}), ${avg(acc.v.kbps)} kbps | ` +
               `banda estimada ${avg(acc.v.avail)} kbps | limitado agora por: ${acc.last.limit} (${acc.last.limitPct}) | codificador ${acc.last.encoder} | ` +
-              `latência ${avg(acc.v.rtt)} ms | pedidos de reenvio ${sum(acc.v.nack)}, de quadro-chave ${sum(acc.v.pli)} | escolhida ${shareQuality.value}`
+              `latência ${avg(acc.v.rtt)} ms | pedidos de reenvio ${sum(acc.v.nack)}, de quadro-chave ${sum(acc.v.pli)} | escolhida ${shareQuality.value}` +
+              (perfText ? ` | ${perfText}` : '')
           )
           if (chosen && cap < chosen * 0.6) {
             log(
@@ -872,15 +900,52 @@ export const useCallStore = defineStore('call', () => {
 
   // ------------------------------------------------------------------ pedidos de entrada
 
+  /** "plim-plim" curto (duas notas), na saída de som escolhida para a chamada. */
+  async function playKnockSound(): Promise<void> {
+    try {
+      const ctx = new AudioContext()
+      const out = rtc.getOutputDevice()
+      const setSink = (ctx as unknown as { setSinkId?: (id: string) => Promise<void> }).setSinkId
+      if (out && setSink) await setSink.call(ctx, out).catch(() => {})
+      const t0 = ctx.currentTime + 0.02
+      for (const [i, freq] of [660, 880].entries()) {
+        const osc = ctx.createOscillator()
+        const gain = ctx.createGain()
+        osc.type = 'sine'
+        osc.frequency.value = freq
+        const start = t0 + i * 0.16
+        gain.gain.setValueAtTime(0, start)
+        gain.gain.linearRampToValueAtTime(0.35, start + 0.02)
+        gain.gain.exponentialRampToValueAtTime(0.001, start + 0.45)
+        osc.connect(gain).connect(ctx.destination)
+        osc.start(start)
+        osc.stop(start + 0.5)
+      }
+      setTimeout(() => void ctx.close().catch(() => {}), 1200)
+    } catch {
+      // sem áudio: só a notificação visual
+    }
+  }
+
+  // Enquanto houver alguém esperando, repete o som (a cada 7 s, até 8 vezes) para não passar despercebido
+  let knockAlertTimer: ReturnType<typeof setInterval> | null = null
+  let knockAlerts = 0
+  function stopKnockAlert(): void {
+    if (knockAlertTimer) clearInterval(knockAlertTimer)
+    knockAlertTimer = null
+    knockAlerts = 0
+  }
+
   function notifyKnock(k: CallKnock): void {
     log('info', `${k.name} pediu para entrar na sala`)
-    if (document.hidden || !document.hasFocus()) {
-      try {
-        new Notification('Voice AI: pedido para entrar na chamada', { body: `${k.name} quer entrar em "${room.value?.name ?? 'sala'}"` })
-      } catch {
-        // sem notificações do sistema
-      }
-    }
+    // notificação do sistema + ícone piscando (mesmo com o app aberto: a pessoa pode estar olhando outra coisa)
+    void ipc().invoke('call:notify', 'Voice AI: pedido para entrar na chamada', `${k.name} quer entrar em "${room.value?.name ?? 'sala'}"`).catch(() => {})
+    void playKnockSound()
+    stopKnockAlert()
+    knockAlertTimer = setInterval(() => {
+      if (!knocks.value.length || ++knockAlerts >= 8) return stopKnockAlert()
+      void playKnockSound()
+    }, 7000)
   }
 
   /** Aceita ou recusa quem está pedindo para entrar (qualquer pessoa de dentro pode responder). */
@@ -888,6 +953,7 @@ export const useCallStore = defineStore('call', () => {
     const k = knocks.value.find((x) => x.id === peerId)
     log('info', `${accept ? 'aceitei' : 'recusei'} a entrada de ${k?.name ?? 'alguém'}`)
     knocks.value = knocks.value.filter((x) => x.id !== peerId)
+    if (!knocks.value.length) stopKnockAlert()
     rtc.answerKnock(peerId, accept)
   }
 
@@ -1020,6 +1086,7 @@ export const useCallStore = defineStore('call', () => {
     closedToNewcomers.value = false
     waitingApproval.value = false
     knocks.value = []
+    stopKnockAlert()
     hostPeerId.value = ''
     myClaim = undefined
     peers.value = []
@@ -1659,6 +1726,17 @@ export const useCallStore = defineStore('call', () => {
       applyMuted(false)
     }
   }
+  // O sistema considera a janela do app escondida (minimizada ou totalmente coberta por outra)? Fica no log da
+  // chamada, para ver se a queda de fps da transmissão coincide com isso.
+  document.addEventListener('visibilitychange', () => {
+    if (!inCall.value) return
+    log(
+      'info',
+      document.visibilityState === 'hidden'
+        ? `o sistema marcou a janela do app como escondida (minimizada ou coberta por outra janela)${localScreen ? ' durante a transmissão' : ''}`
+        : 'o sistema marcou a janela do app como visível de novo'
+    )
+  })
   onWsMessage((e) => {
     if (e.type === 'state_changed' && e.state) onDictation(e.state === 'recording')
     if (e.type === 'call_ptt') {
