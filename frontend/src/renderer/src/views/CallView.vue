@@ -6,7 +6,7 @@ import CopyButton from '../components/CopyButton.vue'
 import ConfirmModal from '../components/ConfirmModal.vue'
 import CallShareModal from '../components/CallShareModal.vue'
 import CallAudioPopover from '../components/CallAudioPopover.vue'
-import RichMessage from '../components/RichMessage.vue'
+import ChatText from '../components/ChatText.vue'
 import CallComposer from '../components/CallComposer.vue'
 import CallMediaViewer from '../components/CallMediaViewer.vue'
 import CallVolumeMenu from '../components/CallVolumeMenu.vue'
@@ -1038,7 +1038,7 @@ function confirmLeave(): void {
                   ...(isLong(msg.text) && !expandedMsgs.has(msg.id) ? { maxHeight: `${Math.round(textPx * 1.65 * 8)}px` } : {})
                 }"
               >
-                <RichMessage :content="msg.text" />
+                <ChatText :text="msg.text" />
                 <!-- esmaece o fim do texto recolhido -->
                 <div
                   v-if="isLong(msg.text) && !expandedMsgs.has(msg.id)"
