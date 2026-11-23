@@ -233,6 +233,14 @@ function startSignaling(roomInfo: { id: string; name: string }): Promise<number>
         }
         const me = myId ? peers.get(myId) : undefined
         if (!myId || !me?.admitted) return
+        // o anfitrião manda todos para outra cópia da mesma sala (duas pessoas abriram juntas: vale a de menor reserva)
+        if (msg.type === 'move') {
+          if (myId !== hostPeerId || typeof msg.code !== 'string' || !/^[a-z0-9]+(-[a-z0-9]+)+$/.test(msg.code)) return
+          const others = admittedPeers().filter(([pid]) => pid !== myId)
+          mainLog('info', `[servidor da sala] "${me.name}" (anfitrião) mandou ${others.length} pessoa(s) para a sala ${msg.code}: há outra cópia da mesma sala, que vale no lugar desta`)
+          for (const [, p] of others) sendTo(p.ws, { type: 'move', code: msg.code })
+          return
+        }
         // alguém de dentro aceitou ou recusou um pedido de entrada
         if (msg.type === 'admit' && typeof msg.peerId === 'string') {
           const target = peers.get(msg.peerId)

@@ -491,10 +491,10 @@ const tookTitle = computed(() => {
   opacity: 0;
   filter: blur(6px);
 }
-/* prévia: um pouco apagada, sem clique, com uma luz passando enquanto a IA confere */
+/* prévia: um pouco mais apagada e com uma luz passando enquanto a IA confere, mas dá para clicar, abrir e dar zoom
+   (a escolha da IA só tira as que ela não quis quando terminar) */
 .pages.previewing {
-  filter: saturate(0.6) brightness(0.82);
-  pointer-events: none;
+  filter: saturate(0.8) brightness(0.92);
 }
 .scan {
   position: absolute;

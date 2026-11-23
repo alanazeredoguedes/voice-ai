@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted, provide, watch } from 'vue'
+import { ref, onMounted, onUnmounted, provide, watch } from 'vue'
+import { onWsMessage } from './api/ws'
 import { syslog } from './utils/syslog'
 import Sidebar from './components/Sidebar.vue'
 import StatusView from './views/StatusView.vue'
@@ -24,6 +25,18 @@ watch(currentView, (v, old) => syslog('info', 'navegação', `abriu a tela ${v} 
 provide('navigate', (v: Page) => {
   currentView.value = v
 })
+
+// Falou pelo atalho: ao concluir, a tela acompanha o atalho usado (transcrição do microfone ou conversa com a IA).
+// Na chamada e nas Configurações não troca de tela (atrapalharia quem está na sala ou escolhendo um atalho).
+function followShortcut(target: View): void {
+  if (currentView.value === 'call' || currentView.value === 'settings' || currentView.value === target) return
+  currentView.value = target
+}
+const unsubShortcut = onWsMessage((e) => {
+  if (e.type === 'transcription_ready') followShortcut('status')
+  else if (e.type === 'voice_user_message') followShortcut('chat')
+})
+onUnmounted(unsubShortcut)
 const setupRequired = ref(false)
 const setupChecked = ref(false)
 const setupMode = ref<'install' | 'update'>('install')

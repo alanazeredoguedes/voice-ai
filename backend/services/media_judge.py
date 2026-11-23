@@ -26,6 +26,7 @@ except ImportError:  # sem o Pillow: usa as miniaturas como vêm (menores)
 
 JUDGE_MODEL = "haiku"
 _TIMEOUT_S = 60   # 16 imagens maiores + legenda de todas: a chamada leva ~20 s, com folga para picos
+_VIDEO_TIMEOUT_S = 60
 _MAX_CANDIDATES = {"image": 12, "video": 8}   # quantas miniaturas a IA olha de uma vez
 MAX_PICK = {"image": 12, "video": 8}          # quantas ela pode escolher
 MIN_SHOW = {"image": 8, "video": 4}           # a tela sempre mostra pelo menos isso (8 quadradinhos / 4 vídeos)
@@ -194,30 +195,49 @@ def ask_claude(system: str, content: list[dict], cancel: threading.Event | None 
            "--output-format", "stream-json", "--verbose", "--tools", "", "--strict-mcp-config",
            "--no-session-persistence", "--system-prompt", system]
     try:
-        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
                                 encoding="utf-8", errors="replace", cwd=brain._claude_cwd(), env=brain._claude_env())
     except Exception as e:
         print(f"[judge] erro: {e}", flush=True)
         return None
+    # A mensagem (com as imagens) passa fácil de 64 KB, o tamanho do buffer do pipe: ela é enviada por uma thread
+    # própria e a saída lida por outra, enquanto esta só espera o fim, o cancelamento ou o limite de tempo.
+    # (Antes ela ia pelo communicate(timeout=0.3) repetido: com 2 ou mais imagens o envio ficava preso e a conferência
+    # esperava o limite inteiro, 25 a 60 s, sem nunca receber resposta.)
+    out_parts: list[str] = []
+
+    def _feed() -> None:
+        try:
+            proc.stdin.write(msg + "\n")
+            proc.stdin.close()
+        except Exception:
+            pass  # o processo saiu antes de ler tudo: o fim dele é tratado abaixo
+
+    def _drain() -> None:
+        try:
+            out_parts.append(proc.stdout.read())
+        except Exception:
+            pass
+
+    threading.Thread(target=_feed, daemon=True).start()
+    reader = threading.Thread(target=_drain, daemon=True)
+    reader.start()
     deadline = time.monotonic() + timeout
-    stdout = ""
-    first = True
     while True:
         try:
-            stdout, _ = proc.communicate(input=(msg + "\n") if first else None, timeout=0.3)
+            proc.wait(timeout=0.2)
             break
         except subprocess.TimeoutExpired:
-            first = False
             if (cancel is not None and cancel.is_set()) or time.monotonic() > deadline:
                 proc.kill()
-                proc.communicate()
+                proc.wait()
                 if cancel is not None and cancel.is_set():
                     print("[judge] cancelado: chamada ao Claude encerrada", flush=True)
+                else:
+                    print(f"[judge] a chamada ao Claude passou de {timeout:.0f} s sem responder: encerrada", flush=True)
                 return None
-        except Exception as e:
-            print(f"[judge] erro: {e}", flush=True)
-            proc.kill()
-            return None
+    reader.join(timeout=5)
+    stdout = "".join(out_parts)
     answer = ""
     for line in (stdout or "").splitlines():
         try:
@@ -318,7 +338,11 @@ def choose(kind: str, query: str, desc: str, found: list[dict], limit: int | Non
     ask = ((f"Contexto da conversa: {context}\n" if context else "")
            + f"Busca: '{query}'." + (f" Precisa mostrar: {desc}." if desc else "")
            + f" Escolha até {max_pick} {what} (as melhores primeiro; menos se poucas servirem).")
-    answer = ask_claude(system, [{"type": "text", "text": ask}, *content], cancel, stats=stats)
+    # vídeo: 8 miniaturas pequenas (a chamada leva ~6 s quando tudo vai bem; com picos pode passar de 25 s)
+    answer = ask_claude(system, [{"type": "text", "text": ask}, *content], cancel, stats=stats,
+                        timeout=_VIDEO_TIMEOUT_S if kind == "video" else _TIMEOUT_S)
+    if not answer:
+        print(f"[judge] {kind} {query!r}: sem resposta da IA em {time.perf_counter() - t1:.1f}s; mostrando as primeiras da busca", flush=True)
     if timing is not None:
         timing["thumbs"], timing["judge"] = round(t1 - t0, 1), round(time.perf_counter() - t1, 1)
     if not answer:

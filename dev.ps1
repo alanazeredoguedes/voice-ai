@@ -10,6 +10,18 @@ if (-not (Test-Path $Python)) {
     exit 1
 }
 
+# mantém as bibliotecas da venv em dia (só roda quando o requirements mudou)
+$reqText = (Get-Content (Join-Path $Root 'backend\requirements.txt') -Raw) + (Get-Content (Join-Path $Root 'backend\requirements-core.txt') -Raw)
+$sha = [System.Security.Cryptography.SHA256]::Create()
+$reqHash = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($reqText))) -replace '-', '').Substring(0, 16)
+$stamp = Join-Path $Root 'backend\venv\.voice-ai-req-hash'
+if (-not (Test-Path $stamp) -or (Get-Content $stamp -Raw).Trim() -ne $reqHash) {
+    Write-Host "[dev] requirements mudaram: atualizando as bibliotecas da venv..."
+    & $Python -m pip install -q --disable-pip-version-check -r (Join-Path $Root 'backend\requirements.txt')
+    if ($LASTEXITCODE -eq 0) { Set-Content -Path $stamp -Value $reqHash }
+    else { Write-Host "[dev] AVISO: nao deu para atualizar as bibliotecas (busca de video/imagem pode falhar)" -ForegroundColor Yellow }
+}
+
 $env:PYTHONUTF8 = '1'
 $env:PYTHONIOENCODING = 'utf-8'
 

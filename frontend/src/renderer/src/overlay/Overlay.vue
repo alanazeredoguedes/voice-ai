@@ -25,11 +25,18 @@ const unsub = onWsMessage((event) => {
 })
 void statusStore.syncEngineLoading()
 
+// Processo separado do indicador (Linux/Wayland): ele abre só quando precisa, então recebe o estado atual
+// do app principal ao abrir (senão perderia o "Gravando" que já estava em andamento)
+const offSetState = window.electron?.ipcRenderer.on('overlay:set-state', (_e, s: string) => {
+  statusStore.setState(s as typeof statusStore.state)
+})
+
 /** modelo ainda carregando: o que for gravado espera ele ficar pronto */
 const loadingPct = computed(() => (statusStore.engineLoading ? Math.floor(statusStore.engineLoading.progress) : null))
 
 onUnmounted(() => {
   unsub()
+  offSetState?.()
   if (doneTimer) clearTimeout(doneTimer)
 })
 

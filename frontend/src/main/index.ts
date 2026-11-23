@@ -16,7 +16,7 @@ if (process.platform === 'win32') {
   // a janela coberta por outras (não só minimizada) também conta como "escondida" no Windows
   app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion,UseEcoQoSForBackgroundProcess')
 }
-import { join, delimiter } from 'path'
+import { join, delimiter, dirname } from 'path'
 import { homedir, cpus } from 'os'
 import { existsSync, writeFileSync, mkdirSync, readFileSync, readdirSync, rmSync, copyFileSync } from 'fs'
 import { createHash } from 'crypto'
@@ -27,6 +27,7 @@ import { setKeepOnTop, toggleWindowOnTop } from './windowToggle'
 import { diag, initWindowDiag, watchWindow } from './windowDiag'
 import { backendTail, initSysLog, sysLog } from './sysLog'
 import { downloadCloudflared, findCloudflared, registerCallIpc } from './call'
+import { OVERLAY_PROC_ENV, OverlayProcessHost, overlayNeedsSeparateProcess, runOverlayProcess } from './overlayProcess'
 
 // app instalado: 18450; dev: 18451 (os dois podem rodar juntos sem um usar o backend do outro)
 const BACKEND_PORT = app.isPackaged ? 18450 : 18451
@@ -38,6 +39,10 @@ let tray: Tray | null = null
 let backendProcess: ChildProcess | null = null
 let quitting = false
 let overlayHideTimer: ReturnType<typeof setTimeout> | null = null
+// Esta mesma build também roda como o processo do indicador (ver overlayProcess.ts): nesse caso só ele sobe
+const IS_OVERLAY_PROC = process.env[OVERLAY_PROC_ENV] === '1'
+// Linux/Wayland: o indicador vive num processo próprio em XWayland (posição e "sempre por cima" funcionam lá)
+let overlayHost: OverlayProcessHost | null = null
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -46,7 +51,7 @@ let overlayHideTimer: ReturnType<typeof setTimeout> | null = null
 // O dev usa uma pasta própria do Electron (~/.config/voice-ai-dev, %APPDATA%\voice-ai-dev): apagar o app instalado
 // para um teste limpo não mexe no dev, e os dois podem ficar abertos juntos (a trava de instância única também é por pasta).
 // Precisa vir antes de qualquer uso de userData (inclusive requestSingleInstanceLock).
-if (!app.isPackaged) app.setPath('userData', join(app.getPath('appData'), 'voice-ai-dev'))
+if (!app.isPackaged && !IS_OVERLAY_PROC) app.setPath('userData', join(app.getPath('appData'), 'voice-ai-dev'))
 
 function getDataDir(): string {
   if (app.isPackaged) return app.getPath('userData')
@@ -830,6 +835,47 @@ ipcMain.handle('app:autostart-set', (_e, enabled: boolean) => {
 // Backend
 // ---------------------------------------------------------------------------
 
+/**
+ * Modo dev: mantém as bibliotecas da venv em dia com o requirements. Antes, uma biblioteca nova no requirements
+ * (ex.: yt-dlp, ddgs) só chegava ao dev se alguém lembrasse de rodar o pip, e a função (busca de vídeo e imagem)
+ * falhava em silêncio. Só roda quando o conteúdo dos requirements mudou desde a última vez. O app instalado não
+ * passa por aqui: ele tem o setup (Windows: bibliotecas embutidas no build; Linux: setup na primeira abertura e a
+ * cada versão com requirements novos).
+ */
+async function syncDevRequirements(): Promise<void> {
+  if (app.isPackaged) return
+  const python = getBundledPython()
+  try {
+    const reqFiles = ['requirements.txt', 'requirements-core.txt']
+    const hash = createHash('sha256')
+      .update(reqFiles.map((f) => readFileSync(getBackendFile(f), 'utf8')).join('\n--\n'))
+      .digest('hex')
+      .slice(0, 16)
+    const stamp = join(dirname(dirname(python)), '.voice-ai-req-hash')
+    if (existsSync(stamp) && readFileSync(stamp, 'utf8').trim() === hash) return
+    sysLog('info', 'dev', 'requirements mudaram desde a última vez: conferindo as bibliotecas da venv (pip install -r requirements.txt)')
+    const out = await new Promise<{ code: number | null; tail: string }>((resolve) => {
+      const p = spawn(python, ['-m', 'pip', 'install', '-q', '--disable-pip-version-check', '-r', getBackendFile('requirements.txt')], { windowsHide: true })
+      let tail = ''
+      const keep = (d: Buffer): void => {
+        tail = (tail + d.toString()).slice(-1500)
+      }
+      p.stdout?.on('data', keep)
+      p.stderr?.on('data', keep)
+      p.on('error', (e) => resolve({ code: -1, tail: e.message }))
+      p.on('exit', (code) => resolve({ code, tail }))
+    })
+    if (out.code === 0) {
+      writeFileSync(stamp, hash)
+      sysLog('info', 'dev', 'bibliotecas da venv em dia')
+    } else {
+      sysLog('warn', 'dev', `não deu para atualizar as bibliotecas da venv (código ${out.code}); algumas funções podem falhar. ${out.tail.trim().slice(-400)}`)
+    }
+  } catch (e) {
+    sysLog('warn', 'dev', `conferência das bibliotecas da venv falhou: ${e instanceof Error ? e.message : e}`)
+  }
+}
+
 function spawnBackend(): void {
   const python = getBundledPython()
   const cwd = getBackendCwd()
@@ -920,8 +966,25 @@ async function waitForBackend(maxMs = 30000): Promise<void> {
 // IPC - overlay state
 // ---------------------------------------------------------------------------
 
+/** Cria o indicador: processo próprio em XWayland no Linux/Wayland; janela comum nos demais casos. */
+function initOverlay(): void {
+  if (overlayWindow || overlayHost) return
+  if (overlayNeedsSeparateProcess()) {
+    overlayHost = new OverlayProcessHost(
+      (level, msg) => sysLog(level, 'overlay', msg),
+      () => {
+        overlayHost = null
+        overlayWindow = createOverlayWindow()
+      }
+    )
+    sysLog('info', 'overlay', 'indicador: Wayland detectado, usará um processo separado em XWayland (abre só quando precisar)')
+  } else {
+    overlayWindow = createOverlayWindow()
+  }
+}
+
 ipcMain.on('overlay:state', (_, state: string) => {
-  if (!overlayWindow) return
+  if (!overlayWindow && !overlayHost) return
   if (overlayHideTimer) {
     clearTimeout(overlayHideTimer)
     overlayHideTimer = null
@@ -929,11 +992,16 @@ ipcMain.on('overlay:state', (_, state: string) => {
   sysLog('info', 'overlay', state === 'idle' ? 'indicador: escondendo em 2 s' : `indicador: mostrando (${state})`)
   if (state === 'idle') {
     overlayHideTimer = setTimeout(() => {
-      overlayWindow?.hide()
+      if (overlayHost) overlayHost.hide()
+      else overlayWindow?.hide()
       overlayHideTimer = null
     }, 2000)
-  } else {
-    overlayWindow.show()
+  } else if (overlayHost) {
+    overlayHost.show(state)
+  } else if (overlayWindow) {
+    positionOverlay(overlayWindow)
+    overlayWindow.showInactive()
+    positionOverlay(overlayWindow)
   }
 })
 
@@ -957,7 +1025,7 @@ ipcMain.handle('setup:start', async (event, opts?: Partial<SetupOptions>) => {
     )
     spawnBackend()
     await waitForBackend()
-    overlayWindow = createOverlayWindow()
+    initOverlay()
     createTray()
     event.sender.send('setup:done', { success: true })
     return { success: true }
@@ -1249,17 +1317,13 @@ function createMainWindow(): BrowserWindow {
     }
   })
   watchWindow(win, 'janela principal')
-  // Transmissão em tela cheia + troca para outro programa (Alt+Tab): no Linux (e há relato no Windows) a janela
-  // em tela cheia continuava por cima de tudo sem foco, e o computador parecia travado até apertar ESC
-  // (janela.log da Manu: "perdeu o foco (… TELA CHEIA)" e só voltou com ESC). Ao perder o foco, sai da tela cheia.
+  // Transmissão em tela cheia + troca para outro programa (Alt+Tab): a tela cheia FICA como está e a pessoa
+  // volta para ela depois; só o ESC sai. (Antes saía sozinha ao perder o foco, por um relato de "computador preso
+  // em tela cheia"; isso atrapalhava quem assiste num monitor e usa outro. O que acontece fica no janela.log.)
   win.on('blur', () => {
     setTimeout(() => {
       if (win.isDestroyed() || win.isFocused() || !win.isFullScreen()) return
-      diag('janela principal', 'perdeu o foco em tela cheia: saindo da tela cheia para não ficar por cima dos outros programas')
-      void win.webContents.executeJavaScript('document.fullscreenElement ? document.exitFullscreen() : null', true).catch(() => {})
-      setTimeout(() => {
-        if (!win.isDestroyed() && win.isFullScreen() && !win.isFocused()) win.setFullScreen(false)
-      }, 400)
+      diag('janela principal', 'perdeu o foco em tela cheia: a tela cheia continua (só o ESC sai)')
     }, 300)
   })
 
@@ -1287,15 +1351,27 @@ function createMainWindow(): BrowserWindow {
   return win
 }
 
+const OVERLAY_W = 220
+const OVERLAY_H = 36
+
+// Canto superior direito da área útil do monitor onde está o cursor (considera o deslocamento do monitor).
+function positionOverlay(win: BrowserWindow | null): void {
+  if (!win || win.isDestroyed()) return
+  const { screen } = require('electron')
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+  const { x, y, width } = display.workArea
+  win.setBounds({ x: x + width - OVERLAY_W - 16, y: y + 16, width: OVERLAY_W, height: OVERLAY_H })
+}
+
 function createOverlayWindow(): BrowserWindow {
   const { screen } = require('electron')
-  const { width } = screen.getPrimaryDisplay().workAreaSize
+  const wa = screen.getPrimaryDisplay().workArea
 
   const win = new BrowserWindow({
-    width: 220,
-    height: 36,
-    x: width - 236,
-    y: 16,
+    width: OVERLAY_W,
+    height: OVERLAY_H,
+    x: wa.x + wa.width - OVERLAY_W - 16,
+    y: wa.y + 16,
     frame: false,
     transparent: true,
     alwaysOnTop: true,
@@ -1365,86 +1441,95 @@ function createTray(): void {
 // App lifecycle
 // ---------------------------------------------------------------------------
 
-// Evita duas instâncias (ex.: autostart + abrir pelo atalho, ou dois cliques enquanto abre): a segunda só mostra a janela
-if (!app.requestSingleInstanceLock()) {
-  app.quit()
-} else {
-  app.on('second-instance', () => {
-    if (mainWindow?.isMinimized()) mainWindow.restore()
-    mainWindow?.show()
-    mainWindow?.focus()
-  })
-}
+function startMainApp(): void {
+  // Evita duas instâncias (ex.: autostart + abrir pelo atalho, ou dois cliques enquanto abre): a segunda só mostra a janela
+  if (!app.requestSingleInstanceLock()) {
+    app.quit()
+  } else {
+    app.on('second-instance', () => {
+      if (mainWindow?.isMinimized()) mainWindow.restore()
+      mainWindow?.show()
+      mainWindow?.focus()
+    })
+  }
 
-/**
- * Player do YouTube embutido (vídeos no Chat IA): em produção a página vem de file://, que não
- * manda Referer, e o YouTube recusa o player ("erro 153"). Injeta um Referer só nesses domínios.
- */
-function allowYouTubeEmbeds(): void {
-  session.defaultSession.webRequest.onBeforeSendHeaders(
-    { urls: ['*://*.youtube-nocookie.com/*', '*://*.youtube.com/*'] },
-    (details, callback) => {
-      const headers = details.requestHeaders
-      if (!headers['Referer'] && !headers['referer']) headers['Referer'] = 'https://www.youtube-nocookie.com/'
-      callback({ requestHeaders: headers })
+  /**
+   * Player do YouTube embutido (vídeos no Chat IA): em produção a página vem de file://, que não
+   * manda Referer, e o YouTube recusa o player ("erro 153"). Injeta um Referer só nesses domínios.
+   */
+  function allowYouTubeEmbeds(): void {
+    session.defaultSession.webRequest.onBeforeSendHeaders(
+      { urls: ['*://*.youtube-nocookie.com/*', '*://*.youtube.com/*'] },
+      (details, callback) => {
+        const headers = details.requestHeaders
+        if (!headers['Referer'] && !headers['referer']) headers['Referer'] = 'https://www.youtube-nocookie.com/'
+        callback({ requestHeaders: headers })
+      }
+    )
+  }
+
+  app.whenReady().then(async () => {
+    initSysLog(getDataDir(), BACKEND_URL)
+    initWindowDiag(getDataDir())
+    sysLog(
+      'info',
+      'app',
+      `Voice AI ${app.getVersion()} aberto | ${process.platform} ${process.arch} | Electron ${process.versions.electron} (Chromium ${process.versions.chrome})` +
+        (process.platform === 'linux'
+          ? ` | sessão ${process.env['XDG_SESSION_TYPE'] || '?'} (${process.env['XDG_CURRENT_DESKTOP'] || '?'}) | DISPLAY=${process.env['DISPLAY'] || '-'} WAYLAND_DISPLAY=${process.env['WAYLAND_DISPLAY'] || '-'} | ozone=${app.commandLine.getSwitchValue('ozone-platform') || 'automático'}`
+          : '')
+    )
+    electronApp.setAppUserModelId('com.voiceai')
+    initAutostartDefault()
+    allowYouTubeEmbeds()
+    // Verifica a coleta de dados do Claude Code a cada abertura do app e a cada 30 min
+    // (o Claude Code busca as políticas da organização nesse mesmo intervalo)
+    runMonitoringCheck().catch((e) => console.error('[monitoring] falhou:', e))
+    setInterval(() => runMonitoringCheck().catch(() => {}), 30 * 60_000)
+    app.on('browser-window-created', (_, window) => optimizer.watchWindowShortcuts(window))
+
+    refreshLinuxAutostart()
+    const setupNeeded = !isSetupComplete()
+
+    // a janela abre na hora (com "Iniciando…"); o backend sobe em paralelo e a tela espera por ele (backend:wait)
+    mainWindow = createMainWindow()
+
+    if (!setupNeeded) {
+      backendReady = (async () => {
+        if (!(await isBackendUp())) {
+        await syncDevRequirements()
+        spawnBackend()
+      }
+        await waitForBackend(60_000)
+        initOverlay()
+        createTray()
+      })()
+      backendReady.catch((e) => console.error('[backend] não iniciou:', e))
     }
-  )
+
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) mainWindow = createMainWindow()
+      else mainWindow?.show()
+    })
+  })
+
+  app.on('window-all-closed', () => {
+    // keep running in tray - don't quit
+  })
+
+  app.on('before-quit', () => {
+    quitting = true
+    overlayHost?.stop('app fechando')
+    tray?.destroy()
+    tray = null
+    if (backendProcess) {
+      backendProcess.kill('SIGTERM')
+      backendProcess = null
+    }
+  })
 }
 
-app.whenReady().then(async () => {
-  initSysLog(getDataDir(), BACKEND_URL)
-  initWindowDiag(getDataDir())
-  sysLog(
-    'info',
-    'app',
-    `Voice AI ${app.getVersion()} aberto | ${process.platform} ${process.arch} | Electron ${process.versions.electron} (Chromium ${process.versions.chrome})` +
-      (process.platform === 'linux'
-        ? ` | sessão ${process.env['XDG_SESSION_TYPE'] || '?'} (${process.env['XDG_CURRENT_DESKTOP'] || '?'}) | DISPLAY=${process.env['DISPLAY'] || '-'} WAYLAND_DISPLAY=${process.env['WAYLAND_DISPLAY'] || '-'} | ozone=${app.commandLine.getSwitchValue('ozone-platform') || 'automático'}`
-        : '')
-  )
-  electronApp.setAppUserModelId('com.voiceai')
-  initAutostartDefault()
-  allowYouTubeEmbeds()
-  // Verifica a coleta de dados do Claude Code a cada abertura do app e a cada 30 min
-  // (o Claude Code busca as políticas da organização nesse mesmo intervalo)
-  runMonitoringCheck().catch((e) => console.error('[monitoring] falhou:', e))
-  setInterval(() => runMonitoringCheck().catch(() => {}), 30 * 60_000)
-  app.on('browser-window-created', (_, window) => optimizer.watchWindowShortcuts(window))
-
-  refreshLinuxAutostart()
-  const setupNeeded = !isSetupComplete()
-
-  // a janela abre na hora (com "Iniciando…"); o backend sobe em paralelo e a tela espera por ele (backend:wait)
-  mainWindow = createMainWindow()
-
-  if (!setupNeeded) {
-    backendReady = (async () => {
-      if (!(await isBackendUp())) spawnBackend()
-      await waitForBackend(60_000)
-      overlayWindow = createOverlayWindow()
-      createTray()
-    })()
-    backendReady.catch((e) => console.error('[backend] não iniciou:', e))
-  }
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) mainWindow = createMainWindow()
-    else mainWindow?.show()
-  })
-})
-
-app.on('window-all-closed', () => {
-  // keep running in tray - don't quit
-})
-
-app.on('before-quit', () => {
-  quitting = true
-  tray?.destroy()
-  tray = null
-  if (backendProcess) {
-    backendProcess.kill('SIGTERM')
-    backendProcess = null
-  }
-})
+if (IS_OVERLAY_PROC) runOverlayProcess()
+else startMainApp()
 
 export { mainWindow, overlayWindow, BACKEND_URL }

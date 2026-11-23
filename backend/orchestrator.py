@@ -628,10 +628,17 @@ class Orchestrator:
 
             pool.shutdown(wait=False)
             # a fala acabou; espera o salvamento (normalmente já feito quando o texto terminou)
-            stream_thread.join(timeout=30)
+            # texto e fala acabaram; no caso comum o salvamento já está feito. Se só falta a busca de imagens/vídeos
+            # (pode levar quase 1 min), não segura o app em "Pensando" nem bloqueia os atalhos: o salvamento
+            # termina em segundo plano com a mídia. (Antes, passar de 30 s aqui apagava a pergunta e a resposta
+            # salva depois ficava sem ela.)
+            stream_thread.join(timeout=3)
             if finalized.is_set():
                 print(f"[orchestrator] ⏱ total pipeline (com fala): {time.perf_counter() - t0:.2f}s", flush=True)
                 return  # sinaliza conclusão normal ao finally
+            if stream_thread.is_alive() and stream_end and not self._cancel_evt.is_set():
+                print("[orchestrator] aguardando só a mídia: libero os atalhos e salvo a resposta em segundo plano", flush=True)
+                return
             # chegou aqui: cancelado ou resposta vazia (a pergunta não fica no histórico)
             saver.set_message(None)  # cancelada: descarta o áudio guardado
             chat_db.delete_message(user_msg_id)

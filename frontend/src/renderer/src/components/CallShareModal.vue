@@ -22,7 +22,8 @@ const sources = ref<ShareSource[]>([])
 const loading = ref(true)
 const selected = ref<ShareSource | null>(null)
 const resolution = ref(localStorage.getItem(RES_KEY) || '1080')
-const fps = ref(localStorage.getItem(FPS_KEY) || '30')
+// o máximo é 60 fps: quem tinha 90 salvo passa para 60
+const fps = ref(localStorage.getItem(FPS_KEY) === '60' || localStorage.getItem(FPS_KEY) === '90' ? '60' : '30')
 const withAudio = ref(localStorage.getItem(AUDIO_KEY) !== '0')
 
 const screens = computed(() => sources.value.filter((s) => s.isScreen))
@@ -106,8 +107,7 @@ function start(): void {
             size="sm"
             :options="[
               { value: '30', label: '30' },
-              { value: '60', label: '60' },
-              { value: '90', label: '90' }
+              { value: '60', label: '60' }
             ]"
           />
           <div class="flex-1" />

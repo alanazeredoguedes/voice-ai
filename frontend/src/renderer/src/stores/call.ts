@@ -1,6 +1,7 @@
 import { syslog } from '../utils/syslog'
 import { defineStore } from 'pinia'
 import { computed, ref, shallowRef, watch as vueWatch } from 'vue'
+import { startSteadyFrames, type SteadyFrames } from '../utils/steadyFrames'
 import {
   DEFAULT_PEER_VOLUME,
   MAX_FILE_BYTES,
@@ -128,6 +129,8 @@ export interface RoomLive {
   names: string[]
   /** quantos estão esperando alguém aceitar */
   waiting: number
+  /** reserva com que a cópia foi aberta (desempate entre duas cópias da mesma sala) */
+  claim?: string
 }
 
 const NAME_KEY = 'call.name'
@@ -280,6 +283,8 @@ export const useCallStore = defineStore('call', () => {
   const thumbs = ref<Record<string, string>>({})
 
   const inCall = computed(() => status.value === 'in-call')
+  /** quantas pessoas estão assistindo a minha transmissão agora */
+  const viewerCount = ref(0)
   const sharingPeers = computed(() => peers.value.filter((p) => p.sharing))
 
   // ------------------------------------------------------------------ log da sala
@@ -313,8 +318,9 @@ export const useCallStore = defineStore('call', () => {
       remote: false
     }
     ;(level === 'info' ? console.log : console.warn)('[call]', msg)
-    // no log do sistema também, menos as medições periódicas (já estão na aba de logs da chamada)
-    if (level !== 'info' || !/^\[(estatísticas|qualidade|transmissão)\]/.test(msg)) syslog(level, 'chamada', entry.msg)
+    // tudo vai para o log do sistema (Logs → Sistema). As medições periódicas entram como "detalhe", para não
+    // encher a lista normal; aparecem ao ligar os detalhes e vão no texto copiado/baixado.
+    syslog(level === 'info' && /^\[(estatísticas|qualidade|transmissão)\]/.test(msg) ? 'debug' : level, 'chamada', entry.msg)
     pushLogs([entry])
     logOutbox.push(entry)
     if (!logFlushTimer) logFlushTimer = setTimeout(flushLogs, 1000)
@@ -351,6 +357,12 @@ export const useCallStore = defineStore('call', () => {
         msg: e.msg.slice(0, 2000),
         remote: true
       })
+    }
+    // as linhas dos outros participantes também vão para o log do sistema (uma vez só: o id evita repetir),
+    // com o nome de quem as gerou: a conversa dos dois lados fica no mesmo lugar
+    for (const e of entries) {
+      if (logIds.has(e.id)) continue
+      syslog(e.level === 'info' && /^\[(estatísticas|qualidade|transmissão)\]/.test(e.msg) ? 'debug' : e.level, 'chamada', `[${e.author}] ${e.msg}`)
     }
     pushLogs(entries)
   }
@@ -705,9 +717,8 @@ export const useCallStore = defineStore('call', () => {
     if (code.value !== c || !isHost.value) return
     codeReady.value = true
     await announceRoom()
-    // rede de segurança: se mesmo assim duas cópias ficaram no ar, fica a publicada primeiro e a outra se junta a ela
-    setTimeout(() => void mergeDuplicate(c), 3000)
-    setTimeout(() => void mergeDuplicate(c), 15000)
+    // rede de segurança: se mesmo assim duas cópias ficaram no ar, vale a de menor reserva e a outra se junta a ela
+    void watchDuplicates(c)
   }
 
   async function announceRoom(closed = false): Promise<void> {
@@ -727,7 +738,7 @@ export const useCallStore = defineStore('call', () => {
   /** reabrindo: esperando a vez (ou o código de quem está abrindo) */
   const reopening = ref<{ roomId: string; hint: string } | null>(null)
 
-  type RoomStateRes = { live: RoomLive | null; claims: { claim: string; hostName: string; age: number }[] }
+  type RoomStateRes = { live: RoomLive | null; copies?: RoomLive[]; claims: { claim: string; hostName: string; age: number }[] }
 
   async function stateOf(roomId: string): Promise<RoomStateRes> {
     const res = (await ipc().invoke('call:rv-state', [roomId]).catch(() => null)) as Record<string, RoomStateRes> | null
@@ -784,15 +795,83 @@ export const useCallStore = defineStore('call', () => {
     reopening.value = null
   }
 
-  async function mergeDuplicate(myCode: string): Promise<void> {
+  /** aviso na tela enquanto as duas cópias da sala se juntam */
+  const mergeNotice = ref('')
+
+  /**
+   * Depois que o meu código fica no ar, confere de tempos em tempos (a cada 4 s, por até 60 s, enquanto eu
+   * for o anfitrião) se outra pessoa abriu a mesma sala no mesmo instante. Havendo duas cópias, vale a de
+   * menor reserva (o desempate é o mesmo para todos): a outra fecha e vai para ela, levando quem já entrou.
+   */
+  async function watchDuplicates(myCode: string): Promise<void> {
     const r = room.value
-    if (!r || !isHost.value || code.value !== myCode || peers.value.length) return
-    const winner = (await stateOf(r.id)).live
-    if (!winner || winner.code === myCode || code.value !== myCode || peers.value.length) return
-    log('info', `outra pessoa abriu esta mesma sala antes (código ${winner.code}): fechando a minha e entrando na dela`)
-    await announceRoom(true)
-    leave()
-    await join(winner.code, { keepLogs: true })
+    if (!r) return
+    const mine = myClaim ?? '(sem reserva)'
+    log('info', `conferindo se alguém abriu esta mesma sala ao mesmo tempo: a cada 4 s, por até 60 s (meu código ${myCode}, minha reserva ${mine.slice(0, 8)})`)
+    const started = Date.now()
+    let lastSummary = ''
+    for (let i = 1; Date.now() - started < 60_000; i++) {
+      await new Promise((res) => setTimeout(res, i === 1 ? 3000 : 4000))
+      if (!isHost.value || code.value !== myCode || room.value?.id !== r.id) {
+        log('info', 'conferência de cópias encerrada: não sou mais o anfitrião desta sala')
+        return
+      }
+      const st = await stateOf(r.id)
+      const copies = st.copies?.length ? st.copies : st.live ? [st.live] : []
+      const summary = copies.map((c) => `${c.code}${c.code === myCode ? ' (minha)' : ''} reserva ${(c.claim ?? 'sem').slice(0, 8)} com ${c.names.length} pessoa(s)`).join(' | ')
+      if (summary !== lastSummary) {
+        log('info', `conferência ${i}: ${copies.length} cópia(s) no ar: ${summary || 'nenhuma enxergada ainda (o ponto de encontro pode estar atrasado)'}`)
+        lastSummary = summary
+      }
+      const winner = st.live
+      if (!winner || winner.code === myCode) continue
+      await yieldToWinner(myCode, winner)
+      return
+    }
+    log('info', 'conferência de cópias terminou: ninguém mais abriu esta sala')
+  }
+
+  /** Esta cópia perdeu o desempate: avisa quem está nela, fecha e entra na cópia vencedora. */
+  async function yieldToWinner(myCode: string, winner: RoomLive): Promise<void> {
+    const others = peers.value.length
+    log(
+      'info',
+      `desempate: a cópia ${winner.code} (reserva ${(winner.claim ?? 'sem').slice(0, 8)}, de ${winner.hostName || 'outra pessoa'}) vale no lugar da minha (${myCode}); ` +
+        `${others ? `levando as ${others} pessoa(s) que estão comigo` : 'não há ninguém comigo'}`
+    )
+    mergeNotice.value = `Juntando com a sala de ${winner.hostName || 'outra pessoa'}…`
+    try {
+      if (others) {
+        rtc.moveRoom(winner.code)
+        await new Promise((res) => setTimeout(res, 1500)) // dá tempo do aviso chegar antes de eu sair
+      }
+      if (code.value !== myCode || !isHost.value) return
+      await announceRoom(true)
+      log('info', `minha cópia ${myCode} marcada como fechada no ponto de encontro; entrando em ${winner.code}`)
+      leave()
+      await join(winner.code, { keepLogs: true })
+      log('info', `junção concluída: agora estou na sala ${winner.code}`)
+    } finally {
+      mergeNotice.value = ''
+    }
+  }
+
+  /** O anfitrião da cópia que perdeu mandou todos para a vencedora. */
+  async function followMove(target: string): Promise<void> {
+    const parsed = parseCode(target)
+    if (!parsed || isHost.value || parsed === code.value || status.value === 'idle') {
+      log('info', `pedido para mudar de sala ignorado (${target})`)
+      return
+    }
+    log('info', `mudando para a sala ${parsed}: o anfitrião juntou duas cópias da mesma sala`)
+    mergeNotice.value = 'Juntando as salas…'
+    try {
+      leave()
+      await join(parsed, { keepLogs: true })
+      log('info', `mudança concluída: agora estou na sala ${parsed}`)
+    } finally {
+      mergeNotice.value = ''
+    }
   }
 
   async function join(raw: string, opts: { keepLogs?: boolean } = {}): Promise<void> {
@@ -869,6 +948,25 @@ export const useCallStore = defineStore('call', () => {
               void recoverSignaling()
             },
             onWaiting: () => (waitingApproval.value = true),
+            onMove: (c) => void followMove(c),
+            onPeerJoined: (name) => {
+              log('info', `${name} entrou: tocando o aviso sonoro`)
+              void playJoinSound()
+            },
+            onPeerLeft: (name) => {
+              log('info', `${name} saiu: tocando o aviso sonoro`)
+              void playLeaveSound()
+            },
+            onPeerConnectionLost: (name) => {
+              log('warn', `a conexão com ${name} caiu e não voltou: tocando o aviso sonoro`)
+              void playLostSound()
+            },
+            onViewers: (n) => (viewerCount.value = n),
+            onViewerOpened: (name) => {
+              if (!sharing.value) return
+              log('info', `${name} começou a assistir a minha transmissão: tocando o aviso sonoro`)
+              void playViewerSound()
+            },
             onKnocks: (list) => {
               for (const k of list) if (!knocks.value.some((x) => x.id === k.id)) notifyKnock(k)
               knocks.value = list
@@ -900,32 +998,116 @@ export const useCallStore = defineStore('call', () => {
 
   // ------------------------------------------------------------------ pedidos de entrada
 
-  /** "plim-plim" curto (duas notas), na saída de som escolhida para a chamada. */
-  async function playKnockSound(): Promise<void> {
+  /**
+   * Toca uma sequência de notas curtas na saída de som escolhida para a chamada.
+   * Tudo vai para o log (`aviso sonoro ...`): se um aviso não tocar (Windows, por exemplo), o log mostra onde parou.
+   */
+  async function playTones(label: string, notes: { freq: number; at: number; len: number; vol: number; type?: OscillatorType }[]): Promise<void> {
     try {
       const ctx = new AudioContext()
+      // o Chromium pode criar o contexto "suspenso" (política de autoplay, janela escondida): sem retomar, fica mudo
+      if (ctx.state !== 'running') await ctx.resume().catch(() => {})
       const out = rtc.getOutputDevice()
       const setSink = (ctx as unknown as { setSinkId?: (id: string) => Promise<void> }).setSinkId
-      if (out && setSink) await setSink.call(ctx, out).catch(() => {})
+      let sinkNote = 'saída padrão'
+      if (out && setSink) {
+        // um dispositivo que sumiu pode fazer o setSinkId nunca responder: depois de 1,5 s toca na saída padrão
+        const r = await Promise.race([
+          setSink.call(ctx, out).then(() => 'ok', (e: unknown) => `falhou (${e instanceof Error ? e.message : e})`),
+          new Promise<string>((res) => setTimeout(() => res('sem resposta em 1,5 s'), 1500))
+        ])
+        sinkNote = r === 'ok' ? 'saída escolhida na chamada' : `saída escolhida ${r}; tocando na padrão`
+      }
+      if (ctx.state !== 'running') await ctx.resume().catch(() => {})
+      log('info', `aviso sonoro "${label}": ${sinkNote}, áudio ${ctx.state}`)
+      if (ctx.state !== 'running') log('warn', `aviso sonoro "${label}": o áudio do app não está liberado (${ctx.state}); pode ficar mudo`)
       const t0 = ctx.currentTime + 0.02
-      for (const [i, freq] of [660, 880].entries()) {
+      let end = 0
+      for (const n of notes) {
         const osc = ctx.createOscillator()
         const gain = ctx.createGain()
-        osc.type = 'sine'
-        osc.frequency.value = freq
-        const start = t0 + i * 0.16
+        osc.type = n.type ?? 'sine'
+        osc.frequency.value = n.freq
+        const start = t0 + n.at
         gain.gain.setValueAtTime(0, start)
-        gain.gain.linearRampToValueAtTime(0.35, start + 0.02)
-        gain.gain.exponentialRampToValueAtTime(0.001, start + 0.45)
+        gain.gain.linearRampToValueAtTime(n.vol, start + 0.02)
+        gain.gain.exponentialRampToValueAtTime(0.001, start + n.len)
         osc.connect(gain).connect(ctx.destination)
         osc.start(start)
-        osc.stop(start + 0.5)
+        osc.stop(start + n.len + 0.05)
+        end = Math.max(end, n.at + n.len)
       }
-      setTimeout(() => void ctx.close().catch(() => {}), 1200)
-    } catch {
-      // sem áudio: só a notificação visual
+      setTimeout(() => void ctx.close().catch(() => {}), (end + 0.6) * 1000)
+    } catch (e) {
+      log('warn', `aviso sonoro "${label}" falhou: ${e instanceof Error ? e.message : e}`)
     }
   }
+
+  /** Pedido para entrar: "plim-plim" (duas notas). */
+  const playKnockSound = (): Promise<void> =>
+    playTones('pedido para entrar', [
+      { freq: 660, at: 0, len: 0.45, vol: 0.35 },
+      { freq: 880, at: 0.16, len: 0.45, vol: 0.35 }
+    ])
+
+  /** Alguém começou a transmitir a tela: três notas subindo, mais suaves e de timbre diferente do pedido de entrada. */
+  const playShareStartSound = (): Promise<void> =>
+    playTones('começou a transmitir', [
+      { freq: 523, at: 0, len: 0.22, vol: 0.22, type: 'triangle' },
+      { freq: 659, at: 0.11, len: 0.22, vol: 0.22, type: 'triangle' },
+      { freq: 784, at: 0.22, len: 0.4, vol: 0.22, type: 'triangle' }
+    ])
+
+  /** Alguém entrou na sala: duas notas graves e suaves. */
+  const playJoinSound = (): Promise<void> =>
+    playTones('entrou na sala', [
+      { freq: 392, at: 0, len: 0.3, vol: 0.2 },
+      { freq: 523, at: 0.14, len: 0.35, vol: 0.2 }
+    ])
+
+  /** Alguém saiu da sala: as notas da entrada ao contrário (descendo). */
+  const playLeaveSound = (): Promise<void> =>
+    playTones('saiu da sala', [
+      { freq: 523, at: 0, len: 0.3, vol: 0.2 },
+      { freq: 392, at: 0.14, len: 0.4, vol: 0.2 }
+    ])
+
+  /** A conexão com alguém caiu: duas notas graves e mais fortes (alerta), de timbre diferente dos outros avisos. */
+  const playLostSound = (): Promise<void> =>
+    playTones('conexão caiu', [
+      { freq: 311, at: 0, len: 0.25, vol: 0.3, type: 'square' },
+      { freq: 233, at: 0.2, len: 0.45, vol: 0.3, type: 'square' }
+    ])
+
+  /** Alguém abriu a minha transmissão: dois toques agudos curtos, parecidos com o aviso de "começou a transmitir". */
+  const playViewerSound = (): Promise<void> =>
+    playTones('assistindo a minha transmissão', [
+      { freq: 784, at: 0, len: 0.18, vol: 0.2, type: 'triangle' },
+      { freq: 988, at: 0.12, len: 0.3, vol: 0.2, type: 'triangle' }
+    ])
+
+  /** Mensagem nova no chat da sala: um "tic-tic" curto e baixo (mais discreto que os outros avisos). */
+  const playMessageSound = (): Promise<void> =>
+    playTones('mensagem nova', [
+      { freq: 698, at: 0, len: 0.1, vol: 0.12 },
+      { freq: 932, at: 0.09, len: 0.16, vol: 0.12 }
+    ])
+
+  // Avisa com um som quando outra pessoa começa a transmitir. Quem já estava transmitindo quando eu entrei não
+  // conta (o estado chega logo depois da conexão), e minha própria transmissão nunca toca.
+  let callJoinedAt = 0
+  vueWatch(inCall, (v) => (callJoinedAt = v ? Date.now() : 0))
+  vueWatch(
+    () => sharingPeers.value.map((p) => p.id),
+    (now, before) => {
+      if (!callJoinedAt || Date.now() - callJoinedAt < 4000) return
+      const fresh = now.filter((id) => !before.includes(id))
+      if (!fresh.length) return
+      const who = peers.value.find((p) => p.id === fresh[0])?.name ?? 'alguém'
+      log('info', `${who} começou a transmitir: tocando o aviso sonoro`)
+      void playShareStartSound()
+    }
+  )
 
   // Enquanto houver alguém esperando, repete o som (a cada 7 s, até 8 vezes) para não passar despercebido
   let knockAlertTimer: ReturnType<typeof setInterval> | null = null
@@ -1340,7 +1522,15 @@ export const useCallStore = defineStore('call', () => {
           }
         }
         if (!viewOpen.value) unread.value++
-        log('info', `mensagem recebida de ${peers.value.find((p) => p.id === peerId)?.name ?? 'participante'} (${String(msg.text ?? '').length} caracteres, ${files.length} arquivo(s))`)
+        const sender = peers.value.find((p) => p.id === peerId)?.name ?? 'participante'
+        const looking = viewOpen.value && document.hasFocus()
+        log('info', `mensagem recebida de ${sender} (${String(msg.text ?? '').length} caracteres, ${files.length} arquivo(s)): tocando o aviso sonoro${looking ? '' : ' e avisando pelo sistema (você não está olhando o chat)'}`)
+        void playMessageSound()
+        // fora da tela da chamada ou com o app em segundo plano, também avisa pelo sistema (e pisca o ícone)
+        if (!looking) {
+          const preview = String(msg.text ?? '').trim().slice(0, 120) || (files.length ? `${files.length} arquivo(s)` : '')
+          void ipc().invoke('call:notify', `Voice AI: mensagem de ${sender}`, preview).catch(() => {})
+        }
         scheduleSave()
         break
       }
@@ -1502,6 +1692,31 @@ export const useCallStore = defineStore('call', () => {
     setTimeout(() => {
       if (f.requested && f.done === 0) f.requested = false
     }, 15000)
+  }
+
+  /** Arquivos do histórico (de outras pessoas) que ainda não estão neste computador e não estão sendo pedidos. */
+  const missingFiles = computed(() =>
+    messages.value.flatMap((m) =>
+      m.authorId === userId ? [] : m.files.filter((f) => !f.stored && !f.requested && !(f.done > 0 && f.done < f.size && !f.failed))
+    )
+  )
+
+  /** Pede de uma vez todos os arquivos (imagens, vídeos e outros) do histórico que faltam aqui. */
+  async function requestAllFiles(): Promise<void> {
+    const list = [...missingFiles.value]
+    if (!list.length) return
+    if (!peers.value.length) {
+      error.value = 'Não há ninguém na sala para enviar os arquivos agora.'
+      log('warn', `pedir todos os arquivos: ${list.length} faltando, mas não há ninguém na sala`)
+      return
+    }
+    log('info', `pedindo todos os arquivos que faltam: ${list.length} (${list.map((f) => f.name).slice(0, 8).join(', ')}${list.length > 8 ? '…' : ''})`)
+    for (const f of list) {
+      requestFile(f)
+      // um pedido por vez, espaçado: dezenas de pedidos juntos entupiriam a conexão de quem envia
+      await new Promise((r) => setTimeout(r, 250))
+      if (status.value !== 'in-call') break
+    }
   }
 
   async function downloadFile(f: CallFile): Promise<void> {
@@ -1798,6 +2013,8 @@ export const useCallStore = defineStore('call', () => {
     const systemAudio = withAudio && !IS_LINUX
     // trocando de tela no meio da transmissão: o fim da captura antiga não pode encerrar a nova
     localScreen?.getTracks().forEach((t) => (t.onended = null))
+    steady?.stop()
+    steady = null
     stopOwnCapture()
     // Linux com Xorg: captura própria pelo ffmpeg (o capturador do Chromium não passa de ~10 fps em telas grandes)
     if (IS_LINUX && !isWayland.value) {
@@ -1844,15 +2061,28 @@ export const useCallStore = defineStore('call', () => {
         log('warn', `ganho automático do som da tela indisponível (${e instanceof Error ? e.message : e}); enviando o som como está`)
       }
     }
+    // fps FIXO: a transmissão sai sempre no fps escolhido (30 ou 60), repetindo o último quadro quando a captura
+    // não entrega um novo (tela parada, jogo carregando, computador ocupado). Ver utils/steadyFrames.ts.
+    const rawVideo = stream.getVideoTracks()[0]
+    const srcSettings = rawVideo.getSettings()
+    steady = startSteadyFrames(rawVideo, quality.fps, log)
+    if (steady) {
+      stream.removeTrack(rawVideo)
+      stream.addTrack(steady.track)
+      rtc.setScreenCaptureProbe(steady.captureFps)
+    } else {
+      rtc.setScreenCaptureProbe(null)
+    }
     const track = stream.getVideoTracks()[0]
-    // até 30 fps: prioriza nitidez (texto, código); 60/90 fps: prioriza fluidez (vídeo, jogo)
+    // 30 fps: prioriza nitidez (texto, código); 60 fps: prioriza fluidez (vídeo, jogo)
     track.contentHint = quality.fps > 30 ? 'motion' : 'detail'
+    rawVideo.contentHint = track.contentHint
     track.onended = () => {
       log('info', 'a captura da tela terminou (fechada pelo sistema ou pela janela)')
       void stopShare()
     }
-    const vs = track.getSettings()
-    void logShareStart(sourceId, quality, track, stream)
+    const vs = srcSettings
+    void logShareStart(sourceId, quality, rawVideo, stream)
     log(
       'info',
       `transmitindo: vídeo ${vs.width}x${vs.height} ${Math.round(vs.frameRate ?? 0)} fps, ${stream.getAudioTracks().length ? `com som ("${rawAudio?.label}")` : 'sem som'}`
@@ -1863,7 +2093,7 @@ export const useCallStore = defineStore('call', () => {
     sharing.value = true
     // taxa máxima proporcional a pixels × quadros (1080p60 ≈ 4,4 Mbps, 2K60 ≈ 7,7 Mbps, 4K60 ≈ 17 Mbps; teto de 20 Mbps).
     // Um teto alto demais fazia o envio empurrar dados além do que a rede aguentava, e a estimativa de banda despencava.
-    const vs0 = track.getSettings()
+    const vs0 = srcSettings
     const px = (vs0.width ?? quality.width) * (vs0.height ?? quality.height)
     const maxBitrate = Math.round(Math.min(20_000_000, Math.max(1_500_000, px * quality.fps * 0.035)))
     log('info', `vídeo da tela limitado a ${(maxBitrate / 1e6).toFixed(1)} Mbps e ${quality.fps} fps (${track.contentHint === 'motion' ? 'prioriza fluidez' : 'prioriza nitidez'})`)
@@ -2123,10 +2353,16 @@ export const useCallStore = defineStore('call', () => {
     }
   }
 
+  /** fps fixo da transmissão atual (ver steadyFrames.ts) */
+  let steady: SteadyFrames | null = null
+
   async function stopShare(): Promise<void> {
     if (!localScreen) return
     log('info', 'parei a transmissão')
     stopOwnCapture()
+    steady?.stop()
+    steady = null
+    rtc.setScreenCaptureProbe(null)
     screenLeveler?.stop()
     screenLeveler = null
     localScreen.getTracks().forEach((t) => {
@@ -2331,6 +2567,8 @@ export const useCallStore = defineStore('call', () => {
     editMessage,
     deleteMessage,
     requestFile,
+    missingFiles,
+    requestAllFiles,
     downloadFile,
     setViewOpen,
     listAudioDevices,
@@ -2348,6 +2586,8 @@ export const useCallStore = defineStore('call', () => {
     roomsOpening,
     refreshLive,
     reopening,
+    viewerCount,
+    mergeNotice,
     cancelReopen,
     micGain,
     gateOn,

@@ -44,6 +44,8 @@ export interface RoomLive {
   ts: number
   names: string[]
   waiting: number
+  /** reserva com que a cópia foi aberta: no desempate vence a menor (igual para todo mundo) */
+  claim?: string
 }
 
 export interface RoomOpening {
@@ -55,6 +57,8 @@ export interface RoomOpening {
 
 export interface RoomState {
   live: RoomLive | null
+  /** todas as cópias no ar agora (mais de uma = duas pessoas abriram juntas), com a vencedora em `live` */
+  copies: RoomLive[]
   /** reservas recentes ainda sem sala no ar, da primeira para a última */
   claims: RoomOpening[]
 }
@@ -266,10 +270,18 @@ export async function roomState(roomId: string): Promise<RoomState> {
   const probed = await Promise.all(
     open.map(async (a) => {
       const p = await probe(roomId, a.code)
-      return p ? { code: a.code, hostName: a.hostName, ts: a.ts, ...p } : null
+      return p ? { code: a.code, hostName: a.hostName, ts: a.ts, claim: a.claim, ...p } : null
     })
   )
-  const live = probed.find((x): x is RoomLive => !!x) ?? null
+  // desempate igual para todos: a menor reserva vence (quem não tem reserva fica por último e, entre eles,
+  // vale a publicada primeiro no ntfy.sh). Assim duas pessoas que abriram juntas concordam sobre qual sala fica.
+  const alive: RoomLive[] = []
+  for (const x of probed) if (x) alive.push(x)
+  const copies = alive
+    .map((x, order) => ({ x, order }))
+    .sort((a, b) => (a.x.claim ?? '\uffff').localeCompare(b.x.claim ?? '\uffff') || a.order - b.order)
+    .map((e) => e.x)
+  const live = copies[0] ?? null
   const now = serverNow()
   const claims = live
     ? []
@@ -278,7 +290,7 @@ export async function roomState(roomId: string): Promise<RoomState> {
         // reserva que já virou sala (no ar ou fechada depois) não conta mais
         .filter((a) => !list.some((b) => !b.opening && b.claim === a.claim))
         .map((a) => ({ claim: a.claim!, hostName: a.hostName, age: Math.max(0, Math.round(now - (a.sTime ?? 0))) }))
-  return { live, claims }
+  return { live, copies, claims }
 }
 
 /** Qual sala do histórico tem esta etiqueta (para provar que já esteve nela). */

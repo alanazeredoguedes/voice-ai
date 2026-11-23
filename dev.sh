@@ -3,6 +3,15 @@ set -e
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 
+# mantém as bibliotecas da venv em dia (só roda quando o requirements mudou)
+REQ_HASH="$(cat "$ROOT/backend/requirements.txt" "$ROOT/backend/requirements-core.txt" | sha256sum | cut -c1-16)"
+if [ "$(cat "$ROOT/backend/venv/.voice-ai-req-hash" 2>/dev/null)" != "$REQ_HASH" ]; then
+  echo "[dev] requirements mudaram: atualizando as bibliotecas da venv..."
+  (cd "$ROOT/backend" && ./venv/bin/python -m pip install -q --disable-pip-version-check -r requirements.txt) \
+    && echo "$REQ_HASH" > "$ROOT/backend/venv/.voice-ai-req-hash" \
+    || echo "[dev] AVISO: nao deu para atualizar as bibliotecas (busca de video/imagem pode falhar)"
+fi
+
 echo "[dev] iniciando backend..."
 cd "$ROOT"
 # porta própria do dev (o app instalado usa a 18450)

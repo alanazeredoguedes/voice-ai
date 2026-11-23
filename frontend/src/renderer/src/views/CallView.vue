@@ -6,10 +6,10 @@ import CopyButton from '../components/CopyButton.vue'
 import ConfirmModal from '../components/ConfirmModal.vue'
 import CallShareModal from '../components/CallShareModal.vue'
 import CallAudioPopover from '../components/CallAudioPopover.vue'
+import RichMessage from '../components/RichMessage.vue'
 import CallComposer from '../components/CallComposer.vue'
 import CallMediaViewer from '../components/CallMediaViewer.vue'
 import CallVolumeMenu from '../components/CallVolumeMenu.vue'
-import CallLogPanel from '../components/CallLogPanel.vue'
 import CallStageMenu from '../components/CallStageMenu.vue'
 import CallStreamStats from '../components/CallStreamStats.vue'
 import { formatVolume, sliderToVolume, volumeToSlider } from '../utils/callVolume'
@@ -22,7 +22,6 @@ const joinCode = ref('')
 const roomName = ref('')
 const busy = computed(() => store.status === 'connecting' || !!store.reopening)
 const deletingRoom = ref<{ id: string; name: string } | null>(null)
-const showLogs = ref(false)
 /** com salas anteriores, o formulário de criar / entrar com código só aparece quando pedido */
 const showForm = ref(false)
 function openForm(m: 'create' | 'join'): void {
@@ -56,7 +55,6 @@ function initials(name: string): string {
   const parts = name.trim().split(/\s+/).filter((p) => /[\p{L}\p{N}]/u.test(p))
   return ((parts[0]?.[0] ?? '?') + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase()
 }
-const logProblems = computed(() => store.logs.filter((e) => e.level !== 'info').length)
 
 function submit(): void {
   if (mode.value === 'create') void store.create({ roomName: roomName.value })
@@ -214,7 +212,7 @@ const onFullscreenChange = (): void => {
   fullscreen.value = !!document.fullscreenElement
   store.log(
     'info',
-    fullscreen.value ? 'transmissão em tela cheia' : `saiu da tela cheia${document.hasFocus() ? '' : ' (o app perdeu o foco: saída automática para não travar os outros programas)'}`
+    fullscreen.value ? 'transmissão em tela cheia' : 'saiu da tela cheia'
   )
 }
 onMounted(() => document.addEventListener('fullscreenchange', onFullscreenChange))
@@ -490,7 +488,55 @@ const chatEl = ref<HTMLElement | null>(null)
 const composer = ref<InstanceType<typeof CallComposer> | null>(null)
 const editing = ref<{ id: string; text: string } | null>(null)
 const deletingId = ref<string | null>(null)
-const viewer = ref<CallFile | null>(null)
+const viewerIndex = ref<number | null>(null)
+
+// Todas as imagens e vídeos da conversa que já estão neste computador, na ordem do chat: o visualizador
+// passa de um para o outro com as setas.
+const gallery = computed(() =>
+  store.messages.flatMap((m) => m.files.filter((f) => f.url && (isImage(f) || isVideo(f))).map((f) => ({ file: f, url: f.url as string, name: f.name, video: isVideo(f) })))
+)
+function openViewer(f: CallFile): void {
+  const i = gallery.value.findIndex((g) => g.file.id === f.id)
+  if (i >= 0) viewerIndex.value = i
+}
+
+// Texto muito longo fica recolhido no começo, com "Ver mais" embaixo
+const LONG_CHARS = 600
+const LONG_LINES = 10
+const expandedMsgs = ref(new Set<string>())
+const isLong = (t: string): boolean => t.length > LONG_CHARS || t.split('\n').length > LONG_LINES
+function toggleExpanded(id: string): void {
+  const s = new Set(expandedMsgs.value)
+  if (!s.delete(id)) s.add(id)
+  expandedMsgs.value = s
+}
+
+// Tamanho do texto do chat: igual ao do Chat IA (100% = 14px; de 80% a 200%, de 10 em 10), lembrado neste computador
+const TEXT_MIN = 80
+const TEXT_MAX = 200
+const TEXT_STEP = 10
+const TEXT_BASE_PX = 14
+const TEXT_KEY = 'voiceai.callChatTextScale'
+function loadTextScale(): number {
+  try {
+    const v = Number(localStorage.getItem(TEXT_KEY))
+    return v >= TEXT_MIN && v <= TEXT_MAX ? v : 100
+  } catch {
+    return 100
+  }
+}
+const textScale = ref(loadTextScale())
+const textPx = computed(() => (TEXT_BASE_PX * textScale.value) / 100)
+function setTextScale(v: number): void {
+  textScale.value = Math.min(TEXT_MAX, Math.max(TEXT_MIN, Math.round(v / TEXT_STEP) * TEXT_STEP))
+  try {
+    localStorage.setItem(TEXT_KEY, String(textScale.value))
+  } catch {
+    // sem armazenamento: vale só nesta sessão
+  }
+}
+const stepTextScale = (dir: 1 | -1): void => setTextScale(textScale.value + dir * TEXT_STEP)
+const onTextScaleInput = (e: Event): void => setTextScale(Number((e.target as HTMLInputElement).value))
 const dragging = ref(false)
 
 const CHAT_COLORS = ['text-emerald-400', 'text-amber-400', 'text-fuchsia-400', 'text-sky-400', 'text-rose-400', 'text-teal-400']
@@ -556,6 +602,13 @@ function confirmLeave(): void {
 </script>
 
 <template>
+  <!-- duas pessoas abriram a mesma sala juntas: as cópias estão se juntando -->
+  <div
+    v-if="store.mergeNotice"
+    class="fixed top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-full bg-amber-500/90 text-slate-950 text-sm font-medium shadow-lg"
+  >
+    {{ store.mergeNotice }}
+  </div>
   <!-- ============================== Fora de uma chamada ============================== -->
   <div v-if="!store.inCall" class="h-full overflow-y-auto">
     <div class="min-h-full flex flex-col items-center justify-center gap-6 py-8 px-4">
@@ -761,12 +814,6 @@ function confirmLeave(): void {
             Entrar com código
           </button>
         </div>
-        <button
-          v-if="store.logs.length"
-          class="text-xs text-slate-500 hover:text-slate-300 underline underline-offset-2"
-          title="O log da última chamada fica disponível até você entrar em outra"
-          @click="showLogs = true"
-        >Ver logs da última chamada ({{ store.logs.length }} linhas)</button>
       </template>
 
       <!-- ===== sem salas anteriores (ou criando / entrando com código) ===== -->
@@ -819,12 +866,6 @@ function confirmLeave(): void {
             <button type="button" class="text-xs text-slate-400 hover:text-slate-200 underline underline-offset-2" @click="store.leave()">Cancelar</button>
           </div>
         </form>
-        <button
-          v-if="store.logs.length"
-          class="-mt-3 text-xs text-slate-500 hover:text-slate-300 underline underline-offset-2"
-          title="O log da última chamada fica disponível até você entrar em outra"
-          @click="showLogs = true"
-        >Ver logs da última chamada ({{ store.logs.length }} linhas)</button>
 
         <button
           :disabled="busy"
@@ -841,7 +882,6 @@ function confirmLeave(): void {
 
     </div>
 
-    <CallLogPanel v-if="showLogs" @close="showLogs = false" />
     <ConfirmModal :open="!!deletingRoom" title="Excluir a sala?" confirm-label="Excluir" @confirm="confirmDeleteRoom" @cancel="deletingRoom = null">
       O histórico do chat e os arquivos de "{{ deletingRoom?.name }}" serão apagados deste computador. Quem participou continua com a cópia
       dele.
@@ -878,17 +918,6 @@ function confirmLeave(): void {
         </svg>
         {{ !store.hasMic ? 'Sem microfone' : store.muted ? 'Mudo' : 'Microfone' }}
       </button>
-<button
-        class="relative flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium border bg-slate-800 border-slate-700 text-slate-100 hover:bg-slate-700 transition-colors"
-        title="Logs da sala (seus e dos outros participantes), para copiar e depurar"
-        @click="showLogs = true"
-      >
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25H12" />
-        </svg>
-        Logs
-        <span v-if="logProblems" class="min-w-[1.1rem] px-1 rounded-full bg-amber-500 text-[10px] leading-4 text-slate-900 font-semibold">{{ logProblems }}</span>
-      </button>
       <CallAudioPopover />
       <button class="px-3.5 py-2 rounded-lg text-xs font-medium text-white bg-red-600 hover:bg-red-500 transition-colors" @click="showLeave = true">Sair</button>
     </div>
@@ -917,6 +946,60 @@ function confirmLeave(): void {
         @dragleave.self="dragging = false"
         @drop.prevent="onDrop"
       >
+        <!-- Barra do chat: só aparece quando o mouse chega no topo do card (tamanho do texto e pedir arquivos) -->
+        <div
+          class="group/bar absolute inset-x-0 z-20 h-5"
+          :style="docked ? { top: `${dockH + DIVIDER}px` } : { top: '0px' }"
+        >
+          <div
+            class="absolute inset-x-0 top-0 h-10 px-3 flex items-center justify-end gap-2 bg-slate-900/95 backdrop-blur-sm border-b border-slate-700/50 shadow-lg opacity-0 -translate-y-1 pointer-events-none transition duration-150 group-hover/bar:opacity-100 group-hover/bar:translate-y-0 group-hover/bar:pointer-events-auto"
+          >
+            <!-- Pedir de uma vez os arquivos do histórico que faltam aqui (some quando não falta nenhum) -->
+            <button
+              v-if="store.missingFiles.length"
+              class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border bg-slate-800 border-slate-700 text-slate-100 hover:bg-slate-700 transition-colors"
+              :title="`Pede a quem está na sala todas as imagens, vídeos e arquivos do histórico que não estão neste computador (${store.missingFiles.length})`"
+              @click="store.requestAllFiles()"
+            >
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" /></svg>
+              Pedir arquivos ({{ store.missingFiles.length }})
+            </button>
+            <!-- Tamanho do texto: recolhido em "100%"; passando o mouse, abre para diminuir e aumentar -->
+            <div class="group/text flex items-center rounded-xl border border-transparent hover:border-slate-700/70 hover:bg-slate-900/70 transition-colors p-0.5">
+              <div class="flex items-center gap-1.5 overflow-hidden max-w-0 opacity-0 group-hover/text:max-w-[220px] group-hover/text:opacity-100 group-hover/text:pl-1 group-hover/text:pr-1.5 transition-all duration-200">
+                <button
+                  title="Diminuir o texto (-10%)"
+                  :disabled="textScale <= TEXT_MIN"
+                  class="w-6 h-6 flex items-center justify-center rounded-md border border-slate-700 bg-slate-800 text-slate-100 hover:bg-slate-700 transition-colors disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-slate-800"
+                  @click="stepTextScale(-1)"
+                >
+                  <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" d="M5 12h14" /></svg>
+                </button>
+                <input type="range" :min="TEXT_MIN" :max="TEXT_MAX" :step="TEXT_STEP" :value="textScale" title="Tamanho do texto do chat (80% a 200%)" class="w-24 h-1 accent-slate-400 cursor-pointer" @input="onTextScaleInput" />
+                <button
+                  title="Aumentar o texto (+10%)"
+                  :disabled="textScale >= TEXT_MAX"
+                  class="w-6 h-6 flex items-center justify-center rounded-md border border-slate-700 bg-slate-800 text-slate-100 hover:bg-slate-700 transition-colors disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-slate-800"
+                  @click="stepTextScale(1)"
+                >
+                  <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" d="M12 5v14M5 12h14" /></svg>
+                </button>
+              </div>
+              <button
+                :title="textScale === 100 ? 'Tamanho do texto: normal (100%)' : `Tamanho do texto: ${textScale}%. Clique para voltar ao normal (100%)`"
+                :class="[
+                  'h-[30px] w-[62px] px-2 rounded-lg border flex items-center justify-center gap-1 text-xs font-medium tabular-nums transition-colors flex-shrink-0 text-slate-100',
+                  textScale !== 100 ? 'border-slate-500 bg-slate-700 hover:bg-slate-600' : 'border-slate-700 bg-slate-800 hover:bg-slate-700'
+                ]"
+                @click="setTextScale(100)"
+              >
+                <span class="font-semibold leading-none"><span class="text-[13px]">A</span><span class="text-[10px]">a</span></span>
+                {{ textScale }}%
+              </button>
+            </div>
+          </div>
+        </div>
+
         <div
           ref="chatEl"
           class="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-4 min-h-0"
@@ -947,7 +1030,27 @@ function confirmLeave(): void {
                 </button>
               </span>
             </div>
-            <p v-if="msg.text" class="text-sm text-slate-200 leading-relaxed whitespace-pre-wrap break-words select-text">{{ msg.text }}</p>
+            <div v-if="msg.text" class="flex flex-col items-start gap-1">
+              <div
+                :class="['text-slate-200 leading-relaxed break-words select-text w-full', isLong(msg.text) && !expandedMsgs.has(msg.id) ? 'relative overflow-hidden' : '']"
+                :style="{
+                  fontSize: `${textPx}px`,
+                  ...(isLong(msg.text) && !expandedMsgs.has(msg.id) ? { maxHeight: `${Math.round(textPx * 1.65 * 8)}px` } : {})
+                }"
+              >
+                <RichMessage :content="msg.text" />
+                <!-- esmaece o fim do texto recolhido -->
+                <div
+                  v-if="isLong(msg.text) && !expandedMsgs.has(msg.id)"
+                  class="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-slate-800 to-transparent"
+                />
+              </div>
+              <button
+                v-if="isLong(msg.text)"
+                class="text-xs font-medium text-indigo-400 hover:text-indigo-300 transition-colors"
+                @click="toggleExpanded(msg.id)"
+              >{{ expandedMsgs.has(msg.id) ? 'Ver menos' : 'Ver mais' }}</button>
+            </div>
 
             <div v-if="msg.files.length" class="flex flex-wrap gap-2 mt-0.5">
               <template v-for="f in msg.files" :key="f.id">
@@ -956,7 +1059,7 @@ function confirmLeave(): void {
                 <button
                   class="relative rounded-xl overflow-hidden border border-slate-700/60 bg-slate-950 max-w-xs hover:border-indigo-500/60 transition-colors"
                   :title="`${f.name} - clique para ampliar`"
-                  @click="viewer = f"
+                  @click="openViewer(f)"
                 >
                   <img v-if="isImage(f)" :src="f.url" class="max-h-64 max-w-xs object-contain" />
                   <template v-else>
@@ -1341,6 +1444,18 @@ function confirmLeave(): void {
               <span class="flex items-center gap-1.5 px-1 text-xs text-slate-300 min-w-0">
                 <span class="w-1.5 h-1.5 rounded-full bg-red-500 flex-shrink-0" />
                 <span class="truncate">{{ s.label }}</span>
+                <!-- minha transmissão: quantas pessoas estão assistindo (0 quando ninguém abriu) -->
+                <span
+                  v-if="s.id === SELF"
+                  :class="['ml-auto flex items-center gap-1 flex-shrink-0 tabular-nums', store.viewerCount ? 'text-emerald-400' : 'text-slate-500']"
+                  :title="store.viewerCount === 1 ? '1 pessoa está assistindo a sua transmissão' : `${store.viewerCount} pessoas estão assistindo a sua transmissão`"
+                >
+                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z" />
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                  </svg>
+                  {{ store.viewerCount }}
+                </span>
               </span>
             </button>
           </div>
@@ -1360,7 +1475,6 @@ function confirmLeave(): void {
       </aside>
     </div>
 
- <CallLogPanel v-if="showLogs" @close="showLogs = false" />
     <CallStageMenu
       v-if="stageMenu && store.watching"
       :x="stageMenu.x"
@@ -1383,13 +1497,13 @@ function confirmLeave(): void {
       @close="menu = null"
     />
     <CallMediaViewer
-      v-if="viewer?.url"
-      :url="viewer.url"
-      :name="viewer.name"
-      :video="isVideo(viewer)"
-      @close="viewer = null"
-      @download="viewer && store.downloadFile(viewer)"
-      @copy="viewer?.url && copyLocalImage(viewer.url)"
+      v-if="viewerIndex !== null && gallery[viewerIndex]"
+      :items="gallery"
+      :index="viewerIndex"
+      @update:index="(i) => (viewerIndex = i)"
+      @close="viewerIndex = null"
+      @download="(i) => gallery[i] && store.downloadFile(gallery[i].file)"
+      @copy="(i) => gallery[i] && copyLocalImage(gallery[i].url)"
     />
     <ConfirmModal :open="showLeave" title="Sair da chamada?" confirm-label="Sair" @confirm="confirmLeave" @cancel="showLeave = false">
       {{

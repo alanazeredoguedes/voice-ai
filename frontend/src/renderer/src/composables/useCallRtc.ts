@@ -141,6 +141,18 @@ interface Handlers {
   onWaiting: () => void
   /** pedidos de entrada pendentes (para quem está dentro aceitar ou recusar) */
   onKnocks: (knocks: CallKnock[]) => void
+  /** o anfitrião mandou a sala para outro código (havia duas cópias da mesma sala) */
+  onMove?: (code: string) => void
+  /** alguém entrou na sala (depois de mim) */
+  onPeerJoined?: (name: string) => void
+  /** alguém abriu a minha transmissão para assistir */
+  onViewerOpened?: (name: string) => void
+  /** quantas pessoas estão com a minha transmissão aberta agora */
+  onViewers?: (count: number) => void
+  /** alguém saiu da sala */
+  onPeerLeft?: (name: string) => void
+  /** a conexão direta com alguém caiu e não voltou em alguns segundos */
+  onPeerConnectionLost?: (name: string) => void
 }
 
 interface Link {
@@ -219,6 +231,8 @@ export function useCallRtc(log: CallLogFn = () => {}) {
   let screenStream: MediaStream | null = null
   /** limites do vídeo da tela (taxa e quadros por segundo), escolhidos na qualidade da transmissão */
   let screenVideoLimits: { maxBitrate: number; maxFramerate: number } | null = null
+  /** com o fps fixo ligado, quantos quadros REAIS a captura entrega (o fps do WebRTC passa a ser o fixo) */
+  let screenCaptureProbe: (() => number) | null = null
   let localState = { sharing: false, muted: false, quality: '' }
   let watchingPeerId: string | null = null
   let screenVolume = 1
@@ -336,6 +350,11 @@ export function useCallRtc(log: CallLogFn = () => {}) {
     signal({ type: 'admit', peerId, accept })
   }
 
+  /** Anfitrião: manda quem está na sala para outro código (a cópia da mesma sala que vale). */
+  function moveRoom(code: string): void {
+    signal({ type: 'move', code })
+  }
+
   const signalingOpen = (): boolean => ws?.readyState === WebSocket.OPEN
 
   async function onSignal(msg: Record<string, any>): Promise<void> {
@@ -355,20 +374,29 @@ export function useCallRtc(log: CallLogFn = () => {}) {
         }
         break
       case 'peer-joined':
+        leftServer.delete(msg.peer?.id)
         log('info', `${msg.peer?.name} entrou na sala`)
         addPeer(msg.peer.id, msg.peer.name)
+        handlers?.onPeerJoined?.(String(msg.peer?.name ?? 'alguém'))
         break
       case 'peer-left': {
         // saiu do servidor, mas a conexão direta ainda está de pé (ex.: o túnel caiu): continua na chamada
         const link = links.get(msg.peerId)
         if (link && link.pc.connectionState === 'connected' && link.dc?.readyState === 'open') {
           log('info', `${nameOf(msg.peerId)} desconectou do servidor da sala, mas segue na chamada (conexão direta ativa)`)
+          // se a conexão direta fechar logo depois, foi uma saída normal: o aviso sonoro de "saiu" toca nessa hora
+          leftServer.add(msg.peerId)
           break
         }
         log('info', `${nameOf(msg.peerId)} saiu da sala`)
+        handlers?.onPeerLeft?.(nameOf(msg.peerId))
         dropPeer(msg.peerId)
         break
       }
+      case 'move':
+        log('info', `o anfitrião mandou entrar na sala ${msg.code} (havia duas cópias desta sala)`)
+        if (typeof msg.code === 'string') handlers?.onMove?.(msg.code)
+        break
       case 'knocks':
         handlers?.onKnocks(Array.isArray(msg.knocks) ? msg.knocks.map((k: CallKnock) => ({ id: String(k.id), name: String(k.name).slice(0, 40) })) : [])
         break
@@ -458,10 +486,45 @@ export function useCallRtc(log: CallLogFn = () => {}) {
     emitPeers()
   }
 
+  // Conexão que caiu: só avisa se não voltar em LOST_GRACE_MS (oscilações rápidas de rede não contam).
+  // Quem sai da sala chega antes pelo servidor (peer-left) e cancela este aviso em dropPeer.
+  const LOST_GRACE_MS = 6000
+  const lostTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  function cancelLost(id: string): void {
+    const t = lostTimers.get(id)
+    if (t) clearTimeout(t)
+    lostTimers.delete(id)
+  }
+  function scheduleLost(id: string, immediate = false): void {
+    if (lostTimers.has(id) && !immediate) return
+    cancelLost(id)
+    const fire = (): void => {
+      lostTimers.delete(id)
+      if (links.has(id)) handlers?.onPeerConnectionLost?.(nameOf(id))
+    }
+    if (immediate) fire()
+    else lostTimers.set(id, setTimeout(fire, LOST_GRACE_MS))
+  }
+
+  /** pessoas que saíram do servidor da sala mas ainda tinham a conexão direta aberta (o aviso de "saiu" fica para quando ela fechar) */
+  const leftServer = new Set<string>()
+
+  /** Avisa a tela quantas pessoas estão assistindo a minha transmissão (só muda quando o número muda). */
+  let lastViewers = 0
+  function emitViewers(): void {
+    const n = [...links.values()].filter((l) => l.watchingMe).length
+    if (n === lastViewers) return
+    lastViewers = n
+    log('info', `${n} ${n === 1 ? 'pessoa assistindo' : 'pessoas assistindo'} a minha transmissão`)
+    handlers?.onViewers?.(n)
+  }
+
   function dropPeer(id: string): void {
+    cancelLost(id)
     const link = links.get(id)
     if (link) {
       links.delete(id)
+      emitViewers()
       link.pc.onconnectionstatechange = null
       if (link.dc) link.dc.onclose = null
       link.pc.close()
@@ -581,6 +644,10 @@ export function useCallRtc(log: CallLogFn = () => {}) {
         link.routeLogged = true
         void logRoute(peerId, link)
       }
+      if (state === 'disconnected') scheduleLost(peerId)
+      else if (state === 'connected') cancelLost(peerId)
+      // falhou de vez: avisa já (antes de remover a pessoa da lista)
+      if (state === 'failed') scheduleLost(peerId, true)
       if (state === 'failed' || state === 'closed') dropPeer(peerId)
     }
     pc.ontrack = (e) => {
@@ -673,6 +740,10 @@ export function useCallRtc(log: CallLogFn = () => {}) {
     }
     dc.onclose = () => {
       if (links.get(peerId) === link) log('warn', `canal de mensagens com ${nameOf(peerId)} fechou`)
+      if (leftServer.delete(peerId) && links.get(peerId) === link) {
+        log('info', `${nameOf(peerId)} saiu da sala (o servidor avisou antes de a conexão direta fechar)`)
+        handlers?.onPeerLeft?.(nameOf(peerId))
+      }
       dropPeer(peerId)
     }
     dc.onmessage = (e) => {
@@ -701,8 +772,12 @@ export function useCallRtc(log: CallLogFn = () => {}) {
         if (!peer.sharing && watchingPeerId === peerId) setWatching(null)
         emitPeers()
       } else if (msg.kind === 'watch') {
-        if (link.watchingMe !== !!msg.on) log('info', `${nameOf(peerId)} ${msg.on ? 'abriu' : 'fechou'} a minha transmissão`)
+        if (link.watchingMe !== !!msg.on) {
+          log('info', `${nameOf(peerId)} ${msg.on ? 'abriu' : 'fechou'} a minha transmissão`)
+          if (msg.on) handlers?.onViewerOpened?.(nameOf(peerId))
+        }
         link.watchingMe = !!msg.on
+        emitViewers()
         void gateScreen(link)
       } else {
         handlers?.onMessage(peerId, msg)
@@ -791,7 +866,7 @@ export function useCallRtc(log: CallLogFn = () => {}) {
         if (bitrate) enc.maxBitrate = bitrate
         if (framerate) enc.maxFramerate = framerate
       })
-      // banda apertada: com 60/90 fps divide a perda entre resolução e fluidez ("balanced"); até 30 fps mantém a
+      // banda apertada: com 60 fps divide a perda entre resolução e fluidez ("balanced"); até 30 fps mantém a
       // nitidez. ("maintain-framerate", usado antes, derrubava a imagem para 320x180 em qualquer aperto.)
       if (isVideo && framerate) params.degradationPreference = framerate > 30 ? 'balanced' : 'maintain-resolution'
       try {
@@ -805,6 +880,10 @@ export function useCallRtc(log: CallLogFn = () => {}) {
         log('error', `falha ao ${active ? 'ligar' : 'desligar'} o envio da tela: ${errText(e)}`)
       }
     }
+  }
+
+  function setScreenCaptureProbe(fn: (() => number) | null): void {
+    screenCaptureProbe = fn
   }
 
   /** Tela compartilhada com todos (null = parar). Trocar de tela só substitui as faixas, sem renegociar. */
@@ -1029,7 +1108,7 @@ export function useCallRtc(log: CallLogFn = () => {}) {
             kbps: Math.round((bytes * 8) / 1000),
             limit: String(r.qualityLimitationReason ?? 'none'),
             availKbps: pair?.availableOutgoingBitrate ? Math.round(pair.availableOutgoingBitrate / 1000) : null,
-            captureFps: Math.round(src?.framesPerSecond ?? 0),
+            captureFps: screenCaptureProbe ? screenCaptureProbe() : Math.round(src?.framesPerSecond ?? 0),
             captureWidth: src?.width ?? 0,
             captureHeight: src?.height ?? 0,
             encoder: `${String(all.get(r.codecId)?.mimeType ?? '?').replace('video/', '')} · ${String(r.encoderImplementation ?? '?')}`,
@@ -1200,6 +1279,7 @@ export function useCallRtc(log: CallLogFn = () => {}) {
     connect,
     reconnect,
     answerKnock,
+    moveRoom,
     signalingOpen,
     connectedPeerIds: () => [...links].filter(([, l]) => l.pc.connectionState === 'connected').map(([id]) => id),
     disconnect,
@@ -1207,6 +1287,7 @@ export function useCallRtc(log: CallLogFn = () => {}) {
     broadcast,
     setMicTrack,
     setScreenStream,
+    setScreenCaptureProbe,
     setLocalState,
     sendFile,
     setScreenVolume,
