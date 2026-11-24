@@ -17,7 +17,14 @@ files:
 win:
   target:
     - nsis
+# atualização automática (electron-updater): o app consulta a última release deste repositório no GitHub
+publish:
+  provider: github
+  owner: alanazeredoguedes
+  repo: voice-ai
 nsis:
+  # sem espaços: o GitHub troca espaço por ponto no nome do arquivo, e o latest.yml apontaria para um nome que não existe
+  artifactName: Voice-AI-Setup-${version}.${ext}
   oneClick: false
   perMachine: false
   allowToChangeInstallationDirectory: true
@@ -28,6 +35,7 @@ linux:
     - AppImage
   category: Utility
 appImage:
+  artifactName: Voice-AI-${version}.${ext}
   # gzip, e não o xz do "compression: maximum": o AppImage descomprime o app a cada abertura, e com xz só ler
   # o Electron levava ~7 s (o arquivo fica um pouco maior, mas abre bem mais rápido)
   compression: gzip

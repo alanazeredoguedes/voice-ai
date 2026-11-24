@@ -9,6 +9,7 @@ import type { EdgeVoice, WhisperModel } from '../types'
 import HotkeyList from '../components/HotkeyList.vue'
 import WaylandHotkeyNotice from '../components/WaylandHotkeyNotice.vue'
 import SettingToggle from '../components/SettingToggle.vue'
+import { useUpdateStore } from '../stores/update'
 import SettingsCard from '../components/SettingsCard.vue'
 import StorageSettings from '../components/StorageSettings.vue'
 import ElevenLabsConfig from '../components/ElevenLabsConfig.vue'
@@ -151,6 +152,17 @@ async function setKeepOnTop(v: boolean): Promise<void> {
 }
 
 // Iniciar com o sistema (só no app instalado: Windows e AppImage do Linux)
+const update = useUpdateStore()
+const updateLabel = computed(() => {
+  const s = update.state
+  if (s.status === 'unsupported') return 'Disponível no app instalado (no modo de desenvolvimento não se aplica).'
+  if (s.status === 'checking') return 'Verificando...'
+  if (s.status === 'available') return `Nova versão ${s.newVersion} disponível: use o botão no topo do app.`
+  if (s.status === 'downloading') return `Baixando a versão ${s.newVersion}... ${s.percent}%`
+  if (s.status === 'ready') return 'Reiniciando para instalar...'
+  if (s.status === 'error') return `Não foi possível verificar: ${s.message}`
+  return 'Você está na versão mais recente.'
+})
 const autostart = ref<{ available: boolean; enabled: boolean } | null>(null)
 onMounted(async () => {
   autostart.value = (await window.electron?.ipcRenderer?.invoke('app:autostart').catch(() => null)) ?? null
@@ -247,6 +259,18 @@ onUnmounted(() => {
           :class="!autostart?.available && 'opacity-50 pointer-events-none'"
           @update:model-value="setAutostart"
         />
+        <!-- atualização do app -->
+        <div class="flex items-center justify-between gap-3 pt-1">
+          <div class="flex flex-col gap-0.5 min-w-0">
+            <span class="text-sm text-slate-200">Versão {{ update.state.version }}</span>
+            <span class="text-xs text-slate-500">{{ updateLabel }}</span>
+          </div>
+          <button
+            :disabled="['unsupported', 'checking', 'downloading', 'ready'].includes(update.state.status)"
+            class="px-3 py-1.5 rounded-lg text-xs border border-slate-700 hover:border-slate-500 text-slate-300 transition-colors disabled:opacity-50 flex-shrink-0"
+            @click="update.check()"
+          >Verificar atualizações</button>
+        </div>
         <!-- nome nas chamadas: um só para todas as salas (também dá para mudar na aba Chamada) -->
         <div class="flex flex-col gap-1.5 pt-1">
           <span class="text-sm text-slate-200">Seu nome nas chamadas</span>

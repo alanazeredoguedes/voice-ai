@@ -28,6 +28,7 @@ import { diag, initWindowDiag, watchWindow } from './windowDiag'
 import { backendTail, initSysLog, sysLog } from './sysLog'
 import { downloadCloudflared, findCloudflared, registerCallIpc } from './call'
 import { friendsGoOffline, registerFriendsIpc } from './friends'
+import { initUpdater } from './updater'
 import { OVERLAY_PROC_ENV, OverlayProcessHost, overlayNeedsSeparateProcess, runOverlayProcess } from './overlayProcess'
 
 // app instalado: 18450; dev: 18451 (os dois podem rodar juntos sem um usar o backend do outro)
@@ -1476,6 +1477,7 @@ function startMainApp(): void {
   app.whenReady().then(async () => {
     initSysLog(getDataDir(), BACKEND_URL)
     initWindowDiag(getDataDir())
+    initUpdater(() => mainWindow)
     sysLog(
       'info',
       'app',

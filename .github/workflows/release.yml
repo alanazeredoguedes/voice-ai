@@ -39,7 +39,10 @@ jobs:
       - uses: actions/upload-artifact@v5
         with:
           name: linux
-          path: frontend/dist/*.AppImage
+          # latest-linux.yml é o que o app lê para saber que há versão nova
+          path: |
+            frontend/dist/*.AppImage
+            frontend/dist/latest-linux.yml
           if-no-files-found: error
           retention-days: 3
 
@@ -71,7 +74,11 @@ jobs:
       - uses: actions/upload-artifact@v5
         with:
           name: windows
-          path: frontend/dist/*.exe
+          # latest.yml e .blockmap: o app os usa para detectar e baixar a atualização
+          path: |
+            frontend/dist/*.exe
+            frontend/dist/*.exe.blockmap
+            frontend/dist/latest.yml
           if-no-files-found: error
           retention-days: 3
 

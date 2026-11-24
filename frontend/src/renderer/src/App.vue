@@ -18,6 +18,8 @@ import SetupView from './views/SetupView.vue'
 import AppTooltip from './components/AppTooltip.vue'
 import BenchmarkView from './views/BenchmarkView.vue'
 import ImageToast from './components/ImageToast.vue'
+import UpdateBanner from './components/UpdateBanner.vue'
+import { useUpdateStore } from './stores/update'
 
 type View = 'status' | 'settings' | 'transcribe' | 'logs' | 'translate' | 'chat' | 'call'
 // páginas que não aparecem na barra lateral (abertas por um botão de outra tela)
@@ -46,6 +48,7 @@ onUnmounted(unsubShortcut)
 const call = useCallStore()
 const friends = useFriendsStore()
 void friends.init()
+void useUpdateStore().init()
 // em chamada, o código da sala vai junto (só quando já funciona para quem está de fora): o amigo pode entrar direto
 watch(
   () => [call.userId, call.name, call.inCall, call.inCall && call.codeReady ? call.code : '', call.room?.name ?? ''] as const,
@@ -102,6 +105,9 @@ function onSetupDone() {
   <div v-else class="flex h-screen bg-slate-950 text-slate-100 overflow-hidden">
     <!-- páginas abertas por um botão de outra tela mostram selecionada a tela de origem na barra (teste de desempenho: Configurações; transcrever arquivo: microfone) -->
     <Sidebar :model-value="currentView === 'benchmark' ? 'settings' : currentView === 'transcribe' ? 'status' : currentView" @update:model-value="(v) => (currentView = v)" />
+    <div class="flex-1 flex flex-col min-w-0">
+    <!-- nova versão disponível: aviso com botão de instalar (atualização dentro do próprio app) -->
+    <UpdateBanner />
     <main class="flex-1 overflow-auto p-6">
       <StatusView v-if="currentView === 'status'" />
       <SettingsView v-else-if="currentView === 'settings'" />
@@ -112,6 +118,7 @@ function onSetupDone() {
       <CallView v-else-if="currentView === 'call'" />
       <BenchmarkView v-else-if="currentView === 'benchmark'" @back="currentView = 'settings'" />
     </main>
+    </div>
   </div>
   <!-- tooltip do sistema (substitui o balão nativo dos atributos title em todo o app) -->
   <AppTooltip />
