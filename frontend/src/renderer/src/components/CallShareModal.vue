@@ -1,10 +1,12 @@
 <script setup lang="ts">
+import { useEscClose } from '../composables/useEscClose'
 import { computed, onMounted, ref } from 'vue'
 import CustomSelect from './CustomSelect.vue'
 import { useCallStore, type ShareQuality, type ShareSource } from '../stores/call'
 
 /** Escolha do que compartilhar na chamada: uma tela inteira ou uma janela, e a qualidade. */
 const emit = defineEmits<{ close: []; start: [sourceId: string, quality: ShareQuality, withAudio: boolean] }>()
+useEscClose(() => true, () => emit('close'), 'compartilhar tela')
 
 const RESOLUTIONS = [
   { id: '480', label: '480p', width: 854, height: 480 },

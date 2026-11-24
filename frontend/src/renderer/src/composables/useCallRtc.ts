@@ -21,7 +21,11 @@ export interface CallPeer {
   quality: string
   /** está com o microfone mutado */
   muted: boolean
+  /** usando o Voice AI agora: 'transcribing' (ditado), 'ai' (falando com a IA) ou '' (nada; versões antigas também) */
+  activity: PeerActivity
 }
+
+export type PeerActivity = '' | 'transcribing' | 'ai'
 
 export interface CallRoomInfo {
   id: string
@@ -96,6 +100,8 @@ export interface SignalOptions {
   hostToken?: string
   /** etiqueta da sala → prova de que já estive nela (entra sem precisar ser aceito) */
   getProof: (tag: string) => Promise<string | null>
+  /** atendi a chamada de um amigo: chave de convite de uso único (entra sem precisar ser aceito) */
+  inviteToken?: string
 }
 
 /** A entrada foi recusada por alguém de dentro da sala. */
@@ -153,6 +159,8 @@ interface Handlers {
   onPeerLeft?: (name: string) => void
   /** a conexão direta com alguém caiu e não voltou em alguns segundos */
   onPeerConnectionLost?: (name: string) => void
+  /** alguém começou a ditar ou a falar com a IA (`beep`: a pessoa quer que os outros ouçam um aviso) */
+  onPeerActivity?: (peerId: string, activity: PeerActivity, beep: boolean) => void
 }
 
 interface Link {
@@ -173,6 +181,8 @@ interface Link {
   ctx: AudioContext
   gain: GainNode
   screenGain: GainNode
+  /** ganho geral da chamada (0 = silenciada para mim) */
+  master: GainNode
   analyser: AnalyserNode
   /** medidor do som da tela recebido (antes do volume escolhido aqui) */
   screenAnalyser: AnalyserNode
@@ -233,7 +243,15 @@ export function useCallRtc(log: CallLogFn = () => {}) {
   let screenVideoLimits: { maxBitrate: number; maxFramerate: number } | null = null
   /** com o fps fixo ligado, quantos quadros REAIS a captura entrega (o fps do WebRTC passa a ser o fixo) */
   let screenCaptureProbe: (() => number) | null = null
-  let localState = { sharing: false, muted: false, quality: '' }
+  let localState = { sharing: false, muted: false, quality: '', activity: '' as PeerActivity, beep: false }
+  /** a chamada inteira silenciada para mim (vozes e som das transmissões), ex.: enquanto eu dito */
+  let callSilenced = false
+  /** desde quando cada participante está ditando / falando com a IA (para o log) */
+  const activitySince = new Map<string, number>()
+  /** participantes de quem já recebi o primeiro "state" (quem entra no meio de um ditado não toca o bip) */
+  const stateSeen = new Set<string>()
+  /** transmissão priorizando nitidez (tela parada: texto, terminal) em vez de fluidez; ver setScreenDetail */
+  let screenDetail = false
   let watchingPeerId: string | null = null
   let screenVolume = 1
   let outputDeviceId = localStorage.getItem(OUTPUT_KEY) || ''
@@ -295,7 +313,12 @@ export function useCallRtc(log: CallLogFn = () => {}) {
         joined = true
         const proof = tag ? await signalOpts.getProof(tag).catch(() => null) : null
         if (proof) log('info', 'já estive nesta sala: entrando sem precisar ser aceito')
-        socket.send(JSON.stringify({ type: 'join', peerId: localPeerId, name: myName, proof, hostToken: signalOpts.hostToken }))
+        else if (signalOpts.inviteToken) log('info', 'atendi uma chamada: entrando com a chave de convite (sem precisar ser aceito)')
+        socket.send(
+          JSON.stringify({ type: 'join', peerId: localPeerId, name: myName, proof, hostToken: signalOpts.hostToken, inviteToken: signalOpts.inviteToken })
+        )
+        // a chave de convite vale uma entrada: numa reconexão (troca de servidor da sala) ela não vai de novo
+        if (signalOpts.inviteToken) signalOpts = { ...signalOpts, inviteToken: undefined }
       }
 
       socket.onopen = () => {
@@ -482,7 +505,7 @@ export function useCallRtc(log: CallLogFn = () => {}) {
 
   function addPeer(id: string, name: string): void {
     if (peers.some((p) => p.id === id)) return
-    peers.push({ id, name, sharing: false, muted: false, quality: '' })
+    peers.push({ id, name, sharing: false, muted: false, quality: '', activity: '' })
     emitPeers()
   }
 
@@ -565,10 +588,14 @@ export function useCallRtc(log: CallLogFn = () => {}) {
     limiter.attack.value = 0.002
     limiter.release.value = 0.2
     const destination = ctx.createMediaStreamDestination()
+    // ganho geral: silencia a chamada inteira para mim (ex.: enquanto eu dito) sem mexer no volume de cada um
+    const master = ctx.createGain()
+    master.gain.value = callSilenced ? 0 : 1
     analyser.connect(gain)
     gain.connect(limiter)
     screenGain.connect(limiter)
-    limiter.connect(destination)
+    limiter.connect(master)
+    master.connect(destination)
     // sai por um <audio> para permitir escolher o dispositivo de saída (setSinkId)
     const output = hiddenAudio(destination.stream, false)
     if (outputDeviceId) void (output as SinkAudio).setSinkId?.(outputDeviceId).catch(() => {})
@@ -589,6 +616,7 @@ export function useCallRtc(log: CallLogFn = () => {}) {
       ctx,
       gain,
       screenGain,
+      master,
       analyser,
       screenAnalyser,
       gating: Promise.resolve(),
@@ -766,6 +794,24 @@ export function useCallRtc(log: CallLogFn = () => {}) {
         }
         if (peer.sharing !== !!msg.sharing) log('info', `${peer.name} ${msg.sharing ? 'começou' : 'parou'} a transmitir a tela`)
         if (peer.muted !== !!msg.muted) log('info', `${peer.name} ${msg.muted ? 'mutou' : 'desmutou'} o microfone`)
+        const activity: PeerActivity = msg.activity === 'transcribing' || msg.activity === 'ai' ? msg.activity : ''
+        if (peer.activity !== activity) {
+          if (activity) {
+            activitySince.set(peerId, Date.now())
+            log(
+              'info',
+              `[voice ai] ${peer.name} ${stateSeen.has(peerId) ? 'começou' : 'já estava'} a ${activity === 'ai' ? 'falar com a IA' : 'ditar (transcrição)'} ` +
+                `(microfone ${msg.muted ? 'mutado' : 'ABERTO'}; bip ${msg.beep === true ? 'pedido' : 'desligado por quem dita'}${stateSeen.has(peerId) ? '' : '; sem bip: acabei de me conectar'})`
+            )
+          } else {
+            const since = activitySince.get(peerId)
+            activitySince.delete(peerId)
+            log('info', `[voice ai] ${peer.name} terminou de ${peer.activity === 'ai' ? 'falar com a IA' : 'ditar'}${since ? ` (${((Date.now() - since) / 1000).toFixed(1)} s)` : ''}`)
+          }
+          if (activity && stateSeen.has(peerId)) handlers?.onPeerActivity?.(peerId, activity, msg.beep === true)
+        }
+        stateSeen.add(peerId)
+        peer.activity = activity
         peer.sharing = !!msg.sharing
         peer.muted = !!msg.muted
         peer.quality = typeof msg.quality === 'string' ? msg.quality.slice(0, 40) : ''
@@ -855,10 +901,15 @@ export function useCallRtc(log: CallLogFn = () => {}) {
       const isVideo = sender === link.screenVideoSender
       const bitrate = isVideo ? screenVideoLimits?.maxBitrate : SCREEN_AUDIO_BITRATE
       const framerate = isVideo ? screenVideoLimits?.maxFramerate : undefined
+      // banda apertada: com 60 fps divide a perda entre resolução e fluidez ("balanced"); até 30 fps, ou com a
+      // tela parada (modo automático em nitidez), mantém a resolução. ("maintain-framerate", usado antes,
+      // derrubava a imagem para 320x180 em qualquer aperto.)
+      const pref: RTCDegradationPreference = framerate && framerate > 30 && !screenDetail ? 'balanced' : 'maintain-resolution'
       if (
         params.encodings.every(
           (enc) => enc.active === active && (!bitrate || enc.maxBitrate === bitrate) && (!framerate || enc.maxFramerate === framerate)
-        )
+        ) &&
+        (!isVideo || !framerate || params.degradationPreference === pref)
       )
         continue
       params.encodings.forEach((enc) => {
@@ -866,11 +917,17 @@ export function useCallRtc(log: CallLogFn = () => {}) {
         if (bitrate) enc.maxBitrate = bitrate
         if (framerate) enc.maxFramerate = framerate
       })
-      // banda apertada: com 60 fps divide a perda entre resolução e fluidez ("balanced"); até 30 fps mantém a
-      // nitidez. ("maintain-framerate", usado antes, derrubava a imagem para 320x180 em qualquer aperto.)
-      if (isVideo && framerate) params.degradationPreference = framerate > 30 ? 'balanced' : 'maintain-resolution'
+      const prefBefore = params.degradationPreference
+      if (isVideo && framerate) params.degradationPreference = pref
       try {
         await sender.setParameters(params)
+        if (isVideo && framerate && prefBefore !== pref && active)
+          log(
+            'info',
+            `[modo automático] envio da tela para ${nameOf([...links].find(([, l]) => l === link)?.[0] ?? '')}: ` +
+              `${pref === 'maintain-resolution' ? 'mantém a resolução (nitidez)' : 'divide a perda entre resolução e fps (fluidez)'} ` +
+              `[degradationPreference ${prefBefore ?? 'não informado'} → ${pref}]`
+          )
       } catch (e) {
         // os parâmetros mudaram no meio (renegociação): lê de novo e tenta uma vez mais
         if (retry && e instanceof DOMException && e.name === 'InvalidModificationError') {
@@ -880,6 +937,35 @@ export function useCallRtc(log: CallLogFn = () => {}) {
         log('error', `falha ao ${active ? 'ligar' : 'desligar'} o envio da tela: ${errText(e)}`)
       }
     }
+  }
+
+  /** Modo da transmissão: nitidez (mantém a resolução; tela parada) ou o padrão do fps escolhido. Aplica ao vivo. */
+  function setScreenDetail(on: boolean): void {
+    if (screenDetail === on) return
+    screenDetail = on
+    const sending = [...links.values()].filter((l) => l.watchingMe).length
+    log('info', `[modo automático] aplicando ${on ? 'nitidez' : 'fluidez'} no envio (${sending} pessoa(s) assistindo; quem não assiste recebe ao abrir)`)
+    for (const link of links.values()) void gateScreen(link)
+  }
+
+  /** Silencia (ou devolve) a chamada inteira para mim: vozes e som das transmissões, com uma rampa curta. */
+  function setCallSilenced(on: boolean): void {
+    if (callSilenced === on) return
+    callSilenced = on
+    log('info', on ? `[voice ai] chamada silenciada para mim (vozes e som da transmissão de ${links.size} conexão(ões))` : '[voice ai] som da chamada devolvido (vozes e transmissão)')
+    for (const link of links.values()) {
+      const g = link.master.gain
+      g.cancelScheduledValues(link.ctx.currentTime)
+      g.setTargetAtTime(on ? 0 : 1, link.ctx.currentTime, on ? 0.03 : 0.12)
+      if (link.ctx.state === 'suspended') void link.ctx.resume().catch(() => {})
+    }
+  }
+
+  /** Registra no servidor da sala uma chave de convite (quem atender a minha chamada entra direto). */
+  function registerInviteToken(token: string): boolean {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false
+    ws.send(JSON.stringify({ type: 'invite-token', token }))
+    return true
   }
 
   function setScreenCaptureProbe(fn: (() => number) | null): void {
@@ -1270,7 +1356,11 @@ export function useCallRtc(log: CallLogFn = () => {}) {
     peers = []
     micTrack = null
     screenStream = null
-    localState = { sharing: false, muted: false, quality: '' }
+    localState = { sharing: false, muted: false, quality: '', activity: '', beep: false }
+    callSilenced = false
+    screenDetail = false
+    activitySince.clear()
+    stateSeen.clear()
     watchingPeerId = null
   }
 
@@ -1288,6 +1378,9 @@ export function useCallRtc(log: CallLogFn = () => {}) {
     setMicTrack,
     setScreenStream,
     setScreenCaptureProbe,
+    setScreenDetail,
+    setCallSilenced,
+    registerInviteToken,
     setLocalState,
     sendFile,
     setScreenVolume,

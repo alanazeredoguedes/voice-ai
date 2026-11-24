@@ -217,6 +217,29 @@ onUnmounted(() => {
         </div>
       </div>
 
+      <div class="flex flex-col gap-2">
+        <button class="flex items-center justify-between gap-3 text-left" @click="store.setDictationSilence(!store.dictationSilence)">
+          <span class="flex flex-col">
+            <span class="text-sm text-slate-200">Silenciar a chamada enquanto eu dito</span>
+            <span class="text-[11px] text-slate-500">Ao transcrever ou falar com a IA pelo atalho, você deixa de ouvir a chamada e a transmissão até soltar o atalho (a resposta da IA não silencia nada)</span>
+          </span>
+          <span :class="['relative inline-flex items-center w-8 h-[18px] rounded-full transition-colors flex-shrink-0', store.dictationSilence ? 'bg-indigo-600' : 'bg-slate-700']">
+            <span :class="['inline-block w-3.5 h-3.5 rounded-full bg-white transition-transform', store.dictationSilence ? 'translate-x-4' : 'translate-x-0.5']" />
+          </span>
+        </button>
+      </div>
+      <div class="flex flex-col gap-2">
+        <button class="flex items-center justify-between gap-3 text-left" @click="store.setDictationBeep(!store.dictationBeep)">
+          <span class="flex flex-col">
+            <span class="text-sm text-slate-200">Avisar os outros com um bip</span>
+            <span class="text-[11px] text-slate-500">Quando você começa a transcrever ou falar com a IA, quem está na chamada ouve um bip curto (o aviso "transcrevendo…" aparece embaixo do seu nome de qualquer jeito)</span>
+          </span>
+          <span :class="['relative inline-flex items-center w-8 h-[18px] rounded-full transition-colors flex-shrink-0', store.dictationBeep ? 'bg-indigo-600' : 'bg-slate-700']">
+            <span :class="['inline-block w-3.5 h-3.5 rounded-full bg-white transition-transform', store.dictationBeep ? 'translate-x-4' : 'translate-x-0.5']" />
+          </span>
+        </button>
+      </div>
+
       <div v-if="store.isLinux" class="flex flex-col gap-1">
         <button class="flex items-center justify-between gap-3 text-left disabled:opacity-60" :disabled="busyEcho" @click="toggleEcho">
           <span class="flex flex-col">

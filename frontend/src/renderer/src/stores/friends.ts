@@ -4,6 +4,7 @@
  */
 import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
+import { syslog } from '../utils/syslog'
 
 export type PresenceState = 'online' | 'away' | 'in-call' | 'offline'
 
@@ -15,16 +16,35 @@ export interface Friend {
   lastSeen: number
   unread: number
   addedAt: number
+  /** em chamada: código e nome da sala dele ('' = fora de chamada ou versão antiga) */
+  code: string
+  roomName: string
 }
 
 export interface FriendMessage {
   id: string
   from: string
-  kind: 'msg' | 'invite'
+  /** reply = resposta a um convite (aceitou, recusou, não atendeu): aparece como linha do sistema */
+  kind: 'msg' | 'invite' | 'reply'
   text: string
   ts: number
   code?: string
   roomName?: string
+  inviteId?: string
+  status?: 'accepted' | 'declined' | 'missed' | 'cancelled'
+  /** convite: chave de uso único para entrar direto (vale 3 min) */
+  token?: string
+}
+
+/** chamada recebida (convite de um amigo que acabou de chegar): a tela toca e mostra Entrar / Recusar */
+export interface IncomingRing {
+  friendId: string
+  name: string
+  inviteId: string
+  code: string
+  roomName: string
+  /** chave de convite: atendendo, entro direto (sem alguém de dentro precisar aceitar) */
+  token: string
 }
 
 /** pedido de amizade recebido dentro da chamada */
@@ -74,6 +94,22 @@ export const useFriendsStore = defineStore('friends', () => {
   let started = false
   /** painel de amigos (à esquerda na tela de Chamada) aberto ou recolhido; lembrado entre aberturas do app */
   const panelOpen = ref(readPanelOpen())
+  /**
+   * Chamada que estou fazendo para um amigo (o computador dele está tocando). Fica aqui, e não na tela da conversa,
+   * para o "Cancelar" funcionar de qualquer lugar (ex.: chamei do lobby e o app entrou na sala nova).
+   */
+  const outgoingCall = ref<{
+    friendId: string
+    name: string
+    /** id do convite ('' enquanto a sala ainda está abrindo) */
+    inviteId: string
+    since: number
+    phase: 'opening' | 'ringing'
+    /** a sala foi aberta só para esta chamada (cancelar sem ninguém dentro fecha a sala) */
+    openedRoom: boolean
+  } | null>(null)
+  /** dentro da chamada: a conversa com o amigo selecionado está aberta no lugar do chat da sala */
+  const callChatOpen = ref(false)
   watch(panelOpen, (v) => {
     try {
       localStorage.setItem(PANEL_KEY, v ? '1' : '0')
@@ -100,6 +136,13 @@ export const useFriendsStore = defineStore('friends', () => {
   async function init(): Promise<void> {
     if (started) return
     started = true
+    // o amigo respondeu ao meu convite: para o "chamando…"
+    ipc().on('friends:reply', (_e, r: { friendId: string; inviteId: string; status: string }) => {
+      const oc = outgoingCall.value
+      if (!oc || oc.inviteId !== r?.inviteId) return
+      syslog('info', 'amigos', `chamada para ${oc.name} terminou: ${r.status === 'accepted' ? 'aceitou' : r.status === 'declined' ? 'recusou' : 'não atendeu'} depois de ${((Date.now() - oc.since) / 1000).toFixed(1)} s`)
+      outgoingCall.value = null
+    })
     ipc().on('friends:changed', (_e, friendId: string | null) => {
       void refresh()
       if (!friendId || friendId === selectedId.value) void loadMessages()
@@ -109,7 +152,7 @@ export const useFriendsStore = defineStore('friends', () => {
     await refresh()
   }
 
-  function setProfile(p: { userId: string; name: string; inCall: boolean }): void {
+  function setProfile(p: { userId: string; name: string; inCall: boolean; code: string; roomName: string }): void {
     void ipc().invoke('friends:profile', { ...p })
   }
 
@@ -136,9 +179,32 @@ export const useFriendsStore = defineStore('friends', () => {
     await refresh()
   }
 
-  async function send(id: string, m: { kind: 'msg' | 'invite'; text?: string; code?: string; roomName?: string }): Promise<string> {
-    const res = (await ipc().invoke('friends:send', id, { ...m })) as { ok: true } | { ok: false; error: string }
-    return res.ok ? '' : res.error
+  async function send(
+    id: string,
+    m: {
+      kind: 'msg' | 'invite' | 'reply'
+      text?: string
+      code?: string
+      roomName?: string
+      inviteId?: string
+      status?: 'accepted' | 'declined' | 'missed' | 'cancelled'
+    }
+  ): Promise<string> {
+    return (await sendWithId(id, m)).error
+  }
+
+  /** Envia e devolve também o id da mensagem (o convite precisa dele para poder ser cancelado). */
+  async function sendWithId(
+    id: string,
+    m: { kind: 'msg' | 'invite' | 'reply'; text?: string; code?: string; roomName?: string; inviteId?: string; status?: string; token?: string }
+  ): Promise<{ error: string; id: string }> {
+    const res = (await ipc().invoke('friends:send', id, { ...m })) as { ok: true; id: string } | { ok: false; error: string }
+    return res.ok ? { error: '', id: res.id } : { error: res.error, id: '' }
+  }
+
+  /** apaga uma mensagem da conversa (só neste computador) */
+  async function deleteMessage(id: string, msgId: string): Promise<void> {
+    await ipc().invoke('friends:delete-msg', id, msgId)
   }
 
   /** segredo novo (64 hex) para o tópico de um par de amigos */
@@ -156,6 +222,8 @@ export const useFriendsStore = defineStore('friends', () => {
     requests,
     outgoing,
     panelOpen,
+    outgoingCall,
+    callChatOpen,
     unreadTotal,
     onlineCount,
     isFriend,
@@ -167,6 +235,8 @@ export const useFriendsStore = defineStore('friends', () => {
     add,
     remove,
     send,
+    sendWithId,
+    deleteMessage,
     newPairSecret
   }
 })

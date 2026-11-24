@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { useEscClose } from '../composables/useEscClose'
 import axios from 'axios'
 import { benchmarkAudioUrl, cancelBenchmark, getBenchmarkInfo, runBenchmark } from '../api'
 import { onWsMessage } from '../api/ws'
@@ -284,6 +285,7 @@ const sortedCombos = computed(() => {
 // ---------- destaques: clicar abre a explicação ----------
 type HighlightKind = 'fastest' | 'recommended' | 'accurate'
 const openHighlight = ref<HighlightKind | null>(null)
+useEscClose(() => !!openHighlight.value, () => (openHighlight.value = null), 'explicação do destaque')
 const highlightCombo = computed(() =>
   openHighlight.value === 'fastest' ? fastest.value : openHighlight.value === 'accurate' ? accurate.value : balanced.value
 )
@@ -389,6 +391,7 @@ const highlightText = computed<string[]>(() => {
 
 const expanded = ref<string | null>(null)
 const selectedTest = ref<BenchmarkTest | null>(null)
+useEscClose(() => !!selectedTest.value, () => (selectedTest.value = null), 'texto do teste')
 const selectedResult = computed(() => (selectedTest.value ? job.value?.results[selectedTest.value.test_id] : null))
 
 function comboLabel(c: Combo): string {

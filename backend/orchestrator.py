@@ -352,6 +352,12 @@ class Orchestrator:
             self.hotkey.resume()
 
     def _on_state_change(self, state: str) -> None:
+        # a tela precisa saber, já no começo da gravação, se é ditado ou conversa com a IA
+        # (a chamada mostra "transcrevendo…" ou "falando com a IA…" para os outros)
+        if state == "recording":
+            mode = "ai" if self._mode == "ai" else "transcription"
+            print(f"[orchestrator] gravação começou (modo {mode}): avisando a tela (a chamada mostra o aviso aos outros)", flush=True)
+            self.state.emit({"type": "recording_mode", "mode": mode})
         self.state.set_state(state)
         if state == "recording" and self.settings.get("sound_recording", True):
             sound_start()

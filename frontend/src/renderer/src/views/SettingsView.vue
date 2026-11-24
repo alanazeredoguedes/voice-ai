@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
+import { useEscClose } from '../composables/useEscClose'
 import { useSettingsStore } from '../stores/settings'
 import { useStatusStore } from '../stores/status'
 import { getEdgeVoices, getEngineStatus, getWhisperModels, downloadWhisperModel, deleteWhisperModel, type EngineStatus } from '../api'
@@ -24,6 +25,7 @@ const UPLOAD_LIMITS = [1, 2, 3, 5, 10, 15, 20].map((v) => ({
   description: v === 2 ? 'Padrão' : undefined
 }))
 import ClaudeUsageCard from '../components/ClaudeUsageCard.vue'
+import CallNameEditor from '../components/CallNameEditor.vue'
 
 const store = useSettingsStore()
 const statusStore = useStatusStore()
@@ -181,6 +183,7 @@ const claudeAccountText = computed(() => {
 })
 const claudeWaiting = ref(false)
 const confirmSwitch = ref(false)
+useEscClose(() => confirmSwitch.value, () => (confirmSwitch.value = false), 'trocar a conta Claude')
 
 function confirmSwitchAccount(): void {
   confirmSwitch.value = false
@@ -244,6 +247,12 @@ onUnmounted(() => {
           :class="!autostart?.available && 'opacity-50 pointer-events-none'"
           @update:model-value="setAutostart"
         />
+        <!-- nome nas chamadas: um só para todas as salas (também dá para mudar na aba Chamada) -->
+        <div class="flex flex-col gap-1.5 pt-1">
+          <span class="text-sm text-slate-200">Seu nome nas chamadas</span>
+          <span class="text-xs text-slate-500">Como os outros veem você em todas as salas e na lista de amigos.</span>
+          <div class="max-w-sm"><CallNameEditor /></div>
+        </div>
       </SettingsCard>
 
       <!-- Atalhos -->

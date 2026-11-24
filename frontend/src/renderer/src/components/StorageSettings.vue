@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useEscClose } from '../composables/useEscClose'
 import { clearAllSpeechCache, clearChatSpeechCache, deleteWhisperModel, getStorage, getStorageLibraries, removeTranslatePackage, deleteAllFileTranslations } from '../api'
 import { useSettingsStore } from '../stores/settings'
 import { useChatStore } from '../stores/chat'
@@ -72,6 +73,7 @@ const translationPackages = computed(() =>
 
 // ---------- bibliotecas: o que ocupa o espaço ----------
 const libsOpen = ref(false)
+useEscClose(() => libsOpen.value, () => (libsOpen.value = false), 'o que ocupa as bibliotecas')
 const libs = ref<LibraryUsage[] | null>(null)
 const libsError = ref('')
 async function openLibraries(): Promise<void> {

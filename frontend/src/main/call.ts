@@ -139,6 +139,12 @@ let httpServer: Server | null = null
 let signalPort = 0
 /** só quem criou o servidor (este processo) sabe: identifica o anfitrião na hora de entrar */
 let hostToken = ''
+/**
+ * Chaves de convite (amigos beta): quem está na sala e liga para um amigo registra uma chave de uso único; quem
+ * atende entra com ela direto, sem alguém precisar aceitar. Valem 3 minutos.
+ */
+const inviteTokens = new Map<string, { expires: number; by: string }>()
+const INVITE_TOKEN_MS = 3 * 60_000
 let hostPeerId = ''
 const peers = new Map<string, SignalPeer>()
 /** sala servida: quem entra recebe o id (para guardar o histórico no lugar certo) e o nome */
@@ -190,6 +196,7 @@ function onHttp(req: IncomingMessage, res: ServerResponse): void {
 function startSignaling(roomInfo: { id: string; name: string }): Promise<number> {
   room = roomInfo
   hostToken = randomBytes(16).toString('hex')
+  inviteTokens.clear()
   hostPeerId = ''
   return new Promise((resolve, reject) => {
     const server = createServer(onHttp)
@@ -218,11 +225,22 @@ function startSignaling(roomInfo: { id: string; name: string }): Promise<number>
           const name = String(msg.name ?? 'Convidado').slice(0, 40)
           const isHost = typeof msg.hostToken === 'string' && msg.hostToken === hostToken
           const member = !!room.id && msg.proof === proofFor(room.id)
+          // atendeu a chamada de alguém de dentro: a chave de convite vale uma vez e só até vencer
+          let invitedBy = ''
+          if (typeof msg.inviteToken === 'string' && msg.inviteToken) {
+            const t = inviteTokens.get(msg.inviteToken)
+            inviteTokens.delete(msg.inviteToken)
+            if (t && t.expires > Date.now()) invitedBy = t.by
+            else mainLog('info', `[servidor da sala] "${name}" trouxe uma chave de convite ${t ? 'vencida' : 'desconhecida'}: vai pedir para entrar`)
+          }
           peers.set(myId, { ws: socket, name, admitted: false })
           if (isHost) hostPeerId = myId
           // ninguém dentro para aceitar (não deveria acontecer: o anfitrião entra primeiro): entra direto
-          if (isHost || member || !admittedPeers().length) {
-            mainLog('info', `[servidor da sala] "${name}" ${isHost ? 'é quem hospeda' : member ? 'já esteve na sala: entrada liberada' : 'entrou'}`)
+          if (isHost || member || invitedBy || !admittedPeers().length) {
+            mainLog(
+              'info',
+              `[servidor da sala] "${name}" ${isHost ? 'é quem hospeda' : member ? 'já esteve na sala: entrada liberada' : invitedBy ? `atendeu a chamada de "${invitedBy}": entrada liberada` : 'entrou'}`
+            )
             admit(myId)
           } else {
             mainLog('info', `[servidor da sala] "${name}" pediu para entrar: aguardando alguém aceitar`)
@@ -239,6 +257,16 @@ function startSignaling(roomInfo: { id: string; name: string }): Promise<number>
           const others = admittedPeers().filter(([pid]) => pid !== myId)
           mainLog('info', `[servidor da sala] "${me.name}" (anfitrião) mandou ${others.length} pessoa(s) para a sala ${msg.code}: há outra cópia da mesma sala, que vale no lugar desta`)
           for (const [, p] of others) sendTo(p.ws, { type: 'move', code: msg.code })
+          return
+        }
+        // alguém de dentro ligou para um amigo: registra a chave de convite (uso único, vale 3 min)
+        if (msg.type === 'invite-token') {
+          if (typeof msg.token !== 'string' || !/^[0-9a-f]{32}$/.test(msg.token)) return
+          const now = Date.now()
+          for (const [k, v] of inviteTokens) if (v.expires <= now) inviteTokens.delete(k)
+          if (inviteTokens.size >= 50) return
+          inviteTokens.set(msg.token, { expires: now + INVITE_TOKEN_MS, by: me.name })
+          mainLog('info', `[servidor da sala] "${me.name}" ligou para alguém: chave de convite registrada (vale ${INVITE_TOKEN_MS / 60_000} min, uma entrada)`)
           return
         }
         // alguém de dentro aceitou ou recusou um pedido de entrada
@@ -670,6 +698,15 @@ export function registerCallIpc(getDataDir: () => string): void {
       mainLog('warn', `[ponto de encontro] consulta falhou: ${e instanceof Error ? e.message : e}`)
       return null
     }
+  })
+
+  /** A sala que eu hospedo foi renomeada: quem entrar depois recebe o nome novo. */
+  ipcMain.handle('call:room-rename', (_e, name: string) => {
+    const clean = String(name ?? '').trim().slice(0, 80)
+    if (!clean || !room.id) return false
+    mainLog('info', `[servidor da sala] sala renomeada: "${room.name}" → "${clean}" (vale para quem entrar daqui em diante)`)
+    room.name = clean
+    return true
   })
 
   /** Prova de que já estive na sala com esta etiqueta (null = nunca estive). */

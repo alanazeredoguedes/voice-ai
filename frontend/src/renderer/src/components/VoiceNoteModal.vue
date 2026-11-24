@@ -10,6 +10,7 @@
  *   e emite `done` quando termina. Cancelar aborta a requisição (o backend encerra a chamada ao Claude).
  */
 import { nextTick, onMounted, onUnmounted, ref, computed } from 'vue'
+import { useEscClose } from '../composables/useEscClose'
 import { transcribeVoiceNote } from '../api'
 
 const props = defineProps<{
@@ -181,19 +182,20 @@ function cancel(): void {
   emit('close')
 }
 
-function onKey(e: KeyboardEvent): void {
-  if (e.key !== 'Escape') return
-  e.stopPropagation()
-  if (step.value === 'running') cancelRun()
-  else cancel()
-}
+// ESC na mesma fila dos outros modais: aberta por cima do formulário do chat, fecha só ela
+useEscClose(
+  () => true,
+  () => {
+    if (step.value === 'running') cancelRun()
+    else cancel()
+  },
+  'nota de voz'
+)
 
 onMounted(() => {
-  window.addEventListener('keydown', onKey, true)
   void start()
 })
 onUnmounted(() => {
-  window.removeEventListener('keydown', onKey, true)
   discarded = true
   ctrl?.abort()
   stopClock()

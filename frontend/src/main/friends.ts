@@ -40,6 +40,8 @@ interface Friend {
   presence: string
   addedAt: number
   unread: number
+  /** mensagens que apaguei (o ntfy.sh guarda 12 h: sem isto, voltariam na próxima consulta) */
+  deleted?: string[]
 }
 
 interface State {
@@ -52,9 +54,15 @@ export interface FriendMessage {
   id: string
   /** userId de quem mandou */
   from: string
-  kind: 'msg' | 'invite'
+  /** reply = resposta a um convite (aceitou, recusou, não atendeu) */
+  kind: 'msg' | 'invite' | 'reply'
   text: string
   ts: number
+  /** convite: chave de uso único para entrar direto na sala (sem alguém precisar aceitar) */
+  token?: string
+  /** reply: a qual convite e o que aconteceu */
+  inviteId?: string
+  status?: 'accepted' | 'declined' | 'missed' | 'cancelled'
   /** convite: código da sala e nome */
   code?: string
   roomName?: string
@@ -63,6 +71,9 @@ export interface FriendMessage {
 interface Presence {
   state: PresenceState
   name: string
+  /** em chamada: código e nome da sala (para o amigo poder entrar direto) */
+  code: string
+  roomName: string
   /** horário do ntfy.sh (s) */
   sTime: number
 }
@@ -70,7 +81,7 @@ interface Presence {
 let getDataDir: () => string = () => ''
 let state: State = { presence: '', friends: [] }
 const presence = new Map<string, Presence>()
-let me = { userId: '', name: '', inCall: false }
+let me = { userId: '', name: '', inCall: false, code: '', roomName: '' }
 /** amigo com a conversa aberta na tela (não notifica nem conta como não lida) */
 let viewing = ''
 let getWindow: () => BrowserWindow | null = () => null
@@ -195,7 +206,7 @@ function handleLine(byTopic: Map<string, Route>, line: string, live: boolean): v
   }
   const sTime = Number(ev.time) || 0
   if (route.kind === 'presence') onPresence(route.friendId, data, sTime, live)
-  else onPairMessage(route.friendId, data, live)
+  else onPairMessage(route.friendId, data, live, sTime)
 }
 
 function onPresence(friendId: string, data: Record<string, unknown>, sTime: number, live: boolean): void {
@@ -203,10 +214,16 @@ function onPresence(friendId: string, data: Record<string, unknown>, sTime: numb
   if (st !== 'online' && st !== 'away' && st !== 'in-call' && st !== 'offline') return
   const old = presence.get(friendId)
   if (old && old.sTime > sTime) return // mais antiga que a que já tenho
-  presence.set(friendId, { state: st, name: String(data.name ?? '').slice(0, 40), sTime })
+  const code = st === 'in-call' && typeof data.code === 'string' && /^[a-z0-9]+(-[a-z0-9]+)+$/.test(data.code) ? data.code : ''
+  const roomName = code ? String(data.roomName ?? '').slice(0, 80) : ''
+  presence.set(friendId, { state: st, name: String(data.name ?? '').slice(0, 40), sTime, code, roomName })
   const age = Math.round(serverNow() - sTime)
-  if (!old || old.state !== st)
-    flog('info', `status de ${who(friendId)}: ${st}${live ? '' : ` (último sinal há ${Math.max(0, Math.round(age / 60))} min)`}`)
+  if (!old || old.state !== st || old.code !== code)
+    flog(
+      'info',
+      `status de ${who(friendId)}: ${st}${code ? ` na sala "${roomName}" (código ${code})` : st === 'in-call' ? ' (sala sem código informado)' : ''}` +
+        `${live ? '' : ` (último sinal há ${Math.max(0, Math.round(age / 60))} min)`}`
+    )
   else flog('debug', `sinal de ${who(friendId)}: continua ${st}`)
   const f = state.friends.find((x) => x.id === friendId)
   const name = String(data.name ?? '').trim().slice(0, 40)
@@ -217,9 +234,16 @@ function onPresence(friendId: string, data: Record<string, unknown>, sTime: numb
   changed()
 }
 
-function onPairMessage(friendId: string, data: Record<string, unknown>, live: boolean): void {
+/** convite com até isso de idade (s, pelo relógio do ntfy.sh) ainda faz o computador tocar */
+const RING_MAX_AGE_S = 90
+/** respostas a um convite; "cancelled" vem de quem chamou (desistiu antes de a pessoa atender) */
+const REPLY_STATUS = ['accepted', 'declined', 'missed', 'cancelled'] as const
+const REPLY_TEXT: Record<string, string> = { accepted: 'aceitou', declined: 'recusou', missed: 'não atendeu', cancelled: 'cancelou' }
+
+function onPairMessage(friendId: string, data: Record<string, unknown>, live: boolean, sTime: number): void {
   const kind = data.kind
-  if ((kind !== 'msg' && kind !== 'invite') || typeof data.id !== 'string' || !SAFE_ID.test(data.id)) return
+  if ((kind !== 'msg' && kind !== 'invite' && kind !== 'reply') || typeof data.id !== 'string' || !SAFE_ID.test(data.id)) return
+  if (state.friends.find((x) => x.id === friendId)?.deleted?.includes(data.id)) return // apaguei: não volta
   const msg: FriendMessage = {
     id: data.id,
     from: String(data.from ?? '').slice(0, 64),
@@ -231,9 +255,33 @@ function onPairMessage(friendId: string, data: Record<string, unknown>, live: bo
     if (typeof data.code !== 'string' || !/^[a-z0-9]+(-[a-z0-9]+)+$/.test(data.code)) return
     msg.code = data.code
     msg.roomName = String(data.roomName ?? '').slice(0, 80)
+    if (typeof data.token === 'string' && /^[0-9a-f]{32}$/.test(data.token)) msg.token = data.token
+  }
+  if (kind === 'reply') {
+    const st = REPLY_STATUS.find((x) => x === data.status)
+    if (!st || typeof data.inviteId !== 'string' || !SAFE_ID.test(data.inviteId)) return
+    msg.status = st
+    msg.inviteId = data.inviteId
   }
   const chat = loadChat(friendId)
   if (chat.some((m) => m.id === msg.id)) return
+  if (kind === 'reply') {
+    // resposta a um convite: entra na conversa como linha do sistema, sem notificação e sem contar como não lida
+    chat.push(msg)
+    chat.sort((a, b) => a.ts - b.ts)
+    writeJson(chatFile(friendId), chat.slice(-CHAT_LIMIT))
+    if (msg.from !== me.userId && msg.status === 'cancelled') {
+      // quem me chamou desistiu: a tela para de tocar (se ainda estiver tocando)
+      flog('info', `${who(friendId)} cancelou a chamada que estava fazendo para mim${live ? '' : ' (soube agora, ao abrir o app)'}`)
+      const w = getWindow()
+      if (w && !w.isDestroyed()) w.webContents.send('friends:ring-cancel', { friendId, inviteId: msg.inviteId })
+    } else if (msg.from !== me.userId) {
+      flog('info', `${who(friendId)} ${REPLY_TEXT[msg.status!]} o meu convite para a chamada${live ? '' : ' (soube agora, ao abrir o app)'}`)
+      const w = getWindow()
+      if (w && !w.isDestroyed()) w.webContents.send('friends:reply', { friendId, inviteId: msg.inviteId, status: msg.status })
+    }
+    return changed(friendId)
+  }
   if (msg.from !== me.userId)
     flog(
       'info',
@@ -244,6 +292,15 @@ function onPairMessage(friendId: string, data: Record<string, unknown>, live: bo
   writeJson(chatFile(friendId), chat.slice(-CHAT_LIMIT))
   const f = state.friends.find((x) => x.id === friendId)
   if (!f || msg.from === me.userId) return changed(friendId)
+  // convite que acabou de chegar: a tela mostra "chamada recebida" e toca (em qualquer aba, mesmo em outra chamada)
+  if (msg.kind === 'invite') {
+    const age = Math.round(serverNow() - sTime)
+    const w = getWindow()
+    if (live && age <= RING_MAX_AGE_S && w && !w.isDestroyed()) {
+      flog('info', `tocando a chamada de ${who(friendId)} na tela (convite de ${age} s atrás)`)
+      w.webContents.send('friends:ring', { friendId, name: f.name, inviteId: msg.id, code: msg.code, roomName: msg.roomName, token: msg.token ?? '' })
+    } else flog('info', `convite de ${who(friendId)} não toca: ${live ? `chegou com ${age} s de atraso` : 'chegou enquanto o app estava fechado'}`)
+  }
   const win = getWindow()
   const looking = viewing === friendId && !!win && win.isVisible() && win.isFocused()
   if (!looking) {
@@ -348,7 +405,7 @@ async function listen(byTopic: Map<string, Route>, ctrl: AbortController): Promi
 // ------------------------------------------------------------------ minha presença
 
 let profileTimer: ReturnType<typeof setTimeout> | null = null
-let published: { state: PresenceState; name: string; at: number } | null = null
+let published: { state: PresenceState; name: string; code: string; at: number } | null = null
 let suspended = false
 let offlineSent = false
 
@@ -366,12 +423,17 @@ function currentState(): PresenceState {
 async function publishPresence(st: PresenceState, force = false): Promise<void> {
   if (!me.userId || !state.friends.length) return
   const fresh = published && Date.now() - published.at < HEARTBEAT_MS - 30_000
-  if (!force && fresh && published!.state === st && published!.name === me.name) return
+  // em chamada, o código da sala vai junto (o amigo pode entrar direto); fora dela, não
+  const code = st === 'in-call' ? me.code : ''
+  const roomName = code ? me.roomName : ''
+  if (!force && fresh && published!.state === st && published!.name === me.name && published!.code === code) return
   const before = published?.state
-  published = { state: st, name: me.name, at: Date.now() }
+  const codeBefore = published?.code
+  published = { state: st, name: me.name, code, at: Date.now() }
   try {
-    await publish(presenceTopic(state.presence), encrypt(presenceKey(state.presence), { state: st, name: me.name, ts: Date.now() }))
-    if (before !== st) flog('info', `meu status publicado para ${state.friends.length} amigo(s): ${st}`)
+    await publish(presenceTopic(state.presence), encrypt(presenceKey(state.presence), { state: st, name: me.name, code, roomName, ts: Date.now() }))
+    if (before !== st || codeBefore !== code)
+      flog('info', `meu status publicado para ${state.friends.length} amigo(s): ${st}${code ? ` na sala "${roomName}" (código ${code})` : ''}`)
     else flog('debug', `meu status reenviado (sinal periódico): ${st}`)
   } catch (e) {
     published = null // tenta de novo no próximo ciclo
@@ -396,11 +458,30 @@ export async function friendsGoOffline(): Promise<void> {
 
 // ------------------------------------------------------------------ lista para a tela
 
-function friendView(f: Friend): { id: string; name: string; state: PresenceState; lastSeen: number; unread: number; addedAt: number } {
+function friendView(f: Friend): {
+  id: string
+  name: string
+  state: PresenceState
+  lastSeen: number
+  unread: number
+  addedAt: number
+  code: string
+  roomName: string
+} {
   const p = presence.get(f.id)
   let st: PresenceState = 'offline'
   if (p && p.state !== 'offline' && serverNow() - p.sTime < ONLINE_WINDOW_S) st = p.state
-  return { id: f.id, name: f.name, state: st, lastSeen: p ? p.sTime * 1000 : 0, unread: f.unread || 0, addedAt: f.addedAt }
+  const inCall = st === 'in-call' && !!p?.code
+  return {
+    id: f.id,
+    name: f.name,
+    state: st,
+    lastSeen: p ? p.sTime * 1000 : 0,
+    unread: f.unread || 0,
+    addedAt: f.addedAt,
+    code: inCall ? p!.code : '',
+    roomName: inCall ? p!.roomName : ''
+  }
 }
 
 // ------------------------------------------------------------------ IPC
@@ -429,10 +510,17 @@ export function registerFriendsIpc(dataDirGetter: () => string, windowGetter: ()
 
   ipcMain.handle('friends:me', () => ({ presence: state.presence }))
 
-  ipcMain.handle('friends:profile', (_e, p: { userId: string; name: string; inCall: boolean }) => {
+  ipcMain.handle('friends:profile', (_e, p: { userId: string; name: string; inCall: boolean; code?: string; roomName?: string }) => {
     if (!p || !SAFE_ID.test(String(p.userId))) return
-    const next = { userId: String(p.userId), name: String(p.name ?? '').trim().slice(0, 40), inCall: !!p.inCall }
-    const onlyName = next.userId === me.userId && next.inCall === me.inCall
+    const code = typeof p.code === 'string' && /^[a-z0-9]+(-[a-z0-9]+)+$/.test(p.code) ? p.code : ''
+    const next = {
+      userId: String(p.userId),
+      name: String(p.name ?? '').trim().slice(0, 40),
+      inCall: !!p.inCall,
+      code,
+      roomName: code ? String(p.roomName ?? '').slice(0, 80) : ''
+    }
+    const onlyName = next.userId === me.userId && next.inCall === me.inCall && next.code === me.code
     me = next
     // mudou só o nome (talvez ainda digitando): espera parar antes de publicar
     if (profileTimer) clearTimeout(profileTimer)
@@ -481,22 +569,39 @@ export function registerFriendsIpc(dataDirGetter: () => string, windowGetter: ()
 
   ipcMain.handle(
     'friends:send',
-    async (_e, id: string, m: { kind: 'msg' | 'invite'; text?: string; code?: string; roomName?: string }): Promise<{ ok: true } | { ok: false; error: string }> => {
+    async (
+      _e,
+      id: string,
+      m: { kind: 'msg' | 'invite' | 'reply'; text?: string; code?: string; roomName?: string; inviteId?: string; status?: string; token?: string }
+    ): Promise<{ ok: true; id: string } | { ok: false; error: string }> => {
       const f = state.friends.find((x) => x.id === id)
       if (!f) return { ok: false, error: 'Amigo não encontrado' }
       if (!me.userId) return { ok: false, error: 'App ainda iniciando' }
       const text = String(m?.text ?? '').trim()
       if (m?.kind === 'msg' && !text) return { ok: false, error: 'Mensagem vazia' }
       if (text.length > TEXT_LIMIT) return { ok: false, error: `Mensagem longa demais (máximo ${TEXT_LIMIT} caracteres)` }
-      const msg: FriendMessage = { id: randomUUID(), from: me.userId, kind: m?.kind === 'invite' ? 'invite' : 'msg', text, ts: Date.now() }
+      const kind: FriendMessage['kind'] = m?.kind === 'invite' ? 'invite' : m?.kind === 'reply' ? 'reply' : 'msg'
+      const msg: FriendMessage = { id: randomUUID(), from: me.userId, kind, text: kind === 'msg' ? text : '', ts: Date.now() }
+      if (kind === 'reply') {
+        const st = REPLY_STATUS.find((x) => x === m.status)
+        if (!st || typeof m.inviteId !== 'string' || !SAFE_ID.test(m.inviteId)) return { ok: false, error: 'Resposta inválida' }
+        msg.status = st
+        msg.inviteId = m.inviteId
+      }
       if (msg.kind === 'invite') {
         if (!m.code || !/^[a-z0-9]+(-[a-z0-9]+)+$/.test(m.code)) return { ok: false, error: 'Sala sem código' }
         msg.code = m.code
         msg.roomName = String(m.roomName ?? '').slice(0, 80)
+        if (typeof m.token === 'string' && /^[0-9a-f]{32}$/.test(m.token)) msg.token = m.token
       }
       const body = encrypt(pairKey(f.pair), msg)
       if (body.length > 3900) return { ok: false, error: 'Mensagem longa demais (muitos emojis ou acentos): divida em partes' }
-      const what = msg.kind === 'invite' ? `convite para a chamada (sala "${msg.roomName}", código ${msg.code})` : `mensagem (${text.length} caracteres)`
+      const what =
+        msg.kind === 'invite'
+          ? `convite para a chamada (sala "${msg.roomName}", código ${msg.code})`
+          : msg.kind === 'reply'
+            ? `resposta ao convite (${REPLY_TEXT[msg.status!]})`
+            : `mensagem (${text.length} caracteres)`
       try {
         await publish(pairTopic(f.pair), body)
       } catch (e) {
@@ -510,7 +615,24 @@ export function registerFriendsIpc(dataDirGetter: () => string, windowGetter: ()
         writeJson(chatFile(f.id), chat.slice(-CHAT_LIMIT))
       }
       changed(f.id)
-      return { ok: true }
+      return { ok: true, id: msg.id }
     }
   )
+
+  /** Apaga uma mensagem da conversa (só deste computador; não volta mesmo que o ntfy.sh ainda a tenha). */
+  ipcMain.handle('friends:delete-msg', (_e, id: string, msgId: string) => {
+    const f = state.friends.find((x) => x.id === id)
+    if (!f || typeof msgId !== 'string' || !SAFE_ID.test(msgId)) return false
+    const chat = loadChat(f.id)
+    const m = chat.find((x) => x.id === msgId)
+    writeJson(
+      chatFile(f.id),
+      chat.filter((x) => x.id !== msgId)
+    )
+    f.deleted = [...(f.deleted ?? []).filter((x) => x !== msgId), msgId].slice(-1000)
+    saveState()
+    flog('info', `apagou da conversa com ${who(f.id)} ${m ? (m.kind === 'invite' ? 'um convite' : m.kind === 'reply' ? 'uma resposta de convite' : `uma mensagem${m.from === me.userId ? ' minha' : ' dele'}`) : 'uma mensagem (já não estava salva)'} (só neste computador)`)
+    changed(f.id)
+    return true
+  })
 }

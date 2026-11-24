@@ -12,6 +12,8 @@ import ChatView from './views/ChatView.vue'
 import CallView from './views/CallView.vue'
 import { useCallStore } from './stores/call'
 import { useFriendsStore } from './stores/friends'
+import IncomingCall from './components/IncomingCall.vue'
+import { cancelCall } from './utils/friendsUi'
 import SetupView from './views/SetupView.vue'
 import AppTooltip from './components/AppTooltip.vue'
 import BenchmarkView from './views/BenchmarkView.vue'
@@ -44,16 +46,29 @@ onUnmounted(unsubShortcut)
 const call = useCallStore()
 const friends = useFriendsStore()
 void friends.init()
+// em chamada, o código da sala vai junto (só quando já funciona para quem está de fora): o amigo pode entrar direto
 watch(
-  () => [call.userId, call.name, call.inCall] as const,
-  ([userId, name, inCall]) => friends.setProfile({ userId, name, inCall }),
+  () => [call.userId, call.name, call.inCall, call.inCall && call.codeReady ? call.code : '', call.room?.name ?? ''] as const,
+  ([userId, name, inCall, code, roomName]) => friends.setProfile({ userId, name, inCall, code, roomName }),
   { immediate: true }
+)
+// saiu da chamada: a conversa com o amigo que estava no lugar do chat da sala fecha (no lobby ela fica no card de amigos)
+watch(
+  () => call.inCall,
+  (v) => {
+    if (v) return
+    friends.callChatOpen = false
+    // saí da sala enquanto chamava um amigo: o computador dele para de tocar
+    if (friends.outgoingCall?.phase === 'ringing') cancelCall('saí da chamada enquanto tocava')
+  }
 )
 // clicou na notificação de mensagem de um amigo: abre a conversa (painel de amigos da tela de Chamada)
 window.electron.ipcRenderer.on('friends:open', (_e, id: string) => {
   syslog('info', 'amigos', `abrindo a conversa com ${id.slice(0, 8)} pela notificação`)
   currentView.value = 'call'
   friends.panelOpen = true
+  // na chamada, a conversa abre no lugar do chat da sala; fora dela, no card de amigos do lobby
+  if (call.inCall) friends.callChatOpen = true
   void friends.select(id)
 })
 const setupRequired = ref(false)
@@ -100,6 +115,8 @@ function onSetupDone() {
   </div>
   <!-- tooltip do sistema (substitui o balão nativo dos atributos title em todo o app) -->
   <AppTooltip />
+  <!-- amigos (beta): chamada recebida (toca e oferece Entrar / Recusar em qualquer aba) -->
+  <IncomingCall v-if="setupChecked && !setupRequired" @open-call="currentView = 'call'" />
   <!-- aviso das ações nas imagens (copiar, baixar) -->
   <ImageToast />
 </template>

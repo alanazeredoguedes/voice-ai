@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
+import { useEscClose } from '../composables/useEscClose'
 import type { Chat } from '../types'
 import { generateSystemPrompt } from '../api'
 import VoiceNoteModal from './VoiceNoteModal.vue'
@@ -161,11 +162,15 @@ function onBackdropClick(): void {
   else emit('close')
 }
 
-function onKey(e: KeyboardEvent): void {
-  if (e.key !== 'Escape') return
-  if (dirty.value) pulse()
-  else emit('close')
-}
+// ESC pela janela inteira (antes só funcionava com o foco dentro do formulário); com alterações não salvas, só sacode
+useEscClose(
+  () => props.open,
+  () => {
+    if (dirty.value) pulse()
+    else emit('close')
+  },
+  'formulário do chat'
+)
 </script>
 
 <template>
@@ -175,7 +180,6 @@ function onKey(e: KeyboardEvent): void {
       class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-6"
       @mousedown="onBackdropDown"
       @click.self="onBackdropClick"
-      @keydown="onKey"
     >
       <div
         :class="['w-full max-w-3xl max-h-[92vh] overflow-y-auto bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl p-6 flex flex-col gap-4', pulsing ? 'modal-pulse' : '']"

@@ -15,14 +15,32 @@ import CallStreamStats from '../components/CallStreamStats.vue'
 import { formatVolume, sliderToVolume, volumeToSlider } from '../utils/callVolume'
 import { useFriendsStore } from '../stores/friends'
 import FriendsPanel from '../components/FriendsPanel.vue'
+import CallNameEditor from '../components/CallNameEditor.vue'
+import InlineRename from '../components/InlineRename.vue'
+import FriendsCallCard from '../components/FriendsCallCard.vue'
+import FriendConversation from '../components/FriendConversation.vue'
 
 const store = useCallStore()
 const friends = useFriendsStore()
+/** conversa com um amigo aberta no lugar do chat da sala */
+const friendChatOpen = computed(() => friends.callChatOpen && !!friends.selected)
+function closeFriendChat(): void {
+  friends.callChatOpen = false
+  void friends.select(null)
+}
 
 // ---------------------------------------------------------------- tela inicial (fora de uma chamada)
 const mode = ref<'create' | 'join'>('create')
 const joinCode = ref('')
 const roomName = ref('')
+/** "alterar" o meu nome nas chamadas (no lobby) */
+const editingName = ref(false)
+/** sala sendo renomeada (id; na chamada, o da sala atual) */
+const renamingRoom = ref('')
+async function saveRoomName(id: string, name: string): Promise<void> {
+  renamingRoom.value = ''
+  await store.renameRoom(id, name)
+}
 const busy = computed(() => store.status === 'connecting' || !!store.reopening)
 const deletingRoom = ref<{ id: string; name: string } | null>(null)
 /** com salas anteriores, o formulário de criar / entrar com código só aparece quando pedido */
@@ -613,27 +631,44 @@ function confirmLeave(): void {
     {{ store.mergeNotice }}
   </div>
   <!-- ============================== Fora de uma chamada ============================== -->
-  <!-- amigos (beta) à esquerda; a chamada (tela inicial ou sala) à direita -->
+  <!-- amigos (beta): no lobby, card à esquerda; dentro da chamada, card na coluna da direita (FriendsCallCard) -->
   <div class="flex h-full gap-4 min-h-0">
-  <FriendsPanel />
+  <FriendsPanel v-if="!store.inCall" />
   <div class="flex-1 min-w-0 h-full">
   <div v-if="!store.inCall" class="h-full overflow-y-auto">
     <div class="min-h-full flex flex-col items-center justify-center gap-6 py-8 px-4">
+      <!-- ===== primeira vez: o nome com que eu apareço em todas as chamadas (um só; muda depois em "alterar" ou nas Configurações) ===== -->
+      <div v-if="!store.name" class="w-full max-w-sm flex flex-col items-center gap-6">
+        <div class="flex flex-col items-center gap-3 text-center">
+          <div class="w-14 h-14 rounded-2xl bg-indigo-600/15 border border-indigo-500/30 flex items-center justify-center">
+            <svg class="w-7 h-7 text-indigo-400" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z" /></svg>
+          </div>
+          <div>
+            <h1 class="text-xl font-semibold text-slate-100">Como você quer aparecer nas chamadas?</h1>
+            <p class="text-sm text-slate-500 mt-1">É o nome que os outros veem em todas as salas. Dá para mudar depois aqui ou nas Configurações.</p>
+          </div>
+        </div>
+        <div class="w-full bg-slate-800/60 rounded-2xl border border-slate-700/40 p-5">
+          <CallNameEditor autofocus size="lg" button-label="Continuar" />
+        </div>
+      </div>
+
       <!-- ===== com salas anteriores: elas são o foco ===== -->
-      <template v-if="store.recentRooms.length && !showForm">
+      <template v-else-if="store.recentRooms.length && !showForm">
         <div class="w-full max-w-2xl flex items-end gap-3">
           <div class="flex-1 min-w-0">
             <h1 class="text-2xl font-semibold text-slate-100">Suas salas</h1>
-            <p class="text-sm text-slate-500 mt-1 flex items-center gap-1.5 flex-wrap">
-              Você entra como
-              <input
-                v-model="store.name"
-                maxlength="40"
-                placeholder="seu nome"
+            <div v-if="editingName" class="mt-2 max-w-xs">
+              <CallNameEditor autofocus cancelable @saved="editingName = false" @cancel="editingName = false" />
+            </div>
+            <p v-else class="text-sm text-slate-500 mt-1 flex items-center gap-1.5 flex-wrap">
+              Você aparece como <strong class="text-slate-200 font-medium">{{ store.name }}</strong>
+              <button
                 :disabled="busy"
-                title="Clique para mudar o nome com que você aparece na sala"
-                class="bg-transparent border-b border-dashed border-slate-600 hover:border-slate-400 focus:border-indigo-400 focus:outline-none text-slate-200 font-medium px-0.5 w-40 disabled:opacity-60"
-              />
+                class="text-xs text-slate-500 hover:text-indigo-400 underline underline-offset-2 disabled:opacity-50"
+                title="Mudar o nome com que você aparece em todas as chamadas"
+                @click="editingName = true"
+              >alterar</button>
             </p>
           </div>
           <button
@@ -689,7 +724,24 @@ function confirmLeave(): void {
               />
               {{ roomState(featured.id) === 'live' ? 'Ao vivo' : roomState(featured.id) === 'opening' ? 'Abrindo agora' : 'Ninguém na sala agora' }}
             </span>
-            <h2 class="text-2xl font-semibold text-slate-50 truncate" :title="featured.name">{{ featured.name }}</h2>
+            <InlineRename
+              v-if="renamingRoom === featured.id"
+              :value="featured.name"
+              size="lg"
+              @save="(n) => saveRoomName(featured!.id, n)"
+              @cancel="renamingRoom = ''"
+            />
+            <div v-else class="group/title flex items-center gap-1 min-w-0">
+              <h2 class="text-2xl font-semibold text-slate-50 truncate" :title="featured.name">{{ featured.name }}</h2>
+              <button
+                :disabled="busy"
+                class="flex-shrink-0 p-1 rounded-md text-slate-500 hover:text-slate-100 hover:bg-slate-700/60 transition-colors opacity-0 group-hover/title:opacity-100 disabled:opacity-0"
+                title="Renomear a sala"
+                @click.stop="renamingRoom = featured.id"
+              >
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" /></svg>
+              </button>
+            </div>
             <p class="text-sm text-slate-400">
               Última conversa {{ fmtDay(featured.updatedAt) }} · {{ featured.messageCount }} {{ featured.messageCount === 1 ? 'mensagem' : 'mensagens' }}
             </p>
@@ -775,13 +827,23 @@ function confirmLeave(): void {
                 ]"
               />
               <div class="flex-1 min-w-0">
-                <p class="text-sm font-medium text-slate-100 truncate">{{ r.name }}</p>
+                <InlineRename v-if="renamingRoom === r.id" :value="r.name" @save="(n) => saveRoomName(r.id, n)" @cancel="renamingRoom = ''" />
+                <p v-else class="text-sm font-medium text-slate-100 truncate">{{ r.name }}</p>
                 <p v-if="store.roomsLive[r.id]" class="text-xs text-emerald-300 truncate">Ao vivo: {{ store.roomsLive[r.id]!.names.join(', ') || 'ninguém conectado' }}</p>
                 <p v-else-if="store.roomsOpening[r.id]" class="text-xs text-amber-300 truncate">{{ store.roomsOpening[r.id] }} está abrindo agora</p>
                 <p v-else class="text-xs text-slate-500 truncate">
                   {{ fmtDay(r.updatedAt) }} · {{ r.messageCount }} {{ r.messageCount === 1 ? 'mensagem' : 'mensagens' }}<template v-if="r.participants.length"> · {{ r.participants.join(', ') }}</template>
                 </p>
               </div>
+              <button
+                v-if="renamingRoom !== r.id"
+                :disabled="busy"
+                class="p-1.5 rounded-lg text-slate-500 hover:text-slate-100 hover:bg-slate-700/60 transition-colors opacity-0 group-hover:opacity-100 disabled:opacity-0"
+                title="Renomear a sala"
+                @click="renamingRoom = r.id"
+              >
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" /></svg>
+              </button>
               <button
                 :disabled="busy"
                 class="p-1.5 rounded-lg text-slate-500 hover:text-red-400 hover:bg-slate-700/60 transition-colors opacity-0 group-hover:opacity-100 disabled:opacity-0"
@@ -835,14 +897,19 @@ function confirmLeave(): void {
           </div>
         </div>
 
-        <form class="w-full bg-slate-800/60 rounded-2xl border border-slate-700/40 p-5 flex flex-col gap-3" @submit.prevent="submit">
-          <input
-            v-model="store.name"
-            maxlength="40"
-            placeholder="Seu nome"
+        <div v-if="editingName" class="w-full">
+          <CallNameEditor autofocus cancelable @saved="editingName = false" @cancel="editingName = false" />
+        </div>
+        <p v-else class="-mb-3 text-xs text-slate-500 flex items-center gap-1.5">
+          Você entra como <strong class="text-slate-300 font-medium">{{ store.name }}</strong>
+          <button
             :disabled="busy"
-            class="bg-slate-900/40 border border-slate-700/60 rounded-lg px-3 py-2.5 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-indigo-500/60 disabled:opacity-60"
-          />
+            class="text-slate-500 hover:text-indigo-400 underline underline-offset-2 disabled:opacity-50"
+            title="Mudar o nome com que você aparece em todas as chamadas"
+            @click="editingName = true"
+          >alterar</button>
+        </p>
+        <form class="w-full bg-slate-800/60 rounded-2xl border border-slate-700/40 p-5 flex flex-col gap-3" @submit.prevent="submit">
           <input
             v-if="mode === 'create'"
             v-model="roomName"
@@ -898,7 +965,20 @@ function confirmLeave(): void {
   <!-- ============================== Em chamada ============================== -->
   <div v-else class="flex flex-col h-full gap-4">
     <div class="flex items-center gap-3 flex-shrink-0">
-      <h1 class="text-xl font-semibold text-slate-100 truncate max-w-[16rem]" :title="store.room?.name">{{ store.room?.name || 'Chamada' }}</h1>
+      <div v-if="store.room && renamingRoom === store.room.id" class="w-72">
+        <InlineRename :value="store.room.name" size="lg" @save="(n) => saveRoomName(store.room!.id, n)" @cancel="renamingRoom = ''" />
+      </div>
+      <div v-else class="group/title flex items-center gap-1 min-w-0">
+        <h1 class="text-xl font-semibold text-slate-100 truncate max-w-[16rem]" :title="store.room?.name">{{ store.room?.name || 'Chamada' }}</h1>
+        <button
+          v-if="store.room"
+          class="flex-shrink-0 p-1 rounded-md text-slate-500 hover:text-slate-100 hover:bg-slate-700/60 transition-colors opacity-0 group-hover/title:opacity-100"
+          title="Renomear a sala (muda para todos que estão nela)"
+          @click="renamingRoom = store.room!.id"
+        >
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" /></svg>
+        </button>
+      </div>
       <div class="flex items-center gap-1.5 pl-3 pr-1.5 py-1 rounded-lg bg-slate-800/60 border border-slate-700/40 min-w-0">
         <template v-if="store.codeReady">
           <span class="w-2 h-2 rounded-full bg-emerald-500 flex-shrink-0" />
@@ -966,6 +1046,7 @@ function confirmLeave(): void {
       >
         <!-- Barra do chat: só aparece quando o mouse chega no topo do card (tamanho do texto e pedir arquivos) -->
         <div
+          v-if="!friendChatOpen"
           class="group/bar absolute inset-x-0 z-20 h-5"
           :style="docked ? { top: `${dockH + DIVIDER}px` } : { top: '0px' }"
         >
@@ -1154,6 +1235,18 @@ function confirmLeave(): void {
           <p class="text-sm text-indigo-300">Solte para anexar</p>
         </div>
 
+        <!-- Conversa com um amigo (card de Amigos à direita): cobre o chat da sala, abaixo da transmissão presa no topo;
+             a miniatura solta da transmissão continua por cima. O X volta para o chat da sala. -->
+        <div
+          v-if="friendChatOpen"
+          class="absolute inset-x-0 bottom-0 z-[5] bg-slate-800"
+          :style="{ top: docked ? `${dockH + DIVIDER}px` : '0px' }"
+          @dragover.prevent.stop
+          @drop.prevent.stop
+        >
+          <FriendConversation close-kind="close" @close="closeFriendChat" />
+        </div>
+
         <!-- Transmissão aberta: presa no topo do chat (chat embaixo) ou miniatura solta pela área do chat -->
         <div
           v-show="store.watching"
@@ -1323,7 +1416,7 @@ function confirmLeave(): void {
 
       <!-- Direita: participantes + transmissões -->
       <aside class="w-72 flex-shrink-0 flex flex-col gap-4 min-h-0">
-        <div class="bg-slate-800/60 rounded-2xl border border-slate-700/40 flex flex-col max-h-[45%] min-h-0">
+        <div class="bg-slate-800/60 rounded-2xl border border-slate-700/40 flex flex-col max-h-[40%] min-h-0">
           <p class="px-4 py-2.5 border-b border-slate-700/40 text-xs text-slate-500 uppercase tracking-wide flex-shrink-0">
             Participantes ({{ store.peers.length + 1 }})
           </p>
@@ -1348,7 +1441,11 @@ function confirmLeave(): void {
               </span>
               <span class="flex flex-col min-w-0 flex-1">
                 <span class="text-sm text-slate-100 truncate">{{ store.name || 'Você' }}</span>
-                <span class="text-[11px] text-slate-500">{{ !store.hasMic ? 'você · sem microfone' : store.muted ? 'você · mudo' : 'você' }}</span>
+                <span v-if="store.myActivity" class="text-[11px] text-amber-300 flex items-center gap-1">
+                  <span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                  você · {{ store.myActivity === 'ai' ? 'falando com a IA…' : 'transcrevendo…' }}
+                </span>
+                <span v-else class="text-[11px] text-slate-500">{{ !store.hasMic ? 'você · sem microfone' : store.muted ? 'você · mudo' : 'você' }}</span>
               </span>
             </li>
 
@@ -1395,7 +1492,15 @@ function confirmLeave(): void {
                       <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7.5v3m0 0v3m0-3h3m-3 0h-3m-2.25-4.125a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zM4 19.235v-.11a6.375 6.375 0 0112.75 0v.109A12.318 12.318 0 0110.374 21c-2.331 0-4.512-.645-6.374-1.766z" /></svg>
                     </button>
                   </span>
-                  <span class="text-[11px] truncate" :class="store.mutedPeers.has(peer.id) ? 'text-red-400' : 'text-slate-500'">
+                  <span
+                    v-if="peer.activity"
+                    class="text-[11px] truncate text-amber-300 flex items-center gap-1"
+                    :title="`${peer.name} está usando o Voice AI e com o microfone mutado: espere terminar`"
+                  >
+                    <span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse flex-shrink-0" />
+                    {{ peer.activity === 'ai' ? 'falando com a IA…' : 'transcrevendo…' }}
+                  </span>
+                  <span v-else class="text-[11px] truncate" :class="store.mutedPeers.has(peer.id) ? 'text-red-400' : 'text-slate-500'">
                     {{ store.mutedPeers.has(peer.id) ? 'silenciado para você' : peer.muted ? 'microfone desligado' : peer.sharing ? 'transmitindo a tela' : 'conectado' }}
                   </span>
                 </span>
@@ -1437,7 +1542,7 @@ function confirmLeave(): void {
           </ul>
         </div>
 
-        <div class="bg-slate-800/60 rounded-2xl border border-slate-700/40 flex-1 flex flex-col min-h-0">
+        <div class="bg-slate-800/60 rounded-2xl border border-slate-700/40 flex-1 flex flex-col min-h-[9rem]">
           <p class="px-4 py-2.5 border-b border-slate-700/40 text-xs text-slate-500 uppercase tracking-wide flex-shrink-0">
             Transmissões ({{ shares.length }})
           </p>
@@ -1505,6 +1610,9 @@ function confirmLeave(): void {
             >Parar minha transmissão</button>
           </div>
         </div>
+
+        <!-- amigos (beta): clicar abre a conversa no lugar do chat da sala -->
+        <FriendsCallCard />
       </aside>
     </div>
 

@@ -10,6 +10,7 @@ import {
   JoinDeniedError,
   type AppMessage,
   type CallKnock,
+  type PeerActivity,
   type CallLogLevel,
   type CallPeer,
   type CallRoomInfo,
@@ -98,6 +99,10 @@ export interface ShareSendStats {
   encoder: string
   limitBandwidthPct: number
   limitCpuPct: number
+  /** a tela de quem transmite está parada (poucos quadros novos é normal) */
+  still: boolean
+  /** modo atual de quem transmite: nitidez ('detail') ou fluidez ('motion'); '' = versão antiga */
+  mode: '' | 'motion' | 'detail'
 }
 
 /** Diagnóstico da transmissão aberta: o que está limitando a imagem agora. */
@@ -140,6 +145,9 @@ const GATE_KEY = 'call.voiceGate'
 const GATE_DB_KEY = 'call.voiceGateDb'
 const PTT_KEY = 'call.pushToTalk'
 const AEC_KEY = 'call.echoCancel'
+/** enquanto eu dito ou falo com a IA: silenciar a chamada para mim / avisar os outros com um bip */
+const DICTATION_SILENCE_KEY = 'call.dictationSilence'
+const DICTATION_BEEP_KEY = 'call.dictationBeep'
 /** com alguém da chamada falando, quanto mais forte o meu som precisa ser para o microfone abrir */
 const ECHO_GUARD_DB = 10
 
@@ -255,6 +263,12 @@ export const useCallStore = defineStore('call', () => {
   const pttOn = ref(readSetting(PTT_KEY) === '1')
   const pttHeld = ref(false)
   let pttReleasedAt = 0
+  /** enquanto eu dito ou falo com a IA, a chamada (vozes e som da transmissão) fica muda para mim */
+  const dictationSilence = ref(readSetting(DICTATION_SILENCE_KEY) !== '0')
+  /** quando começo a ditar ou falar com a IA, os outros ouvem um bip curto */
+  const dictationBeep = ref(readSetting(DICTATION_BEEP_KEY) !== '0')
+  /** o que estou fazendo agora no Voice AI (aparece embaixo do meu nome para os outros) */
+  const myActivity = ref<PeerActivity>('')
   /** volume da voz de cada participante para mim (0 a 2; sem valor = 100%) */
   const peerVolumes = ref<Record<string, number>>({})
 
@@ -435,7 +449,7 @@ export const useCallStore = defineStore('call', () => {
       // quem transmite conta a cada pessoa que assiste o que está saindo para ela
       const viewers = Object.values(s).filter((x) => x.sending).length
       for (const [peerId, sample] of Object.entries(s)) {
-        if (sample.sending) rtc.send(peerId, { kind: 'share-stats', ...sample.sending, viewers })
+        if (sample.sending) rtc.send(peerId, { kind: 'share-stats', ...sample.sending, viewers, still: screenStill.value, mode: screenMode.value })
       }
     } catch {
       // amostra perdida: a próxima vem em 1 s
@@ -514,10 +528,14 @@ export const useCallStore = defineStore('call', () => {
             'info',
             `[transmissão] minha tela → ${who}: captura ${acc.last.capRes} ${cap} fps (mín ${min(acc.v.cap)}) | enviado ${acc.last.res} ${avg(acc.v.fps)} fps (mín ${min(acc.v.fps)}), ${avg(acc.v.kbps)} kbps | ` +
               `banda estimada ${avg(acc.v.avail)} kbps | limitado agora por: ${acc.last.limit} (${acc.last.limitPct}) | codificador ${acc.last.encoder} | ` +
-              `latência ${avg(acc.v.rtt)} ms | pedidos de reenvio ${sum(acc.v.nack)}, de quadro-chave ${sum(acc.v.pli)} | escolhida ${shareQuality.value}` +
+              `latência ${avg(acc.v.rtt)} ms | pedidos de reenvio ${sum(acc.v.nack)}, de quadro-chave ${sum(acc.v.pli)} | escolhida ${shareQuality.value} | modo ${screenMode.value === 'detail' ? 'nitidez' : 'fluidez'}` +
               (perfText ? ` | ${perfText}` : '')
           )
-          if (chosen && cap < chosen * 0.6) {
+          const autoLine = autoModeSummary()
+          if (autoLine) log('info', `[modo automático] ${autoLine}`)
+          if (screenStill.value) {
+            log('info', `[transmissão] tela parada agora (poucos quadros novos é normal); modo: ${screenMode.value === 'detail' ? 'nitidez' : 'fluidez'}`)
+          } else if (chosen && cap < chosen * 0.6) {
             log(
               'warn',
               `[transmissão] a captura da tela está entregando só ${cap} fps (escolhido ${chosen}): o gargalo é a captura neste computador, antes da internet`
@@ -584,7 +602,9 @@ export const useCallStore = defineStore('call', () => {
         captureHeight: num(msg.captureHeight),
         encoder: typeof msg.encoder === 'string' ? msg.encoder.slice(0, 40) : '?',
         limitBandwidthPct: num(msg.limitBandwidthPct),
-        limitCpuPct: num(msg.limitCpuPct)
+        limitCpuPct: num(msg.limitCpuPct),
+        still: msg.still === true,
+        mode: msg.mode === 'detail' ? 'detail' : msg.mode === 'motion' ? 'motion' : ''
       }
     }
   }
@@ -607,6 +627,12 @@ export const useCallStore = defineStore('call', () => {
     const v = recv?.video
     if (!v) return { level: 'warn', text: 'Aguardando a imagem chegar…' }
     const chosenFps = Number(peers.value.find((p) => p.id === peerId)?.quality.match(/(\d+)\s*fps/)?.[1] ?? 0)
+    if (send?.still) {
+      return {
+        level: 'ok',
+        text: `A tela de ${who} está parada (texto, terminal): poucos quadros por segundo é normal, nada mudou na imagem.${send.mode === 'detail' ? ' A transmissão está priorizando a nitidez.' : ''}`
+      }
+    }
     if (send && chosenFps && send.captureFps > 0 && send.captureFps < chosenFps * 0.6) {
       return {
         level: 'bad',
@@ -877,7 +903,7 @@ export const useCallStore = defineStore('call', () => {
     }
   }
 
-  async function join(raw: string, opts: { keepLogs?: boolean } = {}): Promise<void> {
+  async function join(raw: string, opts: { keepLogs?: boolean; inviteToken?: string } = {}): Promise<void> {
     if (status.value !== 'idle') return
     const parsed = parseCode(raw)
     if (!parsed) {
@@ -890,11 +916,27 @@ export const useCallStore = defineStore('call', () => {
       isHost.value = false
       code.value = parsed
       codeReady.value = true
+      joinInviteToken = opts.inviteToken && /^[0-9a-f]{32}$/.test(opts.inviteToken) ? opts.inviteToken : ''
       // sala recém-criada pode levar alguns segundos para ficar acessível de fora
       await enter(`wss://${parsed}.trycloudflare.com`, 3)
     } catch (e) {
       fail(e)
+    } finally {
+      joinInviteToken = ''
     }
+  }
+
+  /**
+   * Meu nome nas chamadas: um só, definido uma vez (lobby da Chamada ou Configurações) e usado em todas as salas.
+   * Numa chamada em andamento, os outros passam a ver o nome novo a partir da próxima vez que eu entrar.
+   */
+  function setName(value: string): void {
+    const clean = value.trim().slice(0, 40)
+    if (clean === name.value) return
+    const before = name.value
+    name.value = clean
+    saveSetting(NAME_KEY, clean)
+    syslog('info', 'chamada', before ? `nome nas chamadas alterado: "${before}" → "${clean}"${inCall.value ? ' (vale a partir da próxima vez que entrar numa sala)' : ''}` : `nome nas chamadas definido: "${clean}"`)
   }
 
   function begin(keepLogs = false): void {
@@ -916,10 +958,28 @@ export const useCallStore = defineStore('call', () => {
     error.value = message
   }
 
+  /** chave de convite da chamada que atendi (vale para a próxima entrada; ver join) */
+  let joinInviteToken = ''
   const signalOptions = (hostToken?: string): SignalOptions => ({
     hostToken,
-    getProof: async (tag) => (await ipc().invoke('call:room-proof', tag)) as string | null
+    getProof: async (tag) => (await ipc().invoke('call:room-proof', tag)) as string | null,
+    inviteToken: joinInviteToken || undefined
   })
+
+  /**
+   * Liguei para um amigo: cria uma chave de convite e registra no servidor da sala. Quem atender entra com ela direto,
+   * sem alguém precisar aceitar ('' = não deu: a pessoa vai pedir para entrar, como antes).
+   */
+  function createInviteToken(): string {
+    if (!inCall.value) return ''
+    const token = [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, '0')).join('')
+    if (!rtc.registerInviteToken(token)) {
+      log('warn', '[amigos] não deu para registrar a chave de convite (sem conexão com o servidor da sala): quem atender vai pedir para entrar')
+      return ''
+    }
+    log('info', '[amigos] chave de convite registrada no servidor da sala: quem atender a chamada entra direto')
+    return token
+  }
 
   async function enter(wsUrl: string, attempts = 1, hostToken?: string): Promise<void> {
     await openMic(localStorage.getItem(INPUT_KEY) || '')
@@ -960,6 +1020,12 @@ export const useCallStore = defineStore('call', () => {
             onPeerLeft: (name) => {
               log('info', `${name} saiu: tocando o aviso sonoro`)
               void playLeaveSound()
+            },
+            onPeerActivity: (peerId, activity, beep) => {
+              const who = peers.value.find((p) => p.id === peerId)?.name ?? 'participante'
+              if (!beep) return
+              log('info', `${who} começou a ${activity === 'ai' ? 'falar com a IA' : 'ditar'}: tocando o aviso sonoro`)
+              void playActivitySound()
             },
             onPeerConnectionLost: (name) => {
               log('warn', `a conexão com ${name} caiu e não voltou: tocando o aviso sonoro`)
@@ -1288,7 +1354,10 @@ export const useCallStore = defineStore('call', () => {
     mutedPeers.value = new Set()
     peerVolumes.value = {}
     unread.value = 0
+    if (myActivity.value) log('info', `[voice ai] saí da chamada no meio do ${myActivity.value === 'ai' ? 'uso da IA' : 'ditado'}: aviso e silêncio encerrados`)
     mutedByDictation = false
+    myActivity.value = ''
+    stopAutoMode()
     peerUsers.clear()
     peerUserIds.value = {}
     const fr = useFriendsStore()
@@ -1345,6 +1414,41 @@ export const useCallStore = defineStore('call', () => {
   }
 
   /** Carrega o histórico guardado desta sala (se houver) e junta com o que já está na tela. */
+  /**
+   * Renomeia uma sala. A sala em que estou: vale para todos que estão nela (canal direto) e para quem entrar depois
+   * (o servidor da sala guarda o nome novo). Uma sala do histórico: só aqui, no meu histórico.
+   */
+  async function renameRoom(id: string, newName: string): Promise<void> {
+    const clean = newName.trim().slice(0, 80)
+    if (!clean || !SAFE_ID.test(id)) return
+    if (room.value?.id === id && status.value !== 'idle') {
+      if (room.value.name === clean) return
+      log('info', `renomeei a sala: "${room.value.name}" → "${clean}" (avisando ${peers.value.length} pessoa(s) na sala)`)
+      room.value.name = clean
+      scheduleSave()
+      rtc.broadcast({ kind: 'room-name', id, name: clean })
+      if (isHost.value) void ipc().invoke('call:room-rename', clean)
+      return
+    }
+    const stored = (await ipc().invoke('call:room-load', id)) as StoredRoom | null
+    if (!stored || stored.name === clean) return
+    syslog('info', 'chamada', `renomeou a sala do histórico: "${stored.name}" → "${clean}" (só neste computador; quem estiver junto na próxima vez recebe o nome novo)`)
+    await ipc().invoke('call:room-save', { ...stored, name: clean })
+    await refreshRooms()
+  }
+
+  /** Alguém da sala a renomeou: o nome novo vale aqui também (e no meu histórico). */
+  function onRoomRenamed(peerId: string, msg: AppMessage): void {
+    if (!room.value || msg.id !== room.value.id || typeof msg.name !== 'string') return
+    const clean = msg.name.trim().slice(0, 80)
+    if (!clean || clean === room.value.name) return
+    const who = peers.value.find((p) => p.id === peerId)?.name ?? 'alguém'
+    log('info', `${who} renomeou a sala: "${room.value.name}" → "${clean}"`)
+    room.value.name = clean
+    scheduleSave()
+    if (isHost.value) void ipc().invoke('call:room-rename', clean)
+  }
+
   async function loadRoom(id: string, fallbackName = ''): Promise<void> {
     const stored = (await ipc().invoke('call:room-load', id)) as StoredRoom | null
     room.value = {
@@ -1593,6 +1697,9 @@ export const useCallStore = defineStore('call', () => {
           peerUsers.set(peerId, msg.userId.slice(0, 64))
           peerUserIds.value[peerId] = msg.userId.slice(0, 64)
         }
+        break
+      case 'room-name':
+        onRoomRenamed(peerId, msg)
         break
       case 'friend-req':
       case 'friend-ok':
@@ -2028,17 +2135,78 @@ export const useCallStore = defineStore('call', () => {
   }
 
   /** Ditado/transcrição do Voice AI gravando: os outros não ouvem o que está sendo ditado. */
-  function onDictation(recording: boolean): void {
-    if (!inCall.value) return
-    if (recording && !muted.value) {
-      log('info', 'ditado do Voice AI começou: microfone mutado automaticamente')
-      mutedByDictation = true
-      applyMuted(true)
-    } else if (!recording && mutedByDictation) {
-      mutedByDictation = false
-      applyMuted(false)
+  /** modo da gravação que está começando (o backend avisa antes de entrar em "recording") */
+  let dictationMode: Exclude<PeerActivity, ''> = 'transcribing'
+  /** o backend informou o modo desta gravação (versões antigas do backend não informam: vale "transcrição") */
+  let dictationModeKnown = false
+  /** quando comecei a ditar (para a duração no log) */
+  let dictationStartedAt = 0
+
+  /**
+   * Comecei (ou parei) de gravar pelo atalho do Voice AI (ditado ou conversa com a IA). Enquanto falo: microfone
+   * mutado, os outros veem "transcrevendo…" / "falando com a IA…" (e ouvem um bip, se ligado) e a chamada fica muda
+   * para mim (se ligado). Ao soltar o atalho tudo volta; a resposta da IA toca junto com a chamada.
+   */
+  function onDictation(recording: boolean, backendState = ''): void {
+    if (recording && inCall.value && myActivity.value) {
+      log('info', '[voice ai] o backend avisou "gravando" de novo com o ditado já em andamento: nada muda')
+      return
+    }
+    if (recording && inCall.value && !myActivity.value) {
+      dictationStartedAt = Date.now()
+      const what = dictationMode === 'ai' ? 'falar com a IA' : 'ditar (transcrição)'
+      const wasMuted = muted.value
+      if (!wasMuted) {
+        mutedByDictation = true
+        applyMuted(true)
+      }
+      myActivity.value = dictationMode
+      rtc.setLocalState({ activity: dictationMode, beep: dictationBeep.value })
+      if (dictationSilence.value) rtc.setCallSilenced(true)
+      log(
+        'info',
+        `[voice ai] comecei a ${what} (modo ${dictationModeKnown ? 'informado pelo backend' : 'não informado pelo backend: considerei transcrição'}): ` +
+          `microfone ${wasMuted ? 'já estava mutado' : 'mutado automaticamente'}; ` +
+          `chamada ${dictationSilence.value ? 'silenciada para mim' : 'continua tocando para mim (opção desligada)'}; ` +
+          `aviso "${dictationMode === 'ai' ? 'falando com a IA…' : 'transcrevendo…'}" enviado a ${peers.value.length} pessoa(s) ${dictationBeep.value ? 'com bip' : 'sem bip (opção desligada)'}`
+      )
+    } else if (!recording && myActivity.value) {
+      const secs = ((Date.now() - dictationStartedAt) / 1000).toFixed(1)
+      log(
+        'info',
+        `[voice ai] terminei de ${myActivity.value === 'ai' ? 'falar com a IA' : 'ditar'} depois de ${secs} s (backend passou para "${backendState || '?'}"): ` +
+          `${mutedByDictation ? 'microfone desmutado, ' : 'microfone continua como estava, '}som da chamada de volta, aviso retirado`
+      )
+      dictationModeKnown = false
+      myActivity.value = ''
+      rtc.setLocalState({ activity: '', beep: false })
+      rtc.setCallSilenced(false)
+      if (mutedByDictation) {
+        mutedByDictation = false
+        applyMuted(false)
+      }
     }
   }
+
+  function setDictationSilence(on: boolean): void {
+    dictationSilence.value = on
+    saveSetting(DICTATION_SILENCE_KEY, on ? '1' : '0')
+    log('info', on ? 'silenciar a chamada enquanto eu dito ou falo com a IA: ligado' : 'silenciar a chamada enquanto eu dito ou falo com a IA: desligado')
+    if (myActivity.value) rtc.setCallSilenced(on)
+  }
+
+  function setDictationBeep(on: boolean): void {
+    dictationBeep.value = on
+    saveSetting(DICTATION_BEEP_KEY, on ? '1' : '0')
+    log('info', on ? 'bip para os outros quando eu começo a ditar ou falar com a IA: ligado' : 'bip para os outros quando eu começo a ditar ou falar com a IA: desligado')
+  }
+
+  /** Alguém começou a ditar ou a falar com a IA: dois toques suaves descendo ("estou ocupado"). */
+  const playActivitySound = (): Promise<void> =>
+    playTones('aviso de ditado', [
+      { freq: 784, at: 0, len: 0.14, vol: 0.12 },
+      { freq: 587, at: 0.13, len: 0.22, vol: 0.12 }
+    ])
   // O sistema considera a janela do app escondida (minimizada ou totalmente coberta por outra)? Fica no log da
   // chamada, para ver se a queda de fps da transmissão coincide com isso.
   document.addEventListener('visibilitychange', () => {
@@ -2051,7 +2219,11 @@ export const useCallStore = defineStore('call', () => {
     )
   })
   onWsMessage((e) => {
-    if (e.type === 'state_changed' && e.state) onDictation(e.state === 'recording')
+    if (e.type === 'recording_mode') {
+      dictationMode = e.mode === 'ai' ? 'ai' : 'transcribing'
+      dictationModeKnown = true
+    }
+    if (e.type === 'state_changed' && e.state) onDictation(e.state === 'recording', e.state)
     if (e.type === 'call_ptt') {
       const held = !!e.pressed
       if (!held && pttHeld.value) pttReleasedAt = performance.now()
@@ -2113,6 +2285,7 @@ export const useCallStore = defineStore('call', () => {
     localScreen?.getTracks().forEach((t) => (t.onended = null))
     steady?.stop()
     steady = null
+    stopAutoMode()
     stopOwnCapture()
     // Linux com Xorg: captura própria pelo ffmpeg (o capturador do Chromium não passa de ~10 fps em telas grandes)
     if (IS_LINUX && !isWayland.value) {
@@ -2172,9 +2345,17 @@ export const useCallStore = defineStore('call', () => {
       rtc.setScreenCaptureProbe(null)
     }
     const track = stream.getVideoTracks()[0]
-    // 30 fps: prioriza nitidez (texto, código); 60 fps: prioriza fluidez (vídeo, jogo)
+    // 30 fps: prioriza nitidez (texto, código); 60 fps: prioriza fluidez (vídeo, jogo), e o modo automático passa
+    // para nitidez enquanto a tela estiver parada (terminal, texto). Ver startAutoMode.
     track.contentHint = quality.fps > 30 ? 'motion' : 'detail'
     rawVideo.contentHint = track.contentHint
+    screenMode.value = track.contentHint === 'motion' ? 'motion' : 'detail'
+    rtc.setScreenDetail(false)
+    if (steady) startAutoMode(track, quality.fps, steady.captureFps)
+    else {
+      stopAutoMode()
+      log('info', '[modo automático] indisponível (nitidez com a tela parada): sem o fps fixo')
+    }
     track.onended = () => {
       log('info', 'a captura da tela terminou (fechada pelo sistema ou pela janela)')
       void stopShare()
@@ -2194,7 +2375,10 @@ export const useCallStore = defineStore('call', () => {
     const vs0 = srcSettings
     const px = (vs0.width ?? quality.width) * (vs0.height ?? quality.height)
     const maxBitrate = Math.round(Math.min(20_000_000, Math.max(1_500_000, px * quality.fps * 0.035)))
-    log('info', `vídeo da tela limitado a ${(maxBitrate / 1e6).toFixed(1)} Mbps e ${quality.fps} fps (${track.contentHint === 'motion' ? 'prioriza fluidez' : 'prioriza nitidez'})`)
+    log(
+      'info',
+      `vídeo da tela limitado a ${(maxBitrate / 1e6).toFixed(1)} Mbps e ${quality.fps} fps (${track.contentHint === 'motion' ? 'prioriza fluidez; nitidez automática com a tela parada' : 'prioriza nitidez'})`
+    )
     shareQuality.value = quality.label.replace(' - ', ' · ')
     await rtc.setScreenStream(stream, { maxBitrate, maxFramerate: quality.fps }, shareQuality.value)
     if (watching.value === SELF) watch(SELF) // trocou de tela com a prévia aberta
@@ -2454,12 +2638,171 @@ export const useCallStore = defineStore('call', () => {
   /** fps fixo da transmissão atual (ver steadyFrames.ts) */
   let steady: SteadyFrames | null = null
 
+  // ------------------------------------------------------------------ modo automático da transmissão
+  //
+  // Com 60 fps a transmissão prioriza fluidez: numa tela parada (terminal, código) o codificador descarta os
+  // quadros repetidos e, quando a tela "acorda" (rolar o texto, trocar de janela), recomeça com pouca qualidade e
+  // pode baixar a resolução: o texto embaça. Aqui, com a tela parada por alguns segundos, a transmissão passa a
+  // priorizar nitidez (mantém a resolução; o Chromium refina a imagem parada); com movimento contínuo (vídeo,
+  // jogo), volta a priorizar fluidez.
+
+  /** abaixo disso (quadros reais/s) a tela conta como parada */
+  const STILL_FPS = 8
+  /** segundos seguidos parada para passar a nitidez / em movimento para voltar a fluidez */
+  const STILL_SECONDS = 3
+  const MOVING_SECONDS = 3
+  /** tempo mínimo num modo antes de trocar de novo (evita ficar indo e voltando) */
+  const MODE_DWELL_MS = 5000
+
+  /** 'motion' = prioriza fluidez; 'detail' = prioriza nitidez */
+  const screenMode = ref<'motion' | 'detail'>('motion')
+  /** minha tela está parada agora (quase nenhum quadro novo): fps baixo é normal, não é problema */
+  const screenStill = ref(false)
+  let autoModeTimer: ReturnType<typeof setInterval> | null = null
+  let autoCheckTimer: ReturnType<typeof setTimeout> | null = null
+  /** contabilidade do modo automático (para o log): tempo em cada modo, trocas e quando começou */
+  let autoStats: {
+    startedAt: number
+    modeSince: number
+    ms: { motion: number; detail: number }
+    switches: number
+    periodSwitches: number
+    /** vezes que a tela parou no período (digitar no terminal faz isso o tempo todo: vai no resumo, não linha a linha) */
+    periodStills: number
+  } | null = null
+
+  /** O que está saindo agora para cada pessoa que assiste (resolução, fps, taxa e limitação), para o log. */
+  function outgoingNow(): string {
+    const parts = Object.entries(netStats.value)
+      .filter(([, n]) => n.sending)
+      .map(([id, n]) => {
+        const o = n.sending!
+        return `${peers.value.find((p) => p.id === id)?.name ?? 'participante'}: ${o.width}x${o.height} ${o.fps} fps ${o.kbps} kbps, limitado por ${o.limit}`
+      })
+    return parts.length ? parts.join('; ') : 'ninguém assistindo agora'
+  }
+
+  /** Tempo em cada modo até agora (s), incluindo o modo atual. */
+  function autoModeTimes(): { motion: number; detail: number } {
+    if (!autoStats) return { motion: 0, detail: 0 }
+    const t = { ...autoStats.ms }
+    t[screenMode.value] += performance.now() - autoStats.modeSince
+    return { motion: Math.round(t.motion / 1000), detail: Math.round(t.detail / 1000) }
+  }
+
+  /** Resumo do modo automático para o log de 30 s (zera o contador de trocas do período). */
+  function autoModeSummary(): string {
+    if (!autoStats) return ''
+    const t = autoModeTimes()
+    const n = autoStats.periodSwitches
+    const stills = autoStats.periodStills
+    autoStats.periodSwitches = 0
+    autoStats.periodStills = 0
+    return `agora ${screenMode.value === 'detail' ? 'nitidez' : 'fluidez'}${screenStill.value ? ' (tela parada)' : ''}, ${n} troca(s) de modo e ${stills} parada(s) da tela nos últimos 30 s; desde o início ${t.detail} s em nitidez e ${t.motion} s em fluidez`
+  }
+
+  function stopAutoMode(): void {
+    if (autoModeTimer) clearInterval(autoModeTimer)
+    autoModeTimer = null
+    if (autoCheckTimer) clearTimeout(autoCheckTimer)
+    autoCheckTimer = null
+    if (autoStats) {
+      const t = autoModeTimes()
+      const total = Math.round((performance.now() - autoStats.startedAt) / 1000)
+      log('info', `[modo automático] encerrado: ${total} s de transmissão, ${t.detail} s em nitidez, ${t.motion} s em fluidez, ${autoStats.switches} troca(s) de modo`)
+      autoStats = null
+    }
+    screenStill.value = false
+  }
+
+  function startAutoMode(track: MediaStreamTrack, chosenFps: number, realFps: () => number): void {
+    stopAutoMode()
+    // só troca de modo quem escolheu fluidez (mais de 30 fps); com 30 fps já é nitidez o tempo todo
+    const auto = chosenFps > 30
+    const movingFps = Math.min(24, Math.round(chosenFps * 0.4))
+    let still = 0
+    let moving = 0
+    let changedAt = performance.now()
+    /** quadros novos por segundo dos últimos 10 s (para o log de cada troca) */
+    const recent: number[] = []
+    autoStats = { startedAt: performance.now(), modeSince: performance.now(), ms: { motion: 0, detail: 0 }, switches: 0, periodSwitches: 0, periodStills: 0 }
+    /** já registrei no log que a troca está esperando o tempo mínimo (uma linha por espera, não uma por segundo) */
+    let delayLogged = false
+    /** última linha de "tela parada / voltou a mudar" (no máximo uma a cada 10 s; o resto vai no resumo) */
+    let stillLoggedAt = 0
+    log(
+      'info',
+      auto
+        ? `[modo automático] LIGADO (escolhido ${chosenFps} fps): começa em fluidez; vai para nitidez com até ${STILL_FPS} quadros novos/s por ${STILL_SECONDS} s e volta para fluidez com ${movingFps}+ quadros novos/s por ${MOVING_SECONDS} s (mínimo ${MODE_DWELL_MS / 1000} s em cada modo)`
+        : `[modo automático] desligado (escolhido ${chosenFps} fps: já prioriza nitidez o tempo todo); só acompanho se a tela está parada`
+    )
+    const apply = (mode: 'motion' | 'detail', why: string): void => {
+      const from = screenMode.value
+      const stayed = Math.round((performance.now() - changedAt) / 1000)
+      if (autoStats) {
+        autoStats.ms[from] += performance.now() - autoStats.modeSince
+        autoStats.modeSince = performance.now()
+        autoStats.switches++
+        autoStats.periodSwitches++
+      }
+      const before = outgoingNow()
+      screenMode.value = mode
+      track.contentHint = mode
+      rtc.setScreenDetail(mode === 'detail')
+      changedAt = performance.now()
+      delayLogged = false
+      log(
+        'info',
+        `[modo automático] ${from === 'detail' ? 'nitidez' : 'fluidez'} → ${mode === 'detail' ? 'NITIDEZ' : 'FLUIDEZ'} (${why}; ficou ${stayed} s no modo anterior; ` +
+          `quadros novos/s nos últimos ${recent.length} s: ${recent.join(' ')}; dica aplicada na faixa: "${track.contentHint}") | saindo antes da troca: ${before}`
+      )
+      if (track.contentHint !== mode) log('warn', `[modo automático] o navegador não aceitou a dica "${mode}" na faixa de vídeo (ficou "${track.contentHint}")`)
+      // 5 s depois: o que está saindo de fato (para conferir se a troca teve efeito na resolução/fps)
+      if (autoCheckTimer) clearTimeout(autoCheckTimer)
+      autoCheckTimer = setTimeout(() => {
+        autoCheckTimer = null
+        if (screenMode.value !== mode || !autoModeTimer) return
+        log('info', `[modo automático] conferência 5 s depois de ir para ${mode === 'detail' ? 'nitidez' : 'fluidez'}: ${outgoingNow()}`)
+      }, 5000)
+    }
+    autoModeTimer = setInterval(() => {
+      if (track.readyState === 'ended') return stopAutoMode()
+      const fps = realFps()
+      recent.push(fps)
+      if (recent.length > 10) recent.shift()
+      still = fps <= STILL_FPS ? still + 1 : 0
+      moving = fps >= movingFps ? moving + 1 : 0
+      const nowStill = still >= 2
+      if (nowStill !== screenStill.value) {
+        if (nowStill && autoStats) autoStats.periodStills++
+        if (performance.now() - stillLoggedAt > 10_000) {
+          stillLoggedAt = performance.now()
+          log('info', nowStill ? `[transmissão] tela parada (${fps} quadros novos/s): fps baixo agora é normal` : `[transmissão] tela voltou a mudar (${fps} quadros novos/s)`)
+        }
+      }
+      screenStill.value = nowStill
+      if (!auto) return
+      if (performance.now() - changedAt < MODE_DWELL_MS) {
+        // pediria troca, mas ainda está no tempo mínimo do modo atual
+        const wants = (screenMode.value === 'motion' && still >= STILL_SECONDS) || (screenMode.value === 'detail' && moving >= MOVING_SECONDS)
+        if (wants && !delayLogged) {
+          delayLogged = true
+          log('info', `[transmissão] modo automático: troca para ${screenMode.value === 'motion' ? 'nitidez' : 'fluidez'} esperando o tempo mínimo de ${MODE_DWELL_MS / 1000} s no modo atual`)
+        }
+        return
+      }
+      if (screenMode.value === 'motion' && still >= STILL_SECONDS) apply('detail', `tela quase parada há ${still} s: ${fps} quadros novos/s`)
+      else if (screenMode.value === 'detail' && moving >= MOVING_SECONDS) apply('motion', `movimento contínuo há ${moving} s: ${fps} quadros novos/s`)
+    }, 1000)
+  }
+
   async function stopShare(): Promise<void> {
     if (!localScreen) return
     log('info', 'parei a transmissão')
     stopOwnCapture()
     steady?.stop()
     steady = null
+    stopAutoMode()
     rtc.setScreenCaptureProbe(null)
     screenLeveler?.stop()
     screenLeveler = null
@@ -2625,6 +2968,9 @@ export const useCallStore = defineStore('call', () => {
     codeReady,
     closedToNewcomers,
     name,
+    setName,
+    createInviteToken,
+    renameRoom,
     localPeerId,
     peers,
     sharingPeers,
@@ -2700,6 +3046,13 @@ export const useCallStore = defineStore('call', () => {
     pttOn,
     pttHeld,
     setPtt,
+    dictationSilence,
+    dictationBeep,
+    myActivity,
+    setDictationSilence,
+    setDictationBeep,
+    screenMode,
+    screenStill,
     setEchoCancel,
     isLinux: IS_LINUX,
     waitingApproval,

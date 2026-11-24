@@ -123,8 +123,9 @@ const DIAG = {
       <div class="grid grid-cols-3 gap-2">
         <div class="rounded-xl bg-slate-800/70 border border-slate-700/60 px-3 py-2">
           <p class="text-[11px] uppercase tracking-wide text-slate-400">Captura</p>
-          <p :class="['text-2xl font-semibold tabular-nums leading-tight', fpsTone(send?.captureFps)]">{{ send?.captureFps ?? '—' }}</p>
+          <p :class="['text-2xl font-semibold tabular-nums leading-tight', send?.still ? 'text-slate-300' : fpsTone(send?.captureFps)]">{{ send?.captureFps ?? '—' }}</p>
           <p class="text-xs text-slate-400 tabular-nums">fps · {{ resLabel(send?.captureWidth, send?.captureHeight) }}</p>
+          <p v-if="send?.still" class="text-[11px] text-emerald-300" title="Nada mudou na tela de quem transmite: poucos quadros por segundo é normal">tela parada</p>
         </div>
         <div class="rounded-xl bg-slate-800/70 border border-slate-700/60 px-3 py-2">
           <p class="text-[11px] uppercase tracking-wide text-slate-400">Enviando</p>

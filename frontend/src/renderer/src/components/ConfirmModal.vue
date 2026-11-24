@@ -1,6 +1,8 @@
 <script setup lang="ts">
 /** Modal de confirmação (mesmo visual do "Trocar conta" das Configurações). */
-withDefaults(
+import { useEscClose } from '../composables/useEscClose'
+
+const props = withDefaults(
   defineProps<{
     open: boolean
     title: string
@@ -11,6 +13,8 @@ withDefaults(
   { tone: 'danger', loading: false }
 )
 const emit = defineEmits<{ confirm: []; cancel: [] }>()
+// ESC cancela (não confirma), mesmo sem foco dentro do modal
+useEscClose(() => props.open && !props.loading, () => emit('cancel'), `confirmação: ${props.title}`)
 </script>
 
 <template>
@@ -19,7 +23,6 @@ const emit = defineEmits<{ confirm: []; cancel: [] }>()
       v-if="open"
       class="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 backdrop-blur-sm p-6"
       @click.self="emit('cancel')"
-      @keydown.esc="emit('cancel')"
     >
       <div class="w-full max-w-md bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl p-5 flex flex-col gap-4">
         <div class="flex items-start gap-3">
