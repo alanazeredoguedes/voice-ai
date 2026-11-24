@@ -10,6 +10,8 @@ import LogsView from './views/LogsView.vue'
 import TranslateView from './views/TranslateView.vue'
 import ChatView from './views/ChatView.vue'
 import CallView from './views/CallView.vue'
+import { useCallStore } from './stores/call'
+import { useFriendsStore } from './stores/friends'
 import SetupView from './views/SetupView.vue'
 import AppTooltip from './components/AppTooltip.vue'
 import BenchmarkView from './views/BenchmarkView.vue'
@@ -37,6 +39,23 @@ const unsubShortcut = onWsMessage((e) => {
   else if (e.type === 'voice_user_message') followShortcut('chat')
 })
 onUnmounted(unsubShortcut)
+
+// Amigos (beta): o processo principal publica meu status (nome e se estou em chamada) para os amigos
+const call = useCallStore()
+const friends = useFriendsStore()
+void friends.init()
+watch(
+  () => [call.userId, call.name, call.inCall] as const,
+  ([userId, name, inCall]) => friends.setProfile({ userId, name, inCall }),
+  { immediate: true }
+)
+// clicou na notificação de mensagem de um amigo: abre a conversa (painel de amigos da tela de Chamada)
+window.electron.ipcRenderer.on('friends:open', (_e, id: string) => {
+  syslog('info', 'amigos', `abrindo a conversa com ${id.slice(0, 8)} pela notificação`)
+  currentView.value = 'call'
+  friends.panelOpen = true
+  void friends.select(id)
+})
 const setupRequired = ref(false)
 const setupChecked = ref(false)
 const setupMode = ref<'install' | 'update'>('install')

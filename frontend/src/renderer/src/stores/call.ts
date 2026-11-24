@@ -2,6 +2,7 @@ import { syslog } from '../utils/syslog'
 import { defineStore } from 'pinia'
 import { computed, ref, shallowRef, watch as vueWatch } from 'vue'
 import { startSteadyFrames, type SteadyFrames } from '../utils/steadyFrames'
+import { useFriendsStore } from './friends'
 import {
   DEFAULT_PEER_VOLUME,
   MAX_FILE_BYTES,
@@ -664,6 +665,8 @@ export const useCallStore = defineStore('call', () => {
   let mutedByDictation = false
   /** id fixo de cada participante conectado (peerId → userId) */
   const peerUsers = new Map<string, string>()
+  /** o mesmo, reativo (a tela mostra quem já é meu amigo) */
+  const peerUserIds = ref<Record<string, string>>({})
   /** arquivos que começaram a chegar antes da mensagem que os cita */
   const pendingFiles = new Map<string, { peerId: string; file: IncomingFile }>()
 
@@ -931,6 +934,7 @@ export const useCallStore = defineStore('call', () => {
                 if (!peers.value.some((x) => x.id === p.id)) log('info', `voz de ${p.name} começa em ${Math.round(DEFAULT_PEER_VOLUME * 100)}% para mim`)
               peers.value = list
               for (const id of peerUsers.keys()) if (!list.some((p) => p.id === id)) peerUsers.delete(id)
+              for (const id of Object.keys(peerUserIds.value)) if (!list.some((p) => p.id === id)) delete peerUserIds.value[id]
               const keep: Record<string, string> = {}
               for (const [id, data] of Object.entries(thumbs.value))
                 if (id === SELF || list.some((p) => p.id === id && p.sharing)) keep[id] = data
@@ -1286,6 +1290,10 @@ export const useCallStore = defineStore('call', () => {
     unread.value = 0
     mutedByDictation = false
     peerUsers.clear()
+    peerUserIds.value = {}
+    const fr = useFriendsStore()
+    fr.requests = []
+    fr.outgoing = {}
     pendingFiles.clear()
     void refreshRooms()
   }
@@ -1495,11 +1503,101 @@ export const useCallStore = defineStore('call', () => {
     if (sharing.value && thumbs.value[SELF]) rtc.send(peerId, { kind: 'thumb', data: thumbs.value[SELF] })
   }
 
+  // ------------------------------------------------------------------ amigos (beta): pedido de amizade pelo canal direto
+
+  const FRIEND_SECRET = /^[0-9a-f]{64}$/
+  const FRIEND_ID = /^[a-zA-Z0-9-]{8,64}$/
+
+  /** log do sistema, categoria "amigos" (aba Logs → Sistema) */
+  const flog = (level: 'info' | 'warn', msg: string): void => syslog(level, 'amigos', msg)
+  const peerLabel = (peerId: string): string =>
+    `${peers.value.find((p) => p.id === peerId)?.name ?? 'Participante'} (${(peerUsers.get(peerId) ?? peerId).slice(0, 8)})`
+
+  /** Pede para virar amigo de um participante (ele aceita ou recusa do lado dele). */
+  function requestFriend(peerId: string): void {
+    const fr = useFriendsStore()
+    if (!fr.myPresence) {
+      flog('warn', `clicou em adicionar ${peerLabel(peerId)} como amigo, mas o módulo de amigos ainda não iniciou`)
+      return
+    }
+    const pair = fr.newPairSecret()
+    fr.outgoing = { ...fr.outgoing, [peerId]: pair }
+    rtc.send(peerId, { kind: 'friend-req', userId, name: name.value || 'Participante', pair, presence: fr.myPresence })
+    flog('info', `clicou em adicionar amigo: pedido de amizade enviado para ${peerLabel(peerId)} (sala ${room.value?.name ?? '?'})`)
+  }
+
+  async function answerFriend(peerId: string, accept: boolean): Promise<void> {
+    const fr = useFriendsStore()
+    const req = fr.requests.find((r) => r.peerId === peerId)
+    fr.requests = fr.requests.filter((r) => r.peerId !== peerId)
+    if (!req) return
+    if (!accept) {
+      flog('info', `recusou o pedido de amizade de ${req.name} (${req.userId.slice(0, 8)})`)
+      rtc.send(peerId, { kind: 'friend-no' })
+      return
+    }
+    if (await fr.add({ id: req.userId, name: req.name, pair: req.pair, presence: req.presence })) {
+      rtc.send(peerId, { kind: 'friend-ok', userId, name: name.value || 'Participante', presence: fr.myPresence })
+      flog('info', `aceitou o pedido de amizade de ${req.name} (${req.userId.slice(0, 8)}): agora são amigos`)
+    } else flog('warn', `aceitou o pedido de ${req.name} (${req.userId.slice(0, 8)}), mas não deu para salvar o amigo`)
+  }
+
+  function onFriendMessage(peerId: string, msg: AppMessage): void {
+    const fr = useFriendsStore()
+    const peerName = peers.value.find((p) => p.id === peerId)?.name ?? String(msg.name ?? 'Participante').slice(0, 40)
+    if (msg.kind === 'friend-req') {
+      // o id tem que ser o mesmo que a pessoa apresentou ao entrar (hello)
+      const valid =
+        typeof msg.userId === 'string' && FRIEND_ID.test(msg.userId) && msg.userId !== userId && msg.userId === peerUsers.get(peerId) &&
+        typeof msg.pair === 'string' && FRIEND_SECRET.test(msg.pair) &&
+        typeof msg.presence === 'string' && FRIEND_SECRET.test(msg.presence)
+      if (!valid) {
+        flog('warn', `pedido de amizade inválido de ${peerLabel(peerId)}: ignorado`)
+        return
+      }
+      const req = { peerId, userId: msg.userId as string, name: peerName, pair: msg.pair as string, presence: msg.presence as string }
+      fr.requests = [...fr.requests.filter((r) => r.peerId !== peerId), req]
+      flog('info', `pedido de amizade recebido de ${peerLabel(peerId)}${fr.isFriend(req.userId) ? ' (já é amigo: aceitar refaz a amizade)' : ''}`)
+      return
+    }
+    const pair = fr.outgoing[peerId]
+    if (!pair) {
+      flog('warn', `resposta de amizade (${msg.kind}) de ${peerLabel(peerId)} sem pedido meu pendente: ignorada`)
+      return
+    }
+    const rest = { ...fr.outgoing }
+    delete rest[peerId]
+    fr.outgoing = rest
+    if (msg.kind === 'friend-no') {
+      flog('info', `${peerLabel(peerId)} recusou o pedido de amizade`)
+      return
+    }
+    if (typeof msg.userId !== 'string' || !FRIEND_ID.test(msg.userId) || msg.userId !== peerUsers.get(peerId)) {
+      flog('warn', `aceite de amizade de ${peerLabel(peerId)} com id inválido: ignorado`)
+      return
+    }
+    if (typeof msg.presence !== 'string' || !FRIEND_SECRET.test(msg.presence)) {
+      flog('warn', `aceite de amizade de ${peerLabel(peerId)} sem segredo de presença válido: ignorado`)
+      return
+    }
+    void fr.add({ id: msg.userId, name: peerName, pair, presence: msg.presence }).then((ok) =>
+      flog(ok ? 'info' : 'warn', ok ? `${peerLabel(peerId)} aceitou: agora são amigos` : `${peerLabel(peerId)} aceitou, mas não deu para salvar o amigo`)
+    )
+  }
+
   function onMessage(peerId: string, msg: AppMessage): void {
     const author = peerUsers.get(peerId)
     switch (msg.kind) {
       case 'hello':
-        if (typeof msg.userId === 'string') peerUsers.set(peerId, msg.userId.slice(0, 64))
+        if (typeof msg.userId === 'string') {
+          peerUsers.set(peerId, msg.userId.slice(0, 64))
+          peerUserIds.value[peerId] = msg.userId.slice(0, 64)
+        }
+        break
+      case 'friend-req':
+      case 'friend-ok':
+      case 'friend-no':
+        onFriendMessage(peerId, msg)
         break
       case 'chat': {
         if (!author || typeof msg.id !== 'string' || deleted.has(msg.id)) return
@@ -2607,6 +2705,9 @@ export const useCallStore = defineStore('call', () => {
     waitingApproval,
     knocks,
     answerKnock,
+    peerUserIds,
+    requestFriend,
+    answerFriend,
     logs,
     logText,
     clearLogs,

@@ -11,6 +11,8 @@ electronLanguages:
   - en-US
 files:
   - out/**/*
+  # ícone do app (janela e bandeja); o ícone do instalador vem de build/icon.png e build/icon.ico
+  - resources/**/*
   - "!**/*.{ts,map}"
 win:
   target:

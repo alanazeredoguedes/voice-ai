@@ -13,8 +13,11 @@ import CallVolumeMenu from '../components/CallVolumeMenu.vue'
 import CallStageMenu from '../components/CallStageMenu.vue'
 import CallStreamStats from '../components/CallStreamStats.vue'
 import { formatVolume, sliderToVolume, volumeToSlider } from '../utils/callVolume'
+import { useFriendsStore } from '../stores/friends'
+import FriendsPanel from '../components/FriendsPanel.vue'
 
 const store = useCallStore()
+const friends = useFriendsStore()
 
 // ---------------------------------------------------------------- tela inicial (fora de uma chamada)
 const mode = ref<'create' | 'join'>('create')
@@ -610,6 +613,10 @@ function confirmLeave(): void {
     {{ store.mergeNotice }}
   </div>
   <!-- ============================== Fora de uma chamada ============================== -->
+  <!-- amigos (beta) à esquerda; a chamada (tela inicial ou sala) à direita -->
+  <div class="flex h-full gap-4 min-h-0">
+  <FriendsPanel />
+  <div class="flex-1 min-w-0 h-full">
   <div v-if="!store.inCall" class="h-full overflow-y-auto">
     <div class="min-h-full flex flex-col items-center justify-center gap-6 py-8 px-4">
       <!-- ===== com salas anteriores: elas são o foco ===== -->
@@ -931,6 +938,17 @@ function confirmLeave(): void {
       <span class="flex-1 min-w-0 truncate"><strong>{{ k.name }}</strong> quer entrar na sala</span>
       <button class="px-3 py-1 rounded-lg text-xs text-slate-200 bg-slate-700 hover:bg-red-600 transition-colors" @click="store.answerKnock(k.id, false)">Recusar</button>
       <button class="px-3 py-1 rounded-lg text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-500 transition-colors" @click="store.answerKnock(k.id, true)">Aceitar</button>
+    </div>
+    <!-- amigos (beta): pedido de amizade de alguém da chamada -->
+    <div
+      v-for="r in friends.requests"
+      :key="`friend-${r.peerId}`"
+      class="flex-shrink-0 flex items-center gap-3 text-sm text-slate-100 bg-emerald-500/10 border border-emerald-500/40 rounded-lg px-3 py-2"
+    >
+      <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse flex-shrink-0" />
+      <span class="flex-1 min-w-0 truncate"><strong>{{ r.name }}</strong> quer adicionar você como amigo <span class="text-[10px] uppercase tracking-wide text-emerald-300/80 ml-1">beta</span></span>
+      <button class="px-3 py-1 rounded-lg text-xs text-slate-200 bg-slate-700 hover:bg-red-600 transition-colors" @click="store.answerFriend(r.peerId, false)">Recusar</button>
+      <button class="px-3 py-1 rounded-lg text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-500 transition-colors" @click="store.answerFriend(r.peerId, true)">Aceitar</button>
     </div>
     <p v-if="store.closedToNewcomers" class="flex-shrink-0 text-xs text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2">
       O servidor da sala caiu (quem hospedava saiu ou a conexão caiu). A chamada continua entre quem já está aqui; reabrindo a sala automaticamente para quem for entrar…
@@ -1361,7 +1379,22 @@ function confirmLeave(): void {
                   </span>
                 </span>
                 <span class="flex flex-col min-w-0 flex-1">
-                  <span class="text-sm text-slate-100 truncate" :title="peer.name">{{ peer.name }}</span>
+                  <span class="flex items-center gap-1.5 min-w-0">
+                    <span class="text-sm text-slate-100 truncate" :title="peer.name">{{ peer.name }}</span>
+                    <span
+                      v-if="friends.isFriend(store.peerUserIds[peer.id])"
+                      class="flex-shrink-0 text-[9px] uppercase tracking-wide text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 rounded px-1"
+                    >amigo</span>
+                    <span v-else-if="friends.outgoing[peer.id]" class="flex-shrink-0 text-[10px] text-slate-500">pedido enviado</span>
+                    <button
+                      v-else-if="store.peerUserIds[peer.id]"
+                      class="flex-shrink-0 p-0.5 rounded text-slate-500 hover:text-emerald-300 hover:bg-emerald-500/10 transition-colors"
+                      :title="`Adicionar ${peer.name} como amigo (beta): vocês veem quando o outro está online e podem trocar mensagens`"
+                      @click="store.requestFriend(peer.id)"
+                    >
+                      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7.5v3m0 0v3m0-3h3m-3 0h-3m-2.25-4.125a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zM4 19.235v-.11a6.375 6.375 0 0112.75 0v.109A12.318 12.318 0 0110.374 21c-2.331 0-4.512-.645-6.374-1.766z" /></svg>
+                    </button>
+                  </span>
                   <span class="text-[11px] truncate" :class="store.mutedPeers.has(peer.id) ? 'text-red-400' : 'text-slate-500'">
                     {{ store.mutedPeers.has(peer.id) ? 'silenciado para você' : peer.muted ? 'microfone desligado' : peer.sharing ? 'transmitindo a tela' : 'conectado' }}
                   </span>
@@ -1515,5 +1548,7 @@ function confirmLeave(): void {
     <ConfirmModal :open="!!deletingId" title="Excluir a mensagem?" confirm-label="Excluir" @confirm="confirmDelete" @cancel="deletingId = null">
       Ela será removida para todos os participantes.
     </ConfirmModal>
+  </div>
+  </div>
   </div>
 </template>

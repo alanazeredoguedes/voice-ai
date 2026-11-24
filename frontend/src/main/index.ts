@@ -27,6 +27,7 @@ import { setKeepOnTop, toggleWindowOnTop } from './windowToggle'
 import { diag, initWindowDiag, watchWindow } from './windowDiag'
 import { backendTail, initSysLog, sysLog } from './sysLog'
 import { downloadCloudflared, findCloudflared, registerCallIpc } from './call'
+import { friendsGoOffline, registerFriendsIpc } from './friends'
 import { OVERLAY_PROC_ENV, OverlayProcessHost, overlayNeedsSeparateProcess, runOverlayProcess } from './overlayProcess'
 
 // app instalado: 18450; dev: 18451 (os dois podem rodar juntos sem um usar o backend do outro)
@@ -119,6 +120,15 @@ function getBackendFile(name: string): string {
   return app.isPackaged
     ? join(process.resourcesPath, 'backend', name)
     : join(__dirname, '..', '..', '..', 'backend', name)
+}
+
+/** Ícone do Voice AI (janela e bandeja). Gerado por tools/make_icon.py; vazio se o arquivo não for achado. */
+function appIcon(): Electron.NativeImage {
+  try {
+    return nativeImage.createFromPath(join(__dirname, '..', '..', 'resources', 'icon.png'))
+  } catch {
+    return nativeImage.createEmpty()
+  }
 }
 
 /** Lista completa (núcleo + tradução). Sem bibliotecas embutidas (Linux), é ela que o setup instala. */
@@ -1304,6 +1314,7 @@ function createMainWindow(): BrowserWindow {
     center: true,
     minWidth: 720,
     minHeight: 500,
+    icon: appIcon(),
     show: false,
     backgroundColor: '#0f172a',
     autoHideMenuBar: true,
@@ -1399,16 +1410,10 @@ function createOverlayWindow(): BrowserWindow {
   return win
 }
 
-const TRAY_ICON_B64 =
-  'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR4nGNITvtIEmIY1TCqYfhqAABsrLoQoM6bagAAAABJRU5ErkJggg=='
-
 function createTray(): void {
-  let icon: Electron.NativeImage
-  try {
-    icon = nativeImage.createFromBuffer(Buffer.from(TRAY_ICON_B64, 'base64'))
-  } catch {
-    icon = nativeImage.createEmpty()
-  }
+  // o mesmo ícone do app (resources/icon.png), em 32 px para a bandeja
+  let icon = appIcon()
+  if (!icon.isEmpty()) icon = icon.resize({ width: 32, height: 32, quality: 'best' })
   try {
     tray = new Tray(icon)
   } catch (e) {
@@ -1480,6 +1485,9 @@ function startMainApp(): void {
           : '')
     )
     electronApp.setAppUserModelId('com.voiceai')
+    // Linux: o GNOME liga a janela ao atalho (e ao ícone) pelo nome do .desktop; sem isso o AppImage aparece como
+    // "voice-ai.bin" e fica com o ícone genérico (três pontinhos)
+    if (process.platform === 'linux') app.setDesktopName('voice-ai.desktop')
     initAutostartDefault()
     allowYouTubeEmbeds()
     // Verifica a coleta de dados do Claude Code a cada abertura do app e a cada 30 min
@@ -1493,6 +1501,8 @@ function startMainApp(): void {
 
     // a janela abre na hora (com "Iniciando…"); o backend sobe em paralelo e a tela espera por ele (backend:wait)
     mainWindow = createMainWindow()
+    // Amigos (beta): presença e mensagens entre amigos pelo ntfy.sh (ver friends.ts)
+    registerFriendsIpc(getDataDir, () => mainWindow)
 
     if (!setupNeeded) {
       backendReady = (async () => {
@@ -1515,6 +1525,15 @@ function startMainApp(): void {
 
   app.on('window-all-closed', () => {
     // keep running in tray - don't quit
+  })
+
+  // antes de fechar, avisa os amigos que fiquei offline (no máximo ~1,5 s)
+  let friendsOfflineDone = false
+  app.on('will-quit', (e) => {
+    if (friendsOfflineDone) return
+    friendsOfflineDone = true
+    e.preventDefault()
+    void friendsGoOffline().finally(() => app.quit())
   })
 
   app.on('before-quit', () => {

@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { useCallStore } from '../stores/call'
+import { useFriendsStore } from '../stores/friends'
 
 type View = 'status' | 'settings' | 'transcribe' | 'logs' | 'translate' | 'chat' | 'call'
 
 // a chamada continua com outra aba aberta: a barra mostra que ela está ativa (e mensagens não lidas)
 const call = useCallStore()
+const friends = useFriendsStore()
 
 const props = defineProps<{ modelValue: View }>()
 const emit = defineEmits<{ 'update:modelValue': [v: View] }>()
@@ -52,7 +54,7 @@ const bottomNav: { id: View; label: string; icon: string }[] = [
       <button
         v-for="item in topNav"
         :key="item.id"
-        :title="item.id === 'call' && call.inCall ? 'Chamada em andamento' : item.label"
+        :title="item.id === 'call' && call.inCall ? 'Chamada em andamento' : item.id === 'call' && friends.unreadTotal ? `Chamada · ${friends.unreadTotal} mensagem(ns) de amigos` : item.label"
         :class="[
           'relative flex flex-col items-center gap-1 p-2 rounded-lg transition-colors text-xs',
           props.modelValue === item.id
@@ -68,6 +70,11 @@ const bottomNav: { id: View; label: string; icon: string }[] = [
           v-if="item.id === 'call' && call.inCall"
           :class="['absolute top-1 right-1 w-2.5 h-2.5 rounded-full border-2 border-slate-900', call.unread ? 'bg-amber-400' : 'bg-emerald-500 animate-pulse']"
         />
+        <!-- mensagens de amigos não lidas (o painel de amigos fica na tela de Chamada) -->
+        <span
+          v-if="item.id === 'call' && friends.unreadTotal"
+          class="absolute -top-0.5 left-0.5 min-w-4 h-4 px-1 rounded-full bg-amber-500 text-[10px] font-semibold text-slate-900 flex items-center justify-center"
+        >{{ friends.unreadTotal }}</span>
       </button>
     </div>
 

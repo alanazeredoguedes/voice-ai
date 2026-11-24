@@ -8,6 +8,8 @@ backend/venv/
 backend/venv-dist/
 dist/
 build/
+# ícones do app: o electron-builder lê frontend/build/icon.png e icon.ico (gerados por tools/make_icon.py)
+!frontend/build/
 
 # Python embutido (binário grande, não vai pro repo)
 backend/python-dist/
