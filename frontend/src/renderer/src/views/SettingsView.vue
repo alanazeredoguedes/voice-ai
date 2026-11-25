@@ -279,7 +279,7 @@ onUnmounted(() => {
             <span class="text-xs text-slate-500">{{ updateLabel }}</span>
           </div>
           <button
-            :disabled="['unsupported', 'checking', 'downloading', 'ready'].includes(update.state.status)"
+            :disabled="['unsupported', 'checking', 'available', 'downloading', 'ready'].includes(update.state.status)"
             class="px-3 py-1.5 rounded-lg text-xs border border-slate-700 hover:border-slate-500 text-slate-300 transition-colors disabled:opacity-50 flex-shrink-0"
             @click="update.check()"
           >Verificar atualizações</button>

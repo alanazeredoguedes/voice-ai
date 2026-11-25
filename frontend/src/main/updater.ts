@@ -34,6 +34,8 @@ let newVersion = ''
 let appImagePath = process.env['APPIMAGE'] ?? ''
 let notes = ''
 let started = false
+// último % já escrito no log do download (de 10 em 10); volta a -1 a cada novo download
+let lastLoggedPercent = -1
 
 /** Só o app instalado atualiza: em desenvolvimento não há o que trocar, e no Linux só o AppImage consegue. */
 function supported(): boolean {
@@ -95,8 +97,10 @@ async function check(manual: boolean): Promise<void> {
     if (manual) sysLog('info', CAT, 'verificação manual ignorada: atualização não se aplica a esta execução')
     return
   }
-  // não interrompe um download em andamento nem uma atualização já baixada
-  if (state.status === 'checking' || state.status === 'downloading' || state.status === 'ready') {
+  // não interrompe um download em andamento nem uma atualização já baixada. Com uma versão já anunciada
+  // ("available") também não: trocar o estado para "verificando" faria o aviso sumir por uns segundos, e um clique
+  // em "Atualizar" nessa janela seria ignorado.
+  if (state.status === 'checking' || state.status === 'downloading' || state.status === 'ready' || state.status === 'available') {
     sysLog('info', CAT, `verificação ${origin} ignorada: já está em "${state.status}"`)
     return
   }
@@ -155,6 +159,7 @@ export function initUpdater(windowGetter: () => BrowserWindow | null): void {
       return
     }
     sysLog('info', CAT, `iniciando o download da versão ${newVersion}`)
+    lastLoggedPercent = -1
     setState({ status: 'downloading', version: app.getVersion(), newVersion, percent: 0 })
     try {
       await autoUpdater.downloadUpdate()
@@ -196,7 +201,6 @@ export function initUpdater(windowGetter: () => BrowserWindow | null): void {
     sysLog('info', CAT, `sem versão nova (a mais recente publicada é a ${info?.version ?? '?'})`)
     setState({ status: 'idle', version: app.getVersion() })
   })
-  let lastLoggedPercent = -1
   autoUpdater.on('download-progress', (p) => {
     const percent = Math.round(p.percent)
     // no log, de 10 em 10 % (a interface recebe todos)
