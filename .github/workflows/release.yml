@@ -56,7 +56,16 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: frontend/package-lock.json
+      # node_modules pronto (inclui o binário do Electron): o npm ci levava ~50 s. Também só restaura; o cache é criado
+      # pelo cache-python.yml na main (ver o comentário abaixo). Sem cache, instala do zero como antes.
+      - name: Restaurar o cache do node_modules
+        id: node-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: frontend/node_modules
+          key: win-node-${{ hashFiles('frontend/package-lock.json') }}
       - name: Dependências
+        if: steps.node-cache.outputs.cache-hit != 'true'
         working-directory: frontend
         run: npm ci
       # Python embutido, bibliotecas do núcleo e lista da tradução: só mudam quando os requirements (ou o build.ps1) mudam.

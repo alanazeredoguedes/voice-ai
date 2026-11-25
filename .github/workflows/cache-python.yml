@@ -1,9 +1,11 @@
-# Deixa em cache o Python embutido e as bibliotecas do Windows (backend/python-dist, python-packages, translate-lock.txt).
-# O release.yml só RESTAURA esse cache: reinstalar tudo a cada release custava ~2 min. Precisa rodar na main porque uma
-# execução disparada por tag só enxerga caches da própria tag e da branch padrão.
+# Deixa em cache o que o build do Windows demora para preparar e quase nunca muda:
+#  - Python embutido, bibliotecas do núcleo e lista da tradução (backend/python-dist, python-packages, translate-lock.txt)
+#  - node_modules do frontend (com o binário do Electron)
+# O release.yml só RESTAURA esses caches. Precisa ser criado na main porque uma execução disparada por tag só enxerga
+# caches da própria tag e da branch padrão: um cache salvo no release.yml nunca seria reaproveitado pela release seguinte.
 # Roda quando os arquivos que definem esse conteúdo mudam (e à mão, na aba Actions, se o cache expirar: o GitHub apaga
 # caches sem uso há 7 dias; nesse caso a release seguinte só demora o que demorava antes).
-name: Cache do Python
+name: Cache do Windows
 
 on:
   push:
@@ -13,6 +15,7 @@ on:
       - backend/requirements-core.txt
       - build.ps1
       - tools/make_translate_lock.py
+      - frontend/package-lock.json
       - .github/workflows/cache-python.yml
   workflow_dispatch:
 
@@ -20,7 +23,7 @@ permissions:
   contents: read
 
 jobs:
-  windows:
+  python:
     name: Python e bibliotecas (Windows)
     runs-on: windows-latest
     steps:
@@ -39,3 +42,25 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: ./build.ps1 -PrepOnly
+
+  node:
+    name: node_modules (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      # a chave é a mesma do release.yml
+      - name: Cache
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: frontend/node_modules
+          key: win-node-${{ hashFiles('frontend/package-lock.json') }}
+      - name: Dependências
+        if: steps.cache.outputs.cache-hit != 'true'
+        working-directory: frontend
+        run: npm ci
