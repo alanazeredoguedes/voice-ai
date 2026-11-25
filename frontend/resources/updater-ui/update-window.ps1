@@ -13,9 +13,10 @@
 # A barra das etapas 2 e 3 é a fração real de bytes removida/escrita. O tamanho da versão nova é aproximado pelo da
 # instalada (-OldBytes), por isso a barra não passa de 99% até o instalador terminar de fato. Nada aqui é estimado por tempo.
 #
-# Uso (o app chama assim):
-#   powershell -NoProfile -ExecutionPolicy Bypass -STA -File update-window.ps1 -InstallDir <pasta> -FromVersion 1.3.4 `
-#     -ToVersion 1.4.0 -OldBytes <bytes> -LogFile <arquivo> -ReadyFile <arquivo> -Logo <png>
+# Uso (o app chama assim, com a pasta temporária como pasta atual):
+#   powershell -NoProfile -ExecutionPolicy Bypass -STA -File update-window.ps1 -ConfigFile config.json
+# (o config.json traz InstallDir, FromVersion, ToVersion, AppExeName, OldBytes, LogFile, ReadyFile e Logo; também dá para
+#  passar tudo como parâmetros, que é o que se faz nos testes)
 # Demonstração (não mexe em nada):  ... -Demo        (ou -DemoError para ver a tela de erro)
 param(
     [string]$InstallDir = '',
@@ -28,11 +29,23 @@ param(
     [string]$Logo = '',
     [string]$InstallerPattern = 'Voice-AI-Setup*',
     [int]$TimeoutMin = 12,
+    [string]$ConfigFile = '',
     [switch]$Demo,
     [switch]$DemoError
 )
 
 $ErrorActionPreference = 'Stop'
+
+# -ConfigFile: o app passa os valores por um JSON (e não pela linha de comando, que passa pelo cmd.exe e se confundiria
+# com caracteres como & ou % no caminho do usuário). Os valores do arquivo têm prioridade sobre os parâmetros.
+if ($ConfigFile -and (Test-Path -LiteralPath $ConfigFile)) {
+    $cfg = Get-Content -LiteralPath $ConfigFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    foreach ($k in 'InstallDir', 'FromVersion', 'ToVersion', 'AppExeName', 'LogFile', 'ReadyFile', 'Logo', 'InstallerPattern') {
+        if ($cfg.$k) { Set-Variable -Name $k -Value ([string]$cfg.$k) }
+    }
+    if ($cfg.OldBytes) { $OldBytes = [long]$cfg.OldBytes }
+}
+
 if ($DemoError) { $Demo = [switch]$true }   # -DemoError é uma demonstração que termina em erro
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 
@@ -307,8 +320,8 @@ function Tick-Real {
         }
         5 { if ($script:doneAt -and ((Get-Date) - $script:doneAt).TotalSeconds -gt 1.6) { $win.Close() } }
     }
-    # instalador nunca apareceu e o app não voltou: algo deu errado antes de instalar
-    if ($script:phase -in 2, 3 -and -not $script:sawInstaller -and $elapsed -gt 0.6) {
+    # instalador nunca apareceu: algo deu errado antes de instalar (1,5 min de folga: o antivírus pode demorar para liberar o .exe)
+    if ($script:phase -in 2, 3 -and -not $script:sawInstaller -and $elapsed -gt 1.5) {
         Show-Error 'O instalador não iniciou' 'Não consegui acompanhar a instalação. Abra o Voice AI pelo menu Iniciar; se ele abrir na versão antiga, rode a atualização de novo.'
         return
     }

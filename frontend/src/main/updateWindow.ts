@@ -11,7 +11,7 @@
  */
 import { app, BrowserWindow } from 'electron'
 import { spawn } from 'child_process'
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'fs'
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { basename, dirname, join } from 'path'
 import { sysLog } from './sysLog'
@@ -88,20 +88,30 @@ export async function launchUpdateWindow(fromVersion: string, toVersion: string)
     const oldBytes = dirBytes(installDir)
     sysLog('info', CAT, `abrindo a janela de progresso (pasta ${installDir}, ${(oldBytes / 1048576).toFixed(0)} MB, medido em ${Date.now() - t0} ms)`)
 
+    // os valores vão num JSON (e não na linha de comando, que passa pelo cmd.exe e se confundiria com & ou % no caminho)
+    writeFileSync(
+      join(dir, 'config.json'),
+      JSON.stringify({
+        InstallDir: installDir,
+        FromVersion: fromVersion,
+        ToVersion: toVersion,
+        AppExeName: basename(exe),
+        OldBytes: oldBytes,
+        LogFile: updateWindowLogFile(),
+        ReadyFile: ready,
+        Logo: logo
+      }),
+      'utf8'
+    )
+
+    // Por que "cmd /c start" e não um spawn direto do PowerShell: o Node prende os filhos a um job do Windows que os encerra
+    // quando o app fecha (a janela morria junto), e com detached:true o PowerShell sai na hora sem executar o script
+    // (sem console). O "start" cria o PowerShell como neto, que escapa do job e sobrevive ao app. A linha de comando
+    // é toda fixa (a pasta atual é a temporária), sem nenhum caminho do usuário.
     const child = spawn(
-      'powershell.exe',
-      [
-        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-File', script,
-        '-InstallDir', installDir,
-        '-FromVersion', fromVersion,
-        '-ToVersion', toVersion,
-        '-AppExeName', basename(exe),
-        '-OldBytes', String(oldBytes),
-        '-LogFile', updateWindowLogFile(),
-        '-ReadyFile', ready,
-        '-Logo', logo
-      ],
-      { detached: true, stdio: 'ignore', windowsHide: true }
+      'cmd.exe',
+      ['/d', '/c', 'start', '""', '/b', 'powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-File', 'update-window.ps1', '-ConfigFile', 'config.json'],
+      { cwd: dir, stdio: 'ignore', windowsHide: true }
     )
     child.on('error', (e) => sysLog('error', CAT, `não deu para abrir a janela de progresso: ${e.message}`))
     child.unref()
@@ -130,7 +140,8 @@ export function importUpdateWindowLog(): void {
   const file = updateWindowLogFile()
   try {
     if (existsSync(file)) {
-      for (const line of readFileSync(file, 'utf8').split(/\r?\n/)) {
+      // o PowerShell grava um BOM no começo do arquivo: sem tirá-lo, a primeira linha não casaria com o padrão
+      for (const line of readFileSync(file, 'utf8').replace(/^﻿/, '').split(/\r?\n/)) {
         const m = /^\d{4}-\d\d-\d\d (\d\d:\d\d:\d\d)\.\d+ (\w+)\s+\[janela\/atualização\] (.*)$/.exec(line)
         if (!m) continue
         const level = m[2] === 'ERROR' ? 'error' : m[2] === 'WARN' ? 'warn' : 'info'

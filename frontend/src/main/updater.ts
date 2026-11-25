@@ -71,8 +71,9 @@ function pendingFile(): string {
 
 /** Abertura seguinte a uma atualização: registra no log se a versão realmente mudou (o instalador roda fora do app). */
 function reportPreviousUpdate(): void {
-  // o que a janela de progresso registrou durante a instalação (etapas e tempos)
-  importUpdateWindowLog()
+  // o que a janela de progresso registrou durante a instalação (etapas e tempos). Espera um pouco: a janela ainda
+  // escreve as últimas linhas ("concluída", "fechada") nos primeiros segundos depois de o app novo abrir
+  setTimeout(importUpdateWindowLog, 20000)
   const file = pendingFile()
   if (!existsSync(file)) return
   try {
