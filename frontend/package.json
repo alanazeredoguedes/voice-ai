@@ -1,6 +1,6 @@
 {
   "name": "voice-ai",
-  "version": "1.3.3",
+  "version": "1.3.4",
   "description": "Voice AI Desktop App",
   "main": "./out/main/index.js",
   "author": {
