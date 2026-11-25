@@ -1,5 +1,8 @@
 # Equivalente Windows do build.sh: gera o instalador frontend\dist\Voice AI Setup <versao>.exe
 # Uso:  powershell -ExecutionPolicy Bypass -File .\build.ps1
+#   -PrepOnly  só prepara o Python embutido e as bibliotecas (backend\python-dist, python-packages e translate-lock.txt)
+#              e para; é o que o workflow "Cache do Python" usa para deixar esses arquivos em cache.
+param([switch]$PrepOnly)
 $ErrorActionPreference = 'Stop'
 $Root = $PSScriptRoot
 $PyDist = Join-Path $Root 'backend\python-dist'
@@ -48,7 +51,8 @@ if (-not (Test-Path $hashFile) -or (Get-Content $hashFile -Raw).Trim() -ne $reqH
     Write-Host "[build] instalando as bibliotecas do nucleo dentro do app..."
     if (Test-Path $PyPackages) { Remove-Item -Recurse -Force $PyPackages }
     New-Item -ItemType Directory -Force $PyPackages | Out-Null
-    & $PyExe -m pip install -r $coreFile --target $PyPackages --no-warn-script-location --disable-pip-version-check
+    # --no-compile: o pip não gera os .pyc (milhares de arquivos); eles seriam apagados na limpeza logo abaixo de qualquer jeito
+    & $PyExe -m pip install -r $coreFile --target $PyPackages --no-warn-script-location --disable-pip-version-check --no-compile
     if ($LASTEXITCODE -ne 0) { throw "pip falhou ($LASTEXITCODE)" }
 
     Write-Host "[build] gerando a lista do pacote de traducao (baixado na instalacao do app)..."
@@ -64,6 +68,11 @@ if (-not (Test-Path $hashFile) -or (Get-Content $hashFile -Raw).Trim() -ne $reqH
     if (Test-Path $bin) { Remove-Item -Recurse -Force $bin }
 
     Set-Content -Path $hashFile -Value $reqHash
+}
+
+if ($PrepOnly) {
+    Write-Host "[build] -PrepOnly: Python e bibliotecas prontos, parando aqui."
+    exit 0
 }
 
 # electron-builder: o pacote winCodeSign contém symlinks de macOS que o Windows não cria sem

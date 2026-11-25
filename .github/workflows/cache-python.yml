@@ -1,0 +1,41 @@
+# Deixa em cache o Python embutido e as bibliotecas do Windows (backend/python-dist, python-packages, translate-lock.txt).
+# O release.yml só RESTAURA esse cache: reinstalar tudo a cada release custava ~2 min. Precisa rodar na main porque uma
+# execução disparada por tag só enxerga caches da própria tag e da branch padrão.
+# Roda quando os arquivos que definem esse conteúdo mudam (e à mão, na aba Actions, se o cache expirar: o GitHub apaga
+# caches sem uso há 7 dias; nesse caso a release seguinte só demora o que demorava antes).
+name: Cache do Python
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - backend/requirements.txt
+      - backend/requirements-core.txt
+      - build.ps1
+      - tools/make_translate_lock.py
+      - .github/workflows/cache-python.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Python e bibliotecas (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      # a chave é a mesma do release.yml
+      - name: Cache
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            backend/python-dist
+            backend/python-packages
+            backend/translate-lock.txt
+          key: win-python-${{ hashFiles('backend/requirements.txt', 'backend/requirements-core.txt', 'build.ps1', 'tools/make_translate_lock.py') }}
+      - name: Preparar o Python e as bibliotecas
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: ./build.ps1 -PrepOnly

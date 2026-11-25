@@ -59,6 +59,18 @@ jobs:
       - name: Dependências
         working-directory: frontend
         run: npm ci
+      # Python embutido, bibliotecas do núcleo e lista da tradução: só mudam quando os requirements (ou o build.ps1) mudam.
+      # Só RESTAURA: o cache é criado pelo workflow "Cache do Python" (cache-python.yml), que roda na main. Uma execução
+      # disparada por tag só enxerga caches da própria tag e da branch padrão, então um cache salvo aqui nunca seria
+      # reaproveitado pela release seguinte. Sem cache (miss), o build.ps1 instala tudo do zero, como antes.
+      - name: Restaurar o cache do Python e das bibliotecas
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            backend/python-dist
+            backend/python-packages
+            backend/translate-lock.txt
+          key: win-python-${{ hashFiles('backend/requirements.txt', 'backend/requirements-core.txt', 'build.ps1', 'tools/make_translate_lock.py') }}
       - name: Build
         shell: pwsh
         run: |
