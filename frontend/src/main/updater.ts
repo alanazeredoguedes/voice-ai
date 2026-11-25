@@ -11,6 +11,7 @@ import { autoUpdater } from 'electron-updater'
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { flushSysLogToFile, sysLog } from './sysLog'
+import { importUpdateWindowLog, launchUpdateWindow } from './updateWindow'
 
 /** Categoria de todos os logs desta parte: na aba Logs, filtre por "atualização". */
 const CAT = 'atualização'
@@ -70,6 +71,8 @@ function pendingFile(): string {
 
 /** Abertura seguinte a uma atualização: registra no log se a versão realmente mudou (o instalador roda fora do app). */
 function reportPreviousUpdate(): void {
+  // o que a janela de progresso registrou durante a instalação (etapas e tempos)
+  importUpdateWindowLog()
   const file = pendingFile()
   if (!existsSync(file)) return
   try {
@@ -124,12 +127,19 @@ async function check(manual: boolean): Promise<void> {
  * a trava de instância única e a porta do backend): a nova fecharia sozinha. Por isso ele só troca o arquivo
  * e é o app.relaunch() que abre a nova depois que esta sair.
  */
-function installNow(): void {
+async function installNow(): Promise<void> {
   sysLog('info', CAT, `iniciando a instalação da versão ${newVersion} (${process.platform}${process.platform === 'linux' ? `, AppImage ${appImagePath}` : ''}): o app vai fechar e reabrir`)
   try {
     writeFileSync(pendingFile(), JSON.stringify({ from: app.getVersion(), to: newVersion, at: new Date().toISOString() }))
   } catch (e) {
     sysLog('warn', CAT, `não consegui gravar o registro da atualização: ${e instanceof Error ? e.message : e}`)
+  }
+  if (process.platform === 'win32') {
+    // o instalador roda ~1 min com o app fechado: a janela de progresso assume antes de o app fechar
+    await launchUpdateWindow(app.getVersion(), newVersion)
+  } else if (process.platform === 'linux') {
+    // no Linux a troca é quase instantânea: só dá tempo de a mensagem "vai reiniciar" aparecer
+    await new Promise((r) => setTimeout(r, 1500))
   }
   // o backend fecha junto com o app: grava já o que ainda está na fila para não perder estas linhas
   flushSysLogToFile()
@@ -219,7 +229,7 @@ export function initUpdater(windowGetter: () => BrowserWindow | null): void {
     sysLog('info', CAT, `versão ${newVersion} baixada, pronta para instalar`)
     setState({ status: 'ready', version: app.getVersion(), newVersion })
     // o usuário já confirmou ao clicar em atualizar: segue direto para a instalação
-    installNow()
+    void installNow()
   })
 
   setTimeout(() => void check(false), FIRST_CHECK_DELAY_MS)

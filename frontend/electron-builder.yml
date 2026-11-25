@@ -41,6 +41,9 @@ appImage:
   compression: gzip
 afterPack: after-pack.js
 extraResources:
+  # janela de progresso da atualização (Windows): o PowerShell lê o script direto do disco, não de dentro do asar
+  - from: resources/updater-ui
+    to: updater-ui
   - from: ../backend
     to: backend
     filter:

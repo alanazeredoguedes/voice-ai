@@ -73,7 +73,7 @@ function confirm(): void {
     </template>
 
     <template v-else>
-      <span class="flex-1">Reiniciando para instalar a versão {{ newVersion }}...</span>
+      <span class="flex-1">O Voice AI vai reiniciar para atualizar para a versão {{ newVersion }}...</span>
     </template>
   </div>
 
