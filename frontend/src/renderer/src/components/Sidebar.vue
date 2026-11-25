@@ -98,11 +98,11 @@ const bottomNav: { id: View; label: string; icon: string }[] = [
         </svg>
       </button>
     </div>
-    <!-- versão instalada (âmbar quando há versão nova) -->
+    <!-- versão instalada (sempre neutra: a versão nova é avisada na faixa no topo do app) -->
     <div
       v-if="update.state.version"
-      :class="['mt-2 text-center text-[10px] leading-none', update.state.status === 'available' ? 'text-amber-400' : 'text-slate-500']"
-      :title="update.state.status === 'available' ? `Versão ${update.state.version} (nova versão disponível)` : `Versão ${update.state.version}`"
+      class="mt-2 text-center text-[10px] leading-none text-slate-500"
+      :title="`Versão ${update.state.version}`"
     >v{{ update.state.version }}</div>
   </aside>
 </template>
