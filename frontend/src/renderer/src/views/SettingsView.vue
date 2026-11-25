@@ -239,7 +239,20 @@ onUnmounted(() => {
 <template>
   <div class="flex flex-col gap-5 h-full" v-if="store.settings">
     <div>
-      <h1 class="text-xl font-semibold text-slate-100">Configurações</h1>
+      <div class="flex items-center gap-3 flex-wrap">
+        <h1 class="text-xl font-semibold text-slate-100">Configurações</h1>
+        <!-- versão instalada (fica em destaque para saber de relance em qual versão estamos) -->
+        <span
+          v-if="update.state.version"
+          class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-indigo-600/20 border border-indigo-500/40 text-indigo-200"
+          title="Versão do Voice AI instalada"
+        >
+          Versão atual: v{{ update.state.version }}
+          <span v-if="update.state.status === 'available'" class="px-1.5 rounded-full bg-amber-500 text-slate-900 text-[10px] font-semibold">
+            v{{ update.state.newVersion }} disponível
+          </span>
+        </span>
+      </div>
       <p class="text-sm text-slate-500 mt-1">Personalize o comportamento do assistente</p>
     </div>
 

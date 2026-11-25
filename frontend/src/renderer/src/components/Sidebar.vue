@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { useCallStore } from '../stores/call'
 import { useFriendsStore } from '../stores/friends'
+import { useUpdateStore } from '../stores/update'
 
 type View = 'status' | 'settings' | 'transcribe' | 'logs' | 'translate' | 'chat' | 'call'
 
 // a chamada continua com outra aba aberta: a barra mostra que ela está ativa (e mensagens não lidas)
 const call = useCallStore()
 const friends = useFriendsStore()
+const update = useUpdateStore()
 
 const props = defineProps<{ modelValue: View }>()
 const emit = defineEmits<{ 'update:modelValue': [v: View] }>()
@@ -96,5 +98,11 @@ const bottomNav: { id: View; label: string; icon: string }[] = [
         </svg>
       </button>
     </div>
+    <!-- versão instalada (âmbar quando há versão nova) -->
+    <div
+      v-if="update.state.version"
+      :class="['mt-2 text-center text-[10px] leading-none', update.state.status === 'available' ? 'text-amber-400' : 'text-slate-500']"
+      :title="update.state.status === 'available' ? `Versão ${update.state.version} (nova versão disponível)` : `Versão ${update.state.version}`"
+    >v{{ update.state.version }}</div>
   </aside>
 </template>
