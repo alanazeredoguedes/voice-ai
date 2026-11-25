@@ -53,13 +53,18 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: frontend/package-lock.json
+      # chave do cache do node_modules: hash do lockfile sem a versão do app (ver .github/scripts/lock-hash.mjs)
+      - name: Chave do cache do node_modules
+        id: lock
+        shell: bash
+        run: echo "hash=$(node .github/scripts/lock-hash.mjs)" >> "$GITHUB_OUTPUT"
       # a chave é a mesma do release.yml
       - name: Cache
         id: cache
         uses: actions/cache@v4
         with:
           path: frontend/node_modules
-          key: win-node-${{ hashFiles('frontend/package-lock.json') }}
+          key: win-node-${{ steps.lock.outputs.hash }}
       - name: Dependências
         if: steps.cache.outputs.cache-hit != 'true'
         working-directory: frontend
