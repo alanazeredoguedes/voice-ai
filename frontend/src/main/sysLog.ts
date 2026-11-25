@@ -70,6 +70,15 @@ async function flush(): Promise<void> {
   if (queue.length && !timer) timer = setTimeout(flush, failingSince ? 3000 : 200)
 }
 
+/**
+ * Grava agora, no arquivo, tudo o que ainda está na fila. Usado antes de o app fechar de propósito (ex.: reiniciar
+ * para instalar uma atualização): o backend também fecha e as últimas linhas se perderiam.
+ */
+export function flushSysLogToFile(): void {
+  writeToFile(queue)
+  queue = []
+}
+
 /** Grava direto no arquivo, no mesmo formato do backend (usado quando o backend está fora do ar). */
 function writeToFile(entries: Entry[]): void {
   if (!file || !entries.length) return

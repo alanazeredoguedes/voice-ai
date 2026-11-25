@@ -7,6 +7,7 @@ import { computed, ref } from 'vue'
 import { useUpdateStore } from '../stores/update'
 import { useCallStore } from '../stores/call'
 import ConfirmModal from './ConfirmModal.vue'
+import { syslog } from '../utils/syslog'
 
 const update = useUpdateStore()
 const call = useCallStore()
@@ -25,6 +26,18 @@ const visible = computed(
 const percent = computed(() => (s.value.status === 'downloading' ? s.value.percent : 0))
 const notes = computed(() => (s.value.status === 'available' ? s.value.notes : ''))
 
+function dismiss(): void {
+  syslog('info', 'atualização', `aviso da versão ${newVersion.value} dispensado ("Depois")`)
+  dismissedFor.value = newVersion.value
+}
+function openConfirm(): void {
+  syslog('info', 'atualização', `abriu a confirmação para instalar a versão ${newVersion.value}`)
+  confirming.value = true
+}
+function cancelConfirm(): void {
+  syslog('info', 'atualização', 'cancelou a confirmação da atualização')
+  confirming.value = false
+}
 function confirm(): void {
   confirming.value = false
   update.install()
@@ -46,8 +59,8 @@ function confirm(): void {
         <span class="text-slate-500">(você está na {{ s.version }})</span>
         <span v-if="s.error" class="text-amber-300" :title="s.error"> · o download falhou, tente de novo</span>
       </span>
-      <button class="px-2.5 py-1 rounded-md text-xs text-slate-400 hover:text-slate-200" @click="dismissedFor = newVersion">Depois</button>
-      <button class="px-3 py-1 rounded-md text-xs font-medium bg-indigo-600 hover:bg-indigo-500 text-white" @click="confirming = true">
+      <button class="px-2.5 py-1 rounded-md text-xs text-slate-400 hover:text-slate-200" @click="dismiss">Depois</button>
+      <button class="px-3 py-1 rounded-md text-xs font-medium bg-indigo-600 hover:bg-indigo-500 text-white" @click="openConfirm">
         Instalar atualização
       </button>
     </template>
@@ -70,7 +83,7 @@ function confirm(): void {
     confirm-label="Atualizar e reiniciar"
     tone="warning"
     @confirm="confirm"
-    @cancel="confirming = false"
+    @cancel="cancelConfirm"
   >
     <p>
       O Voice AI vai baixar a versão <strong>{{ newVersion }}</strong>, <strong>reiniciar</strong> e instalar a atualização
