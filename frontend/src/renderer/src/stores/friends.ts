@@ -92,7 +92,7 @@ export const useFriendsStore = defineStore('friends', () => {
   /** pedidos que eu fiz (peerId → segredo do par que mandei) */
   const outgoing = ref<Record<string, string>>({})
   let started = false
-  /** painel de amigos (à esquerda na tela de Chamada) aberto ou recolhido; lembrado entre aberturas do app */
+  /** painel de amigos (à esquerda na tela de Chamada) fixado aberto; desafixado, abre só com o mouse em cima. Lembrado entre aberturas do app */
   const panelOpen = ref(readPanelOpen())
   /**
    * Chamada que estou fazendo para um amigo (o computador dele está tocando). Fica aqui, e não na tela da conversa,

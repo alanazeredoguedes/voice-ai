@@ -60,6 +60,8 @@ watch(
   () => call.inCall,
   (v) => {
     if (v) return
+    // a conversa aberta dentro da chamada fecha junto (senão ela abriria sozinha no painel de amigos do lobby)
+    if (friends.callChatOpen && friends.selected) void friends.select(null)
     friends.callChatOpen = false
     // saí da sala enquanto chamava um amigo: o computador dele para de tocar
     if (friends.outgoingCall?.phase === 'ringing') cancelCall('saí da chamada enquanto tocava')
@@ -69,7 +71,7 @@ watch(
 window.electron.ipcRenderer.on('friends:open', (_e, id: string) => {
   syslog('info', 'amigos', `abrindo a conversa com ${id.slice(0, 8)} pela notificação`)
   currentView.value = 'call'
-  friends.panelOpen = true
+  // fora da chamada, o painel de amigos do lobby fica aberto enquanto houver uma conversa aberta (sem precisar fixar)
   // na chamada, a conversa abre no lugar do chat da sala; fora dela, no card de amigos do lobby
   if (call.inCall) friends.callChatOpen = true
   void friends.select(id)
