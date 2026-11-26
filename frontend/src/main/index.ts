@@ -30,6 +30,8 @@ import { downloadCloudflared, findCloudflared, registerCallIpc } from './call'
 import { friendsGoOffline, registerFriendsIpc } from './friends'
 import { initUpdater } from './updater'
 import { OVERLAY_PROC_ENV, OverlayProcessHost, overlayNeedsSeparateProcess, runOverlayProcess } from './overlayProcess'
+import { HIDDEN_ARG, LINUX_AUTOSTART_FILE, autostartEntry, syncLinuxDesktopEntries } from './linuxDesktop'
+import { IS_UPDATE_HELPER, runLinuxUpdateHelper, updateHelperUserData } from './linuxUpdateHelper'
 
 // app instalado: 18450; dev: 18451 (os dois podem rodar juntos sem um usar o backend do outro)
 const BACKEND_PORT = app.isPackaged ? 18450 : 18451
@@ -53,7 +55,10 @@ let overlayHost: OverlayProcessHost | null = null
 // O dev usa uma pasta própria do Electron (~/.config/voice-ai-dev, %APPDATA%\voice-ai-dev): apagar o app instalado
 // para um teste limpo não mexe no dev, e os dois podem ficar abertos juntos (a trava de instância única também é por pasta).
 // Precisa vir antes de qualquer uso de userData (inclusive requestSingleInstanceLock).
-if (!app.isPackaged && !IS_OVERLAY_PROC) app.setPath('userData', join(app.getPath('appData'), 'voice-ai-dev'))
+if (!app.isPackaged && !IS_OVERLAY_PROC && !IS_UPDATE_HELPER) app.setPath('userData', join(app.getPath('appData'), 'voice-ai-dev'))
+// Linux: a janela de atualização roda com o AppImage novo enquanto o app novo abre; com uma pasta própria, os dois
+// não disputam os arquivos do Chromium (cookies, cache, trava de instância única)
+if (IS_UPDATE_HELPER) app.setPath('userData', updateHelperUserData())
 
 function getDataDir(): string {
   if (app.isPackaged) return app.getPath('userData')
@@ -785,10 +790,8 @@ async function runSetupSteps(onProgress: ProgressFn, mode: SetupMode, opts: Setu
 // ---------------------------------------------------------------------------
 
 const IS_WIN = process.platform === 'win32'
-const HIDDEN_ARG = '--hidden'
 const startedHidden = process.argv.includes(HIDDEN_ARG)
-// Linux: o AppImage informa o próprio caminho em $APPIMAGE (é ele que precisa abrir no login)
-const LINUX_AUTOSTART_FILE = join(homedir(), '.config', 'autostart', 'voice-ai.desktop')
+// Linux: o AppImage informa o próprio caminho em $APPIMAGE (é ele que precisa abrir no login); o .desktop fica em linuxDesktop.ts
 
 function canUseAutostart(): boolean {
   // VOICE_AI_NO_AUTOSTART: só para testar o app empacotado sem registrar a inicialização com o sistema
@@ -814,16 +817,21 @@ function setAutostart(enabled: boolean): void {
     return
   }
   mkdirSync(join(homedir(), '.config', 'autostart'), { recursive: true })
-  const exec = `"${process.env['APPIMAGE']}" ${HIDDEN_ARG}`
-  writeFileSync(
-    LINUX_AUTOSTART_FILE,
-    ['[Desktop Entry]', 'Type=Application', 'Name=Voice AI', `Exec=${exec}`, 'X-GNOME-Autostart-enabled=true', 'Terminal=false', ''].join('\n')
-  )
+  writeFileSync(LINUX_AUTOSTART_FILE, autostartEntry(process.env['APPIMAGE'] as string))
 }
 
-/** Linux: o AppImage pode ter sido movido/atualizado; mantém o atalho de login apontando para o arquivo atual. */
-function refreshLinuxAutostart(): void {
-  if (!IS_WIN && canUseAutostart() && existsSync(LINUX_AUTOSTART_FILE)) setAutostart(true)
+/**
+ * Linux: o AppImage muda de nome a cada atualização (e pode ter sido movido): mantém o atalho do menu de aplicativos
+ * (é por ele que a busca do sistema acha o app) e o de login apontando para o arquivo atual.
+ */
+function refreshLinuxDesktopEntries(): void {
+  if (process.platform !== 'linux' || !app.isPackaged || !process.env['APPIMAGE']) return
+  try {
+    const changed = syncLinuxDesktopEntries(process.env['APPIMAGE'])
+    if (changed.length) sysLog('info', 'app', `atalhos atualizados para ${process.env['APPIMAGE']}: ${changed.join(', ')}`)
+  } catch (e) {
+    sysLog('warn', 'app', `não consegui atualizar os atalhos do Linux: ${e instanceof Error ? e.message : e}`)
+  }
 }
 
 /** Na primeira execução do app instalado no Windows, liga o autostart por padrão. */
@@ -1448,9 +1456,11 @@ function createTray(): void {
 // ---------------------------------------------------------------------------
 
 function startMainApp(): void {
-  // Evita duas instâncias (ex.: autostart + abrir pelo atalho, ou dois cliques enquanto abre): a segunda só mostra a janela
+  // Evita duas instâncias (ex.: autostart + abrir pelo atalho, ou dois cliques enquanto abre): a segunda só mostra a janela.
+  // O return é essencial: sem ele a segunda instância seguia abrindo (janela, backend) até o quit fazer efeito.
   if (!app.requestSingleInstanceLock()) {
     app.quit()
+    return
   } else {
     app.on('second-instance', () => {
       if (mainWindow?.isMinimized()) mainWindow.restore()
@@ -1498,7 +1508,7 @@ function startMainApp(): void {
     setInterval(() => runMonitoringCheck().catch(() => {}), 30 * 60_000)
     app.on('browser-window-created', (_, window) => optimizer.watchWindowShortcuts(window))
 
-    refreshLinuxAutostart()
+    refreshLinuxDesktopEntries()
     const setupNeeded = !isSetupComplete()
 
     // a janela abre na hora (com "Iniciando…"); o backend sobe em paralelo e a tela espera por ele (backend:wait)
@@ -1535,7 +1545,9 @@ function startMainApp(): void {
     if (friendsOfflineDone) return
     friendsOfflineDone = true
     e.preventDefault()
-    void friendsGoOffline().finally(() => app.quit())
+    // setImmediate é essencial: sem amigos o aviso termina na hora, e um app.quit() ainda dentro do will-quit é
+    // ignorado pelo Electron (ele ainda está "saindo"). O app ficava vivo, sem janela nem bandeja (Sair e atualização).
+    void friendsGoOffline().finally(() => setImmediate(() => app.quit()))
   })
 
   app.on('before-quit', () => {
@@ -1551,6 +1563,7 @@ function startMainApp(): void {
 }
 
 if (IS_OVERLAY_PROC) runOverlayProcess()
+else if (IS_UPDATE_HELPER) runLinuxUpdateHelper()
 else startMainApp()
 
 export { mainWindow, overlayWindow, BACKEND_URL }

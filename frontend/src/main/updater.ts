@@ -2,7 +2,8 @@
  * Atualização automática (electron-updater + GitHub Releases).
  *
  * Fluxo: o app consulta a última release → avisa "nova versão" → o usuário confirma → baixa (com progresso) →
- * reinicia e instala por cima (Windows: instalador NSIS em modo silencioso; Linux: troca o próprio AppImage).
+ * reinicia e instala por cima (Windows: instalador NSIS em modo silencioso; Linux: a janela de atualização troca o
+ * próprio AppImage, ver linuxUpdateHelper.ts).
  * As bibliotecas Python novas NÃO são tratadas aqui: ao abrir a versão nova, o setup do app (modo "update") já
  * compara os requirements e baixa só o que falta (ver getSetupMode em index.ts).
  */
@@ -11,7 +12,8 @@ import { autoUpdater } from 'electron-updater'
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { flushSysLogToFile, sysLog } from './sysLog'
-import { importUpdateWindowLog, launchUpdateWindow } from './updateWindow'
+import { importUpdateWindowLog, launchUpdateWindow, updateWindowLogFile } from './updateWindow'
+import { appImageDestination, installAppImageSync, launchLinuxUpdateHelper } from './linuxUpdateHelper'
 
 /** Categoria de todos os logs desta parte: na aba Logs, filtre por "atualização". */
 const CAT = 'atualização'
@@ -31,8 +33,11 @@ const FIRST_CHECK_DELAY_MS = 15 * 1000 // não disputa CPU/rede com a abertura d
 let state: UpdateState = { status: 'idle', version: app.getVersion() }
 let getWindow: () => BrowserWindow | null = () => null
 let newVersion = ''
-// Linux: caminho do AppImage que será aberto de novo (muda de nome quando a versão faz parte dele)
-let appImagePath = process.env['APPIMAGE'] ?? ''
+// Linux: o AppImage em uso e o arquivo novo baixado (na pasta de cache do electron-updater)
+const appImagePath = process.env['APPIMAGE'] ?? ''
+let downloadedFile = ''
+// porta do backend do app instalado (a janela de atualização espera ela ficar livre antes de abrir o app novo)
+const BACKEND_PORT = 18450
 let notes = ''
 let started = false
 // último % já escrito no log do download (de 10 em 10); volta a -1 a cada novo download
@@ -122,11 +127,58 @@ async function check(manual: boolean): Promise<void> {
   }
 }
 
+/** Fecha o app para a atualização seguir. Se algo travar o fechamento, sai à força depois de alguns segundos. */
+function quitForUpdate(): void {
+  flushSysLogToFile()
+  app.quit()
+  setTimeout(() => {
+    sysLog('warn', CAT, 'o app não fechou em 8 s depois do pedido de atualização: saindo à força')
+    flushSysLogToFile()
+    app.exit(0)
+  }, 8000).unref()
+}
+
 /**
- * Reinicia e instala. Windows: o instalador silencioso espera o app fechar e abre a versão nova ao terminar.
- * Linux: o electron-updater troca o AppImage e abriria a versão nova NA HORA, com a antiga ainda aberta (segurando
- * a trava de instância única e a porta do backend): a nova fecharia sozinha. Por isso ele só troca o arquivo
- * e é o app.relaunch() que abre a nova depois que esta sair.
+ * Linux: a janela de atualização (o AppImage novo, em modo próprio) troca o arquivo depois que este app fecha e abre
+ * a versão nova. Se ela não abrir, troca o arquivo aqui mesmo (no Linux dá para substituir o arquivo em uso) e reabre.
+ * Não usa o quitAndInstall do electron-updater: ver o porquê em linuxUpdateHelper.ts.
+ */
+async function installLinux(): Promise<void> {
+  if (!downloadedFile || !existsSync(downloadedFile) || !appImagePath) {
+    sysLog('error', CAT, `não achei o arquivo baixado (${downloadedFile || '?'}) ou o AppImage atual (${appImagePath || '?'})`)
+    setState({ status: 'error', version: app.getVersion(), message: 'O arquivo da atualização não foi encontrado. Tente de novo.' })
+    return
+  }
+  const dest = appImageDestination(appImagePath, downloadedFile)
+  const opened = await launchLinuxUpdateHelper({
+    fromVersion: app.getVersion(),
+    toVersion: newVersion,
+    newFile: downloadedFile,
+    oldPath: appImagePath,
+    dest,
+    backendPort: BACKEND_PORT,
+    logFile: updateWindowLogFile(),
+    pendingFile: pendingFile(),
+    log: (level, msg) => sysLog(level, CAT, msg)
+  })
+  if (!opened) {
+    try {
+      installAppImageSync(downloadedFile, appImagePath, dest)
+      sysLog('info', CAT, `AppImage trocado sem a janela: ${appImagePath} -> ${dest}; reabrindo`)
+    } catch (e) {
+      sysLog('error', CAT, `falha ao trocar o AppImage: ${e instanceof Error ? e.stack ?? e.message : e}`)
+      flushSysLogToFile()
+      setState({ status: 'error', version: app.getVersion(), message: `Não consegui instalar a versão nova: ${e instanceof Error ? e.message : e}` })
+      return
+    }
+    app.relaunch({ execPath: dest, args: [] })
+  }
+  quitForUpdate()
+}
+
+/**
+ * Reinicia e instala. Windows: a janela de progresso abre, e o instalador silencioso espera o app fechar e abre a
+ * versão nova ao terminar. Linux: ver installLinux.
  */
 async function installNow(): Promise<void> {
   sysLog('info', CAT, `iniciando a instalação da versão ${newVersion} (${process.platform}${process.platform === 'linux' ? `, AppImage ${appImagePath}` : ''}): o app vai fechar e reabrir`)
@@ -135,22 +187,16 @@ async function installNow(): Promise<void> {
   } catch (e) {
     sysLog('warn', CAT, `não consegui gravar o registro da atualização: ${e instanceof Error ? e.message : e}`)
   }
-  if (process.platform === 'win32') {
-    // o instalador roda ~1 min com o app fechado: a janela de progresso assume antes de o app fechar
-    await launchUpdateWindow(app.getVersion(), newVersion)
-  } else if (process.platform === 'linux') {
-    // no Linux a troca é quase instantânea: só dá tempo de a mensagem "vai reiniciar" aparecer
-    await new Promise((r) => setTimeout(r, 1500))
+  if (process.platform === 'linux') {
+    await installLinux()
+    return
   }
+  // o instalador roda ~1 min com o app fechado: a janela de progresso assume antes de o app fechar
+  await launchUpdateWindow(app.getVersion(), newVersion)
   // o backend fecha junto com o app: grava já o que ainda está na fila para não perder estas linhas
   flushSysLogToFile()
   try {
-    if (process.platform === 'linux') {
-      app.relaunch({ execPath: appImagePath, args: [] })
-      autoUpdater.quitAndInstall(true, false)
-    } else {
-      autoUpdater.quitAndInstall(true, true)
-    }
+    autoUpdater.quitAndInstall(true, true)
   } catch (e) {
     sysLog('error', CAT, `falha ao iniciar a instalação: ${e instanceof Error ? e.stack ?? e.message : e}`)
     flushSysLogToFile()
@@ -223,10 +269,8 @@ export function initUpdater(windowGetter: () => BrowserWindow | null): void {
   })
   // sem um listener de 'error' o EventEmitter lança exceção; a falha em si já é tratada nos catch acima
   autoUpdater.on('error', (e) => sysLog('error', CAT, `erro do updater: ${e?.message ?? e}`))
-  autoUpdater.on('appimage-filename-updated', (path: string) => {
-    appImagePath = path
-  })
-  autoUpdater.on('update-downloaded', () => {
+  autoUpdater.on('update-downloaded', (info) => {
+    downloadedFile = info.downloadedFile
     sysLog('info', CAT, `versão ${newVersion} baixada, pronta para instalar`)
     setState({ status: 'ready', version: app.getVersion(), newVersion })
     // o usuário já confirmou ao clicar em atualizar: segue direto para a instalação
