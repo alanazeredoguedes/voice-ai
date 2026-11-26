@@ -2,7 +2,7 @@ import threading
 
 from . import evdev_input
 from .gamepad import GamepadMonitor, format_gamepad_hotkey
-from .hotkey_manager import _MODIFIERS, _key_to_str
+from .hotkey_manager import _MODIFIERS, _key_to_str, normalize_mouse_button
 
 
 def capture_hotkey(timeout: float = 10.0) -> str | None:
@@ -74,7 +74,7 @@ def capture_hotkey(timeout: float = 10.0) -> str | None:
             key_event(_key_to_str(key), False)
 
         def on_click(x, y, button, pressed):
-            button_event(f"mouse:{button.name}", pressed)
+            button_event(normalize_mouse_button(f"mouse:{button.name}"), pressed)
             return False if captured["hotkey"] else None
 
         kb = keyboard.Listener(on_press=on_key_press, on_release=on_key_release)

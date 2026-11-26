@@ -199,12 +199,13 @@ Cada aba está explicada em detalhe em [Funcionalidades](#funcionalidades). Em r
 
 | Ação | Padrão | Comportamento |
 |------|--------|---------------|
-| Transcrever | `Ctrl + T` (segurar) | Grava enquanto pressionado, solta para transcrever |
-| Falar com a IA | `Ctrl + I` (segurar) | Igual, mas a pergunta vai para o chat |
-| Mostrar/esconder o Voice AI | `Ctrl + Alt + F12` | Traz o app para a frente, até de jogos em tela cheia sem bordas (opção "manter sempre na frente" ao lado do atalho) |
+| Transcrever | `Mouse 9` (segurar) | Grava enquanto pressionado, solta para transcrever |
+| Falar com a IA | `Ctrl + Mouse 9` (segurar) | Igual, mas a pergunta vai para o chat |
+| Mostrar/esconder o Voice AI | `Ctrl + Mouse 8` | Traz o app para a frente, até de jogos em tela cheia sem bordas (opção "manter sempre na frente" ao lado do atalho) |
+| Falar na chamada | `Mouse 8` (segurar) | Com **Apertar para falar** ligado na Chamada, o microfone só transmite enquanto você segura |
 | Cancelar | dois cliques rápidos no atalho | Cancela a gravação ou para a resposta da IA |
 
-Os atalhos podem ser teclas, botões do mouse ou combinações, e cada ação aceita mais de um. Configure em **Configurações → Atalhos → Capturar**.
+`Mouse 8` e `Mouse 9` são os botões laterais do mouse (voltar e avançar). Os atalhos podem ser teclas, botões do mouse ou combinações, e cada ação aceita mais de um. Configure em **Configurações → Atalhos → Capturar**.
 
 ---
 
@@ -216,7 +217,8 @@ As configurações ficam em `settings.json` dentro da pasta de dados (`%APPDATA%
 |-------|--------|-----------|
 | `model` | `tiny` | Modelo do Whisper (`tiny`, `base`, `small`, `medium`, `large-v3`...) |
 | `device` | `auto` | `auto`, `cuda` (NVIDIA) ou `cpu` |
-| `transcription_key` / `ai_key` | `Ctrl+T` / `Ctrl+I` | Atalhos de transcrição e de IA |
+| `transcription_key` / `ai_key` | `Mouse 9` / `Ctrl + Mouse 9` | Atalhos de transcrição e de IA |
+| `window_key` / `call_ptt_key` | `Ctrl + Mouse 8` / `Mouse 8` | Atalhos de mostrar/esconder e de falar na chamada |
 | `whisper_batched` | `true` | Modo em lote: áudios com mais de 30 s são divididos e processados juntos |
 | `whisper_stream` | `true` | Transcrever enquanto fala |
 | `whisper_vad` | `false` | Pular silêncios |
@@ -318,7 +320,7 @@ Uma seção para cada aba do app: o que ela faz e como funciona por dentro.
 
 ### Transcrição de Microfone
 
-Segure o atalho (`Ctrl + T` por padrão), fale e solte. O áudio é capturado enquanto o atalho está pressionado e, ao soltar, o **Whisper transcreve no seu computador** (o áudio não vai para nenhum servidor). O texto vai para a área de transferência, pronto para colar, e aparece na tela junto com as duas transcrições anteriores.
+Segure o atalho (`Mouse 9`, botão lateral do mouse, por padrão), fale e solte. O áudio é capturado enquanto o atalho está pressionado e, ao soltar, o **Whisper transcreve no seu computador** (o áudio não vai para nenhum servidor). O texto vai para a área de transferência, pronto para colar, e aparece na tela junto com as duas transcrições anteriores.
 
 - **Transcrever enquanto fala** (`whisper_stream`): o texto vai sendo produzido durante a gravação, então ao soltar ele já está quase pronto.
 - **Modo em lote** (`whisper_batched`): áudios com mais de 30 s são divididos em partes processadas juntas, o que acelera as gravações longas.
@@ -336,7 +338,7 @@ Escolha ou arraste um áudio ou vídeo (MP3, OGG, WAV, M4A, MP4 e outros formato
 
 Conversa com o **Claude** (pelo Claude Code instalado no computador) por texto ou por voz, com as conversas salvas no app.
 
-- **Perguntar por voz:** segure o atalho da IA (`Ctrl + I`) e fale. Enquanto você fala, a transcrição vai preenchendo a caixa do chat; ao soltar, a pergunta é enviada. O Claude responde em streaming, cada frase vira áudio em paralelo e começa a tocar assim que fica pronta.
+- **Perguntar por voz:** segure o atalho da IA (`Ctrl + Mouse 9`) e fale. Enquanto você fala, a transcrição vai preenchendo a caixa do chat; ao soltar, a pergunta é enviada. O Claude responde em streaming, cada frase vira áudio em paralelo e começa a tocar assim que fica pronta.
 - **Respostas faladas:** pelo Edge TTS (gratuito) ou pela ElevenLabs (paga). Veja [Voz (TTS)](#voz-tts).
 - **Imagens e vídeos nas respostas:** quando a pergunta pede ou quando ajuda a explicar, a IA marca na resposta o que quer mostrar. O app busca (DuckDuckGo, sem chave, ou Google Imagens via Serper, com chave), mostra uma prévia, e um Haiku confere cada resultado e escreve a legenda em português. Vídeos do YouTube aparecem com miniatura, duração, título e canal.
 - **Repesquisar e refinar:** repesquisar busca outras imagens sem repetir; refinar deixa você descrever por voz o que quer ver.

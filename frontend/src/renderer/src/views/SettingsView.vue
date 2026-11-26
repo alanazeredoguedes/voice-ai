@@ -310,7 +310,7 @@ onUnmounted(() => {
           <HotkeyList
             label="Mostrar/esconder o Voice AI"
             hint="Traz o app para a frente, até de jogos em tela cheia. De novo, ele volta para trás."
-            :primary="store.settings.window_key ?? '<ctrl>+<alt>+<f12>'"
+            :primary="store.settings.window_key ?? '<ctrl>+mouse:button8'"
             :extra="store.settings.window_keys_extra ?? []"
             @update:all="(p, e) => set({ window_key: p, window_keys_extra: e })"
           >
@@ -343,7 +343,7 @@ onUnmounted(() => {
           <HotkeyList
             label="Falar na chamada"
             hint="Com &quot;Apertar para falar&quot; ligado na Chamada (ajustes do microfone), o microfone só transmite enquanto você segura."
-            :primary="store.settings.call_ptt_key ?? ''"
+            :primary="store.settings.call_ptt_key ?? 'mouse:button8'"
             :extra="store.settings.call_ptt_keys_extra ?? []"
             @update:all="(p, e) => set({ call_ptt_key: p, call_ptt_keys_extra: e })"
           />

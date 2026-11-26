@@ -22,13 +22,14 @@ DB_PATH = DATA_DIR / "voice-ai.db"
 PORT = int(os.environ.get("VOICE_AI_PORT", "18450"))
 
 DEFAULT_SETTINGS: dict = {
-    "transcription_key": "<ctrl>+t",
-    "ai_key": "<ctrl>+i",
+    # Botões laterais do mouse: button8 = voltar (Mouse 8), button9 = avançar (Mouse 9)
+    "transcription_key": "mouse:button9",
+    "ai_key": "<ctrl>+mouse:button9",
     # Mostrar/esconder o Voice AI por cima de qualquer janela (até jogos em tela cheia sem bordas)
-    "window_key": "<ctrl>+<alt>+<f12>",
+    "window_key": "<ctrl>+mouse:button8",
     "window_keys_extra": [],
-    # Chamada: segurar para falar ("apertar para falar"); vazio até a pessoa escolher
-    "call_ptt_key": "",
+    # Chamada: segurar para falar ("apertar para falar"), vale com "Apertar para falar" ligado na Chamada
+    "call_ptt_key": "mouse:button8",
     "call_ptt_keys_extra": [],
     # Mostrar/esconder: desligado = a janela vem para a frente, mas outra janela clicada passa por cima;
     # ligado = fica sempre por cima até esconder pelo atalho

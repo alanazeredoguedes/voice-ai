@@ -25,9 +25,18 @@ def _key_to_str(key) -> str:
         return str(key)
 
 
+# No Windows o pynput chama os botões laterais de x1/x2; no Linux (X11 e leitura direta) eles são
+# button8/button9. Tudo vira button8/button9 para o mesmo atalho valer nos dois sistemas.
+_MOUSE_ALIASES = {"mouse:x1": "mouse:button8", "mouse:x2": "mouse:button9"}
+
+
+def normalize_mouse_button(btn_str: str) -> str:
+    return _MOUSE_ALIASES.get(btn_str, btn_str)
+
+
 def _parse_hotkey(hotkey: str) -> tuple[frozenset[str], str]:
     parts = [p.strip() for p in hotkey.split("+")]
-    return frozenset(parts[:-1]), parts[-1]
+    return frozenset(parts[:-1]), normalize_mouse_button(parts[-1])
 
 
 def _is_mouse(hotkey: str) -> bool:
@@ -102,13 +111,13 @@ class HotkeyManager:
 
     def __init__(
         self,
-        transcription_key: "str | list[str]" = "mouse:button8",
-        ai_key: "str | list[str]" = "<ctrl>+mouse:button8",
+        transcription_key: "str | list[str]" = "mouse:button9",
+        ai_key: "str | list[str]" = "<ctrl>+mouse:button9",
         on_transcription_press: Callable | None = None,
         on_transcription_release: Callable | None = None,
         on_ai_press: Callable | None = None,
         on_ai_release: Callable | None = None,
-        window_key: "str | list[str]" = "<ctrl>+<alt>+<f12>",
+        window_key: "str | list[str]" = "<ctrl>+mouse:button8",
         on_window_press: Callable | None = None,
         call_ptt_key: "str | list[str] | None" = None,
         on_call_ptt_press: Callable | None = None,
@@ -285,7 +294,7 @@ class HotkeyManager:
                 if not _is_mouse(hotkey):
                     continue
                 mods, trigger = _parse_hotkey(hotkey)
-                if btn_str == trigger and self._held_mods >= mods:
+                if normalize_mouse_button(btn_str) == trigger and self._held_mods >= mods:
                     if pressed and idx not in action.active:
                         action.activate(idx)
                     elif not pressed and idx in action.active:

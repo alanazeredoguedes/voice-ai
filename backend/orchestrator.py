@@ -95,15 +95,15 @@ class Orchestrator:
         )
 
         self.hotkey = HotkeyManager(
-            transcription_key=self._hotkeys("transcription", "mouse:button8"),
-            ai_key=self._hotkeys("ai", "<ctrl>+mouse:button8"),
+            transcription_key=self._hotkeys("transcription", "mouse:button9"),
+            ai_key=self._hotkeys("ai", "<ctrl>+mouse:button9"),
             on_transcription_press=self._on_transcription_press,
             on_transcription_release=self._on_transcription_release,
             on_ai_press=self._on_ai_press,
             on_ai_release=self._on_ai_release,
-            window_key=self._hotkeys("window", "<ctrl>+<alt>+<f12>"),
+            window_key=self._hotkeys("window", "<ctrl>+mouse:button8"),
             on_window_press=self._on_window_press,
-            call_ptt_key=self._hotkeys("call_ptt", None),
+            call_ptt_key=self._hotkeys("call_ptt", "mouse:button8"),
             on_call_ptt_press=lambda: self.state.emit({"type": "call_ptt", "pressed": True}),
             on_call_ptt_release=lambda: self.state.emit({"type": "call_ptt", "pressed": False}),
         )

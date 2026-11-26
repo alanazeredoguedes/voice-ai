@@ -199,12 +199,13 @@ Each tab is explained in detail under [Features](#features). In short: Electron 
 
 | Action | Default | Behavior |
 |--------|---------|----------|
-| Transcribe | `Ctrl + T` (hold) | Records while pressed, release to transcribe |
-| Talk to the AI | `Ctrl + I` (hold) | Same, but the question goes to the chat |
-| Show/hide Voice AI | `Ctrl + Alt + F12` | Brings the app to the front, even over borderless fullscreen games ("always on top" option next to the hotkey) |
+| Transcribe | `Mouse 9` (hold) | Records while pressed, release to transcribe |
+| Talk to the AI | `Ctrl + Mouse 9` (hold) | Same, but the question goes to the chat |
+| Show/hide Voice AI | `Ctrl + Mouse 8` | Brings the app to the front, even over borderless fullscreen games ("always on top" option next to the hotkey) |
+| Talk in the call | `Mouse 8` (hold) | With **Push to talk** on in the Call, the microphone only transmits while you hold it |
 | Cancel | two quick presses of the hotkey | Cancels the recording or stops the AI answer |
 
-Hotkeys can be keys, mouse buttons or combinations, and each action accepts more than one. Set them in **Settings → Hotkeys → Capture**.
+`Mouse 8` and `Mouse 9` are the side mouse buttons (back and forward). Hotkeys can be keys, mouse buttons or combinations, and each action accepts more than one. Set them in **Settings → Hotkeys → Capture**.
 
 ---
 
@@ -216,7 +217,8 @@ Settings live in `settings.json` inside the data folder (`%APPDATA%\voice-ai` on
 |-----|---------|-------------|
 | `model` | `tiny` | Whisper model (`tiny`, `base`, `small`, `medium`, `large-v3`...) |
 | `device` | `auto` | `auto`, `cuda` (NVIDIA) or `cpu` |
-| `transcription_key` / `ai_key` | `Ctrl+T` / `Ctrl+I` | Transcription and AI hotkeys |
+| `transcription_key` / `ai_key` | `Mouse 9` / `Ctrl + Mouse 9` | Transcription and AI hotkeys |
+| `window_key` / `call_ptt_key` | `Ctrl + Mouse 8` / `Mouse 8` | Show/hide and talk-in-call hotkeys |
 | `whisper_batched` | `true` | Batch mode: audio over 30 s is split and processed together |
 | `whisper_stream` | `true` | Transcribe while speaking |
 | `whisper_vad` | `false` | Skip silences |
@@ -318,7 +320,7 @@ One section per app tab: what it does and how it works inside.
 
 ### Microphone Transcription
 
-Hold the hotkey (`Ctrl + T` by default), speak and release. Audio is captured while the hotkey is held and, on release, **Whisper transcribes it on your computer** (the audio is never sent to a server). The text goes to the clipboard, ready to paste, and shows on screen together with the two previous transcriptions.
+Hold the hotkey (`Mouse 9`, the side mouse button, by default), speak and release. Audio is captured while the hotkey is held and, on release, **Whisper transcribes it on your computer** (the audio is never sent to a server). The text goes to the clipboard, ready to paste, and shows on screen together with the two previous transcriptions.
 
 - **Transcribe while speaking** (`whisper_stream`): the text is produced during the recording, so it is nearly done when you release.
 - **Batched mode** (`whisper_batched`): audio longer than 30 s is split into parts processed together, which speeds up long recordings.
@@ -336,7 +338,7 @@ Pick or drop an audio or video file (MP3, OGG, WAV, M4A, MP4 and other formats `
 
 Talk to **Claude** (through the Claude Code installed on the computer) by text or by voice, with conversations saved in the app.
 
-- **Ask by voice:** hold the AI hotkey (`Ctrl + I`) and speak. While you talk, the transcription fills the chat input; on release, the question is sent. Claude answers in streaming, each sentence becomes audio in parallel and starts playing as soon as it is ready.
+- **Ask by voice:** hold the AI hotkey (`Ctrl + Mouse 9`) and speak. While you talk, the transcription fills the chat input; on release, the question is sent. Claude answers in streaming, each sentence becomes audio in parallel and starts playing as soon as it is ready.
 - **Spoken answers:** with Edge TTS (free) or ElevenLabs (paid). See [Voice (TTS)](#voice-tts).
 - **Images and videos in answers:** when you ask for them, or when they help the explanation, the AI marks in its answer what it wants to show. The app searches (DuckDuckGo, no key, or Google Images through Serper, with a key), shows a preview, and a Haiku model checks each result and writes the caption. YouTube videos show thumbnail, duration, title and channel.
 - **Search again and refine:** search again finds other images without repeats; refine lets you describe by voice what you want to see.

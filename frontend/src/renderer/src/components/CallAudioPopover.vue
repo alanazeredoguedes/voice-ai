@@ -22,7 +22,7 @@ const SYSTEM = { value: '', label: 'Padrão do sistema' }
 // "apertar para falar": o atalho é global (funciona com outro programa na frente) e fica nas Configurações
 const settings = useSettingsStore()
 const pttKeys = (): string[] =>
-  [settings.settings?.call_ptt_key ?? '', ...(settings.settings?.call_ptt_keys_extra ?? [])].filter(Boolean)
+  [settings.settings?.call_ptt_key ?? 'mouse:button8', ...(settings.settings?.call_ptt_keys_extra ?? [])].filter(Boolean)
 if (!settings.settings) void settings.fetchSettings()
 const capturingPtt = ref(false)
 const pttError = ref('')
